@@ -23,14 +23,15 @@ export async function readNodeNetwork(request, profile, signal) {
  if (!Number.isSafeInteger(chain?.chain_id) || chain.chain_id!==Number(profile.chainId)) {
   throw new Error(`Network mismatch: expected chain ${profile.chainId}. No node operations are authorized.`);
  }
+ const chainReceivedAt=Date.now();
  const names=['node','posy','sync'];
- const results=await Promise.allSettled(names.map(name=>request(`synergy_${name}Status`,[],options)));
- const observations={}, errors={};
+ const results=await Promise.allSettled(names.map(async name=>({value:await request(`synergy_${name}Status`,[],options),receivedAt:Date.now()})));
+ const observations={}, errors={},receivedAt={};
  results.forEach((result,index)=>{
-  if(result.status==='fulfilled') observations[names[index]]=result.value;
+  if(result.status==='fulfilled'){observations[names[index]]=result.value.value;receivedAt[names[index]]=result.value.receivedAt;}
   else errors[names[index]]=String(result.reason?.message||result.reason);
  });
- return {chain,observations,errors,checkedAt:Date.now()};
+ return {chain,chainReceivedAt,observations,receivedAt,errors,checkedAt:Date.now()};
 }
 
 export const R5_BASELINE=Object.freeze({release_id:'synergy-linux-389c509e47e55219',manifest_sha256:'43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b'});
