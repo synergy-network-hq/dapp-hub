@@ -1,3 +1,4 @@
+import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
 import {useNative,atlas,rpc,useResource,ErrorMessage,short} from '@synergy-network/portal-native/dapp-sdk';
 import {amount,text} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
@@ -6,7 +7,7 @@ export function DappWidget({widgetKey:key}){
  const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=permitted&&connection?.chainId==='synergy:1266'&&Number(n.endpoint.chainId)===1266;
  const value=useResource(async signal=>{
   if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');
-  if(Number(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');
+  if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');
   const data=await atlas(`address/${encodeURIComponent(connection.address)}`,{signal});return {data,receivedAt:Date.now()};
  },JSON.stringify([connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,ready]));
  if(!permitted)return <p>Allow Wallet account access in Security.</p>;

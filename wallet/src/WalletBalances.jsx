@@ -1,3 +1,4 @@
+import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
 import {Card,Resource,useResource,rpc} from '@synergy-network/portal-native/dapp-sdk';
 import {amount} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
@@ -6,7 +7,7 @@ function nwei(value){if(typeof value==='number'&&(!Number.isSafeInteger(value)||
 export function WalletBalances({account,endpoint,index,indexReceivedAt}){
  const balance=useResource(async signal=>{
   if(Number(endpoint.chainId)!==1266)throw Error('Select Synergy Testnet chain 1266.');
-  if(Number(await rpc('synergy_getChainId',[],{endpoint:endpoint.rpc,signal}))!==1266)throw Error('RPC identity does not match chain 1266.');
+  if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:endpoint.rpc,signal}))!==1266)throw Error('RPC identity does not match chain 1266.');
   const value=nwei(await rpc('synergy_getBalance',[account],{endpoint:endpoint.rpc,signal}));
   if(value===null)throw Error('RPC balance shape is unsupported; no zero is inferred.');
   return {value,receivedAt:Date.now()};

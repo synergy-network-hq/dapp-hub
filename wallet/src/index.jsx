@@ -1,3 +1,4 @@
+import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
 import {WalletConnections} from './WalletConnections.jsx';
 import {WalletTransactionDetails} from './WalletTransactionDetails.jsx';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
@@ -12,8 +13,8 @@ import './wallet.css';
 export function WalletApp(){
  const n=useNative(),c=n.wallet.connection,[tab,setTab]=useState('Assets'),[selected,setSelected]=useState(null),[revision,setRevision]=useState(0),action=useAction();
  const permitted=n.permit('wallet','readWallet'),ready=permitted&&c?.chainId==='synergy:1266'&&Number(n.endpoint.chainId)===1266;
- const tokens=useResource(async signal=>{if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');if(Number(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');const value=await atlas(`wallets/${encodeURIComponent(c.address)}/token-balances`,{signal});if(!Array.isArray(value)&&!Array.isArray(value?.items)&&!Array.isArray(value?.tokens)&&!Array.isArray(value?.balances))throw Error('Token balance response is unavailable or unsupported; no empty inventory is inferred.');return {value,receivedAt:Date.now()};},`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`);
- const account=useResource(async signal=>{if(!ready)throw Error('Wallet reads unavailable.');if(Number(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');const value=await atlas(`address/${encodeURIComponent(c.address)}`,{signal});return {...value,portalReceivedAt:Date.now()};},`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`);
+ const tokens=useResource(async signal=>{if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');const value=await atlas(`wallets/${encodeURIComponent(c.address)}/token-balances`,{signal});if(!Array.isArray(value)&&!Array.isArray(value?.items)&&!Array.isArray(value?.tokens)&&!Array.isArray(value?.balances))throw Error('Token balance response is unavailable or unsupported; no empty inventory is inferred.');return {value,receivedAt:Date.now()};},`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`);
+ const account=useResource(async signal=>{if(!ready)throw Error('Wallet reads unavailable.');if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');const value=await atlas(`address/${encodeURIComponent(c.address)}`,{signal});return {...value,portalReceivedAt:Date.now()};},`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`);
  const data=ready&&!account.loading&&!account.error?account.data:null;
  const selectionScope=`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`;
  const currentSelection=selected?.scope===selectionScope?selected:null;
