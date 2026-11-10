@@ -1,3 +1,4 @@
+import {emptyProvisioningDraft,readProvisioningDraft,saveProvisioningDraft} from './provisioning-draft.js';
 import './monitor.css';
 import {ValidatorMonitor} from './ValidatorMonitor.jsx';
 import {NodeWatchlist} from './NodeWatchlist.jsx';
@@ -15,6 +16,8 @@ export function NodeNetworkApp(){
  const n=useNative(),[section,setSection]=useState('overview'),[settingsTab,setSettingsTab]=useState('Installation isolation');
  const [target,setTarget]=useState(()=>{try{const saved=readStore('portal-native-v1:nodeNetworkTarget',null);return saved?nodeNetworkTarget(saved):null;}catch{return null;}});
  const [kind,setKind]=useState(target?.kind||'local'),[host,setHost]=useState(target?.host||''),[port,setPort]=useState(String(target?.port||22)),[targetError,setTargetError]=useState('');
+ const [savedDraft]=useState(()=>{try{return {form:readProvisioningDraft(),error:''};}catch{return {form:emptyProvisioningDraft(),error:'Saved provisioning draft could not be read. Original storage is retained; saving is blocked until it is recovered.'};}});
+ const [form,setForm]=useState(savedDraft.form),[draftError,setDraftError]=useState(savedDraft.error),[draftNotice,setDraftNotice]=useState('');
  const [master,setMaster]=useState(null),[masterError,setMasterError]=useState(''),[reviewing,setReviewing]=useState(false);
  const profiles=[CANARY_PROFILE,...n.endpoints.filter(p=>p.id!==CANARY_PROFILE.id)];
  const [profileId,setProfileId]=useState(CANARY_PROFILE.id);
@@ -45,6 +48,7 @@ export function NodeNetworkApp(){
    <p className="native-source">Public RPC observations from {profile.rpc}. These observations do not authenticate a provisioning target or approve enrollment.</p>
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<Detail data={data.observations[name]}/>}</Card>)}</div>}</Resource>
   </>:tab==='Validator setup'?<div className="native-grid">
+   <Card title="Provisioning draft"><p>Prepare package and network references before choosing a host. A saved draft is local presentation data, not a signed plan, approval or queued job. It never resumes an operation automatically.</p>{[['release_id','Approved release ID'],['manifest_sha256','Approved manifest SHA-256'],['network_id','Approved network incarnation'],['chain_id','Approved chain ID'],['node_name','Validator node name']].map(([key,label])=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" onChange={event=>{setForm({...form,[key]:event.target.value});setDraftNotice('');}}/></label>)}<button onClick={()=>{try{saveProvisioningDraft(form);setDraftError('');setDraftNotice('Draft saved on this device. No host or operation was authorized.');}catch{setDraftError('Draft could not be saved. The previous saved record is unchanged; check device storage or recover the retained record.');}}}>Save provisioning draft</button><ErrorMessage error={draftError}/>{draftNotice&&<p role="status">{draftNotice}</p>}</Card>
    <Card title="Standardized validator installation"><p>Host selection remains deferred. No host is enrolled or provisioned by opening this view.</p><p>Every validator must use the same qualified master package. Its identity, APQE custody, authenticated network configuration, blockchain data, recovery material and update staging belong inside /opt/Synergy.</p><ol><li>Authenticate the operator, target host and approved release.</li><li>Check host prerequisites and installation isolation.</li><li>Provision independent APQE role keys into local custody.</li><li>Verify authenticated Genesis, membership and transport authority.</li><li>Install through the shared lifecycle and verify restart, synchronization and finality.</li></ol></Card>
    <Card title="Node architecture master"><button disabled={!permitted||reviewing} onClick={reviewMaster}>{reviewing?'Inspecting…':'Inspect Synergy master folder'}</button><ErrorMessage error={masterError}/>{permitted&&master&&<Detail data={{release:master.release,architecture:master.architecture,declaredFiles:master.fileCount,manifestSha256:master.manifestSha256}}/>}<p>Compare the manifest digest with the approved release before using it. This preview does not authorize installation.</p></Card>
    <Card title="Local runtime compatibility"><Resource value={local}>{data=>data?<Detail data={data}/>:<p>No host inspection was returned.</p>}</Resource></Card>
@@ -54,6 +58,6 @@ export function NodeNetworkApp(){
    <Card title="Audit status"><p>A host isolation audit is required before installation and after every update. Inspect the target inventory and conformance results below; a configured target is not automatically marked compliant.</p><p>Removing NodeNetwork from Portal does not uninstall a validator or delete chain state, keys or signing journals.</p></Card>
   </div>}
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>No target controller will be contacted until you explicitly save a target in Settings. Public network observations do not select or authenticate a host.</p><button onClick={()=>setSection('settings')}>Review target settings</button></Card>}
-  {target&&tab&&tab!=='Network'&&<NodeController key={JSON.stringify(target)} target={target} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true}/>}
+  {target&&tab&&tab!=='Network'&&<NodeController key={JSON.stringify(target)} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true}/>}
  </NodeNetworkPanelFrame>;
 }

@@ -1,11 +1,10 @@
 import {useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap} from "./native-services.js";
 import {Card,Detail,ErrorMessage,useResource,Resource} from "@synergy-network/portal-native/dapp-sdk";
-import {R5_BASELINE,controllerOperation,installParameters} from './nodeNetwork.js';
+import {controllerOperation,installParameters} from './nodeNetwork.js';
 
-export function NodeController({target,permitted,tab,master,localSupported}){
+export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
- const [form,setForm]=useState({...R5_BASELINE,network_id:'',chain_id:'99999',node_name:''});
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null),[confirmation,setConfirmation]=useState('');
  const key=JSON.stringify(target);
  const capabilities=useResource(()=>{
@@ -40,7 +39,7 @@ export function NodeController({target,permitted,tab,master,localSupported}){
   </Card>
   {tab==='Validator setup'&&<div className="native-grid">
    <Card title="Approved installation package">
-    {field('release_id','Approved release ID')}{field('manifest_sha256','Approved manifest SHA-256')}{field('network_id','Approved network incarnation')}{field('chain_id','Approved chain ID')}{field('node_name','Validator node name')}
+    <Detail data={form}/><p>Edit package and network references in the provisioning draft above. Native execution validates these references again.</p>
     {master&&<button onClick={()=>setForm({...form,release_id:master.release,manifest_sha256:master.manifestSha256})}>Use inspected manifest in preflight</button>}
     <label>Existing administrative SSH account<input aria-label="Existing administrative SSH account" value={operator} onChange={event=>setOperator(event.target.value)} autoComplete="off"/></label>
     <button disabled={!permitted||busy||!operator||(target.kind==='local'&&!localSupported)} onClick={bootstrap}>Bootstrap clean target from approved master</button>
