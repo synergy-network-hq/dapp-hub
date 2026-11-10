@@ -535,8 +535,7 @@
         "version": "0.0.1",
         "runtime": "portal-bundled",
         "capabilities": [
-          "readWallet",
-          "requestTransactions"
+          "readWallet"
         ],
         "widgets": [
           {

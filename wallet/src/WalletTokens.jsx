@@ -1,0 +1,11 @@
+import {useEffect,useState} from 'react';
+import {rows,text} from '@synergy-network/dapp-data-view';
+const contract=item=>item.contractAddress??item.contract_address??item.contract;
+export function WalletTokens({data}){
+ const [search,setSearch]=useState(''),[selected,setSelected]=useState(null);
+ useEffect(()=>setSelected(null),[data]);
+ const items=rows(Array.isArray(data)?data:data.items||data.tokens||data.balances);
+ const current=items.includes(selected)?selected:null;
+ const matches=items.filter(item=>[item.symbol,item.name,contract(item)].some(v=>typeof v==='string'&&v.toLowerCase().includes(search.trim().toLowerCase()))||!search.trim());
+ return <><p>Source: Atlas token-balance index. Values and asset metadata are reported by the index; Portal has not independently verified token provenance or spendability.</p><label>Search tokens<input value={search} maxLength={160} onChange={e=>setSearch(e.target.value)}/></label>{matches.length?<div className="integration-table" role="region" aria-label="Wallet token balances" tabIndex={0}><table><thead><tr><th>Asset</th><th>Reported balance</th><th>Contract</th></tr></thead><tbody>{matches.map((item,i)=><tr key={i}><td><button onClick={()=>setSelected(item)}>{text(item.symbol||item.name)}</button></td><td>{text(item.formattedBalance??item.balance??item.balanceNwei)}</td><td>{text(contract(item))}</td></tr>)}</tbody></table></div>:<p>{items.length?'No returned tokens match this search.':'The index returned no token balances.'}</p>}{current&&<aside aria-label="Selected token"><h3>{text(current.name||current.symbol)}</h3><dl><dt>Symbol</dt><dd>{text(current.symbol)}</dd><dt>Contract</dt><dd>{text(contract(current))}</dd><dt>Reported decimals</dt><dd>{Number.isSafeInteger(current.decimals)&&current.decimals>=0&&current.decimals<=255?current.decimals:'Unavailable'}</dd><dt>Reported balance</dt><dd>{text(current.formattedBalance??current.balance??current.balanceNwei)}</dd><dt>Provenance verification</dt><dd>Not independently verified</dd></dl><p>Missing decimals are not assumed to be SNRG decimals. No external token metadata, scripts or media are loaded.</p><button onClick={()=>setSelected(null)}>Close token details</button></aside>}</>;
+}
