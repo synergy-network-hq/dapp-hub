@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "keystone",
+  "name": "Keystone",
+  "desc": "Governance, proposals, voting and treasury governance",
+  "audience": "Everyone",
+  "status": "available",
+  "publisher": "Synergy Network",
+  "category": "Community & Governance",
+  "sections": [
+    "Proposals",
+    "Voting",
+    "Discussions",
+    "Treasury",
+    "Governance history",
+    "Delegation",
+    "Protocol changes",
+    "Governance notifications",
+    "DAO participation"
+  ],
+  "widgets": [
+    "Active proposals",
+    "Proposals requiring your vote"
+  ],
+  "manifest": {
+    "schemaVersion": 1,
+    "id": "keystone",
+    "name": "Keystone",
+    "version": "0.0.1",
+    "runtime": "portal-bundled",
+    "capabilities": [
+      "readNetwork",
+      "requestTransactions",
+      "externalLinks"
+    ],
+    "widgets": [
+      {
+        "key": "proposals",
+        "name": "Active proposals"
+      },
+      {
+        "key": "votes",
+        "name": "Proposals requiring your vote"
+      }
+    ]
+  },
+  "implementationStatus": "bundled",
+  "sourceDirectory": "keystone",
+  "release": null
+}

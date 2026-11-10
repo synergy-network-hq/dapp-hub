@@ -1,0 +1,10 @@
+packages:
+  - wallet
+  - atlas
+  - keystone
+  - nodenetwork
+  - registry
+  - shared/*
+overrides:
+  rolldown: 1.2.12
+autoInstallPeers: false

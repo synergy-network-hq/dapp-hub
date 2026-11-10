@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "security-center",
+  "name": "Security Center",
+  "desc": "Permissions, sessions, connections and security state",
+  "audience": "Everyone",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Privacy & Security",
+  "sections": [
+    "Connected dApps",
+    "Granted capabilities",
+    "Wallet sessions",
+    "Active sessions",
+    "Device trust",
+    "Security events",
+    "Signing history",
+    "Transaction approvals",
+    "Suspicious activity",
+    "Aegis status",
+    "Recovery",
+    "Hardware security",
+    "Revocation",
+    "Permission audit"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "security-center",
+  "release": null
+}

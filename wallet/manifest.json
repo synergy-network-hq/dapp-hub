@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "id": "wallet",
+  "name": "Wallet",
+  "desc": "Assets, accounts, transactions, identity and authorization",
+  "audience": "Everyone",
+  "status": "available",
+  "publisher": "Synergy Network",
+  "category": "Assets & Finance",
+  "sections": [
+    "Portfolio",
+    "SNRG",
+    "Tokens",
+    "NFTs",
+    "Send",
+    "Receive",
+    "Transaction history",
+    "Cross-chain assets",
+    "Connected applications",
+    "Transaction approvals",
+    "Account management",
+    "Address book",
+    "Hardware wallets",
+    "Recovery & security"
+  ],
+  "widgets": [
+    "Portfolio balance",
+    "Wallet activity"
+  ],
+  "manifest": {
+    "schemaVersion": 1,
+    "id": "wallet",
+    "name": "Wallet",
+    "version": "0.0.1",
+    "runtime": "portal-bundled",
+    "capabilities": [
+      "readWallet",
+      "requestTransactions"
+    ],
+    "widgets": [
+      {
+        "key": "balance",
+        "name": "Portfolio balance"
+      },
+      {
+        "key": "activity",
+        "name": "Wallet activity"
+      }
+    ]
+  },
+  "implementationStatus": "bundled",
+  "sourceDirectory": "wallet",
+  "release": null
+}

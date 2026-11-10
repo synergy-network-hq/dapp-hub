@@ -1,0 +1,28 @@
+name: Validate dApp submissions
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  inert-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate metadata without executing submitted application code
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -eu
+          validator="$RUNNER_TEMP/dapp-registry-validator.py"
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git show "origin/$BASE_REF:registry/validate.py" > "$validator"
+          else
+            cp registry/validate.py "$validator"
+          fi
+          python3 -I -B "$validator" --root "$GITHUB_WORKSPACE" --self-test

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "spark",
+  "name": "Spark",
+  "desc": "Token/NFT/project creation and launchpad",
+  "audience": "Creators",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Create",
+  "sections": [
+    "Create token",
+    "Create NFT",
+    "Launch project",
+    "Token templates",
+    "NFT collections",
+    "Creator tools",
+    "Community projects",
+    "Launch management",
+    "Distribution",
+    "Project analytics"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "spark",
+  "release": null
+}

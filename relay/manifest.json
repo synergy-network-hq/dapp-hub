@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "relay",
+  "name": "Relay",
+  "desc": "DEX, swaps, liquidity and cross-chain liquidity",
+  "audience": "Users / DeFi",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Assets & Finance",
+  "sections": [
+    "Swap",
+    "Liquidity",
+    "Pools",
+    "Positions",
+    "Cross-chain liquidity",
+    "Market information",
+    "Transaction history",
+    "Favorites & watchlist",
+    "Routing information",
+    "Settlement status"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "relay",
+  "release": null
+}

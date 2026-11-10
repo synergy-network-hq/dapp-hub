@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "deployments",
+  "name": "Deployments",
+  "desc": "Deploy and monitor contracts/apps",
+  "audience": "Developers",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Develop",
+  "sections": [
+    "Contracts",
+    "dApps",
+    "Deployment history",
+    "Environments",
+    "Testnet & mainnet",
+    "Manifests",
+    "Contract addresses",
+    "Verification",
+    "Upgrade & rollback history",
+    "Execution receipts",
+    "Failed deployments"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "deployments",
+  "release": null
+}

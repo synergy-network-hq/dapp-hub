@@ -1,0 +1,94 @@
+.jarvis-widget,.jarvis-chat {--jarvis-accent:#47cfff;font:14px/1.5 Inter,Arial,sans-serif;color:#edf4ff;letter-spacing:0;color-scheme:dark;}
+.jarvis-widget *,.jarvis-chat * {box-sizing:border-box;letter-spacing:0;}
+.jarvis-widget button,.jarvis-chat button {appearance:none;-webkit-appearance:none;}
+.jarvis-companion {position:fixed;z-index:120;isolation:isolate;}
+.jarvis-widget .jarvis-launcher,.jarvis-widget .jarvis-launcher:hover:not(:disabled),.jarvis-widget .jarvis-launcher:active:not(:disabled) {position:relative;display:block;width:100%;height:100%;min-width:0;min-height:0;overflow:visible;padding:0;border:0;border-radius:8px;background:transparent;box-shadow:none;transform:none;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;}
+.jarvis-widget .jarvis-launcher::before,.jarvis-widget .jarvis-launcher::after {content:none;display:none;}
+.jarvis-widget .jarvis-launcher:active {cursor:grabbing;}
+.jarvis-character {display:flex;align-items:center;justify-content:center;width:128px;height:168px;overflow:visible;pointer-events:none;}
+.jarvis-character canvas {display:block;}
+.jarvis-character>svg {position:absolute;bottom:20px;left:28px;color:var(--jarvis-accent,#47cfff);}
+.jarvis-widget button:focus-visible {outline:2px solid var(--jarvis-accent);outline-offset:3px;}
+.jarvis-tooltip {position:absolute;bottom:calc(100% + 4px);left:50%;white-space:nowrap;transform:translateX(-50%);background:#111b28;color:#e8f5ff;border:1px solid #ffffff24;border-radius:6px;font-size:12px;line-height:1;padding:7px 10px;opacity:0;pointer-events:none;}
+.jarvis-companion[data-label-below="true"] .jarvis-tooltip {bottom:auto;top:0;}
+.jarvis-launcher:hover .jarvis-tooltip,.jarvis-launcher:focus-visible .jarvis-tooltip {opacity:1;}
+.jarvis-widget .jarvis-popup {position:fixed;z-index:121;display:flex;flex-direction:column;background:#080e1b;color:#edf4ff;box-shadow:0 20px 80px #0008;border:1px solid color-mix(in srgb,var(--jarvis-accent) 45%,#263344);border-radius:12px;overflow:hidden;min-width:0;}
+.jarvis-popup>header {display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid #ffffff18;flex-shrink:0;cursor:grab;touch-action:none;user-select:none;}
+.jarvis-popup>header>div:not(.jarvis-heading) {display:flex;gap:3px;margin-left:auto;}
+.jarvis-widget .jarvis-popup>header button {display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;padding:5px;border:0;border-radius:4px;background:transparent;color:inherit;box-shadow:none;cursor:pointer;}
+.jarvis-widget .jarvis-popup>header button:hover {background:#ffffff12;}
+.jarvis-chat {display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden;}
+.jarvis-messages {flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:16px;overflow-wrap:anywhere;}
+.jarvis-messages p {font:inherit;font-size:13px;line-height:1.65;color:#dce6f6;margin:0 0 14px;white-space:pre-wrap;}
+.jarvis-messages .jarvis-user-message {background:color-mix(in srgb,var(--jarvis-accent) 10%,#101925);padding:10px 12px;border-radius:8px;}
+.jarvis-service {padding:8px 16px;color:#98a9c2;font-size:11px;background:#ffffff03;}
+.jarvis-chat .jarvis-input {display:flex;align-items:center;gap:6px;margin:10px 16px 22px;flex-shrink:0;padding:3px;border:1px solid #ffffff30;border-radius:8px;background:#0c1524;}
+.jarvis-chat .jarvis-input:focus-within {border-color:var(--jarvis-accent);}
+.jarvis-chat .jarvis-input input {font:inherit;min-width:0;flex:1;width:100%;padding:9px;color:#edf4ff;background:transparent;border:0;border-radius:4px;box-shadow:none;outline:0;}
+.jarvis-chat .jarvis-input input::placeholder {color:#93a4bd;}
+.jarvis-chat .jarvis-input button {display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--jarvis-accent);cursor:pointer;box-shadow:none;}
+.jarvis-chat .jarvis-input button:disabled {opacity:.4;cursor:default;}
+.jarvis-chat .jarvis-input button:focus-visible {outline:2px solid var(--jarvis-accent);}
+.jarvis-welcome {display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 6px;color:#c9eaff;}
+.jarvis-welcome .jarvis-character {width:128px;height:168px;position:relative;}
+.jarvis-welcome h3 {font-size:18px;margin:10px 0 6px;color:#edf4ff;}
+.jarvis-welcome p {max-width:260px;color:#98a9c2;}
+.jarvis-widget .jarvis-resize {position:absolute;right:2px;bottom:2px;background:transparent;color:#aac1db;border:0;padding:3px;line-height:0;cursor:nwse-resize;touch-action:none;box-shadow:none;}
+.jarvis-chat .jarvis-error,.jarvis-widget .jarvis-error {padding:8px 16px;color:#ffb3ae;font-size:13px;overflow-wrap:anywhere;}
+.jarvis-chat .jarvis-pending {color:var(--jarvis-accent);}
+@media (prefers-reduced-motion:reduce) {.jarvis-widget *,.jarvis-chat * {animation:none!important;transition:none!important;}}
+
+.jarvis-popup .jarvis-heading {display:flex;flex-direction:column;gap:1px;min-width:0;}
+.jarvis-heading strong {font-size:14px;line-height:1.3;}
+.jarvis-heading small {font-size:10px;line-height:1.4;color:#a5b7ce;}
+
+.jarvis-conversation {display:flex;flex:1;min-height:0;min-width:0;}
+.jarvis-conversation>.jarvis-chat {min-width:0;}
+.jarvis-conversation-companion {display:flex;align-items:flex-end;flex-shrink:0;width:128px;padding-bottom:14px;}
+@media (max-width:420px) {.jarvis-conversation-companion {width:90px;} .jarvis-conversation-companion .jarvis-character {width:90px;height:118px;}}
+
+.jarvis-widget .jarvis-companion,.jarvis-widget .jarvis-popup,.jarvis-widget .jarvis-launcher,.jarvis-character,.jarvis-character canvas {animation:none;transition:none;transform:none;}
+
+.jarvis-assistant-hub {display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;}
+.jarvis-assistant-hub .jarvis-history {width:210px;flex-shrink:0;padding:14px;border-right:1px solid #ffffff18;overflow-y:auto;background:#080e1b;}
+.jarvis-history h2 {font-size:14px;margin:0 0 12px;color:#edf4ff;}
+.jarvis-history button {display:flex;flex-direction:column;align-items:flex-start;gap:5px;width:100%;min-width:0;padding:10px;margin-bottom:7px;text-align:left;background:#ffffff05;color:#e6f4ff;border:1px solid #ffffff18;border-radius:6px;white-space:normal;cursor:pointer;}
+.jarvis-history button.selected {border-color:var(--jarvis-accent,#47cfff);}
+.jarvis-history span {overflow-wrap:anywhere;}
+.jarvis-history small,.jarvis-history p {font-size:11px;color:#9bb1c9;}
+@media(max-width:680px) {.jarvis-assistant-hub {flex-direction:column;} .jarvis-assistant-hub .jarvis-history {width:100%;max-height:160px;border-right:0;border-bottom:1px solid #ffffff18;} .jarvis-history button {padding:7px;}}
+
+.jarvis-sprite-character {display:block;}
+.jarvis-sprite-character canvas {position:static;width:100%;height:100%;object-fit:contain;}
+
+/* Full-body robot fits the existing companion lane, including every gesture. */
+.jarvis-full-robot {position:relative;display:block;flex:none;width:128px;height:168px;transform:translateY(var(--robot-lift,0px));}
+.jarvis-full-robot .jarvis-robot-body {position:absolute;inset:0;width:128px;height:168px;overflow:visible;}
+.jarvis-full-robot .jarvis-robot-head {position:absolute;left:31px;top:14px;width:66px;height:66px;transform:translateY(var(--robot-crouch,0px)) rotate(var(--robot-lean,0deg));transform-origin:33px 101px;}
+@media(max-width:420px) {.jarvis-conversation-companion .jarvis-full-robot {scale:.7;transform-origin:center center;}}
+
+/* Keep gestures above both the torso and the independently rendered head. */
+.jarvis-full-robot {isolation:isolate;}
+.jarvis-full-robot .jarvis-robot-body {z-index:0;}
+.jarvis-full-robot .jarvis-robot-head {z-index:1;}
+.jarvis-full-robot .jarvis-robot-arms {position:absolute;inset:0;width:128px;height:168px;overflow:visible;z-index:2;pointer-events:none;}
+
+/* Ground the silver companion in the room without a badge or backing card. */
+.jarvis-character[data-grounded="true"] {position:relative;isolation:isolate;}
+.jarvis-character[data-grounded="true"]::before {content:"";position:absolute;z-index:-1;pointer-events:none;left:30px;right:30px;bottom:3px;height:17px;border-radius:50%;background:radial-gradient(ellipse,#000b 0%,#0005 40%,transparent 72%);filter:blur(2px);}
+.jarvis-character[data-grounded="true"]::after {content:"";position:absolute;z-index:-1;pointer-events:none;left:16px;right:16px;bottom:-5px;height:27px;border-radius:50%;background:radial-gradient(ellipse,color-mix(in srgb,var(--jarvis-room-light) 27%,transparent),transparent 70%);filter:blur(5px);}
+.jarvis-character[data-grounded="true"] .jarvis-full-robot {filter:drop-shadow(-1px 0 1px color-mix(in srgb,var(--jarvis-room-light) 28%,transparent)) drop-shadow(2px 3px 2px #0005);-webkit-box-reflect:below -8px linear-gradient(transparent 82%,rgba(255,255,255,.15));}
+
+/* Raised conversation bubbles keep the text readable against the room. */
+.jarvis-messages p.jarvis-assistant-message,.jarvis-messages p.jarvis-user-message {max-width:90%;padding:12px 15px;border-radius:16px;line-height:1.65;border:1px solid #ffffff29;text-shadow:0 1px 2px #000,0 2px 4px #000e;box-shadow:inset 0 1px 0 #ffffff35,inset 0 -3px 0 #0003,0 5px 10px #0004;}
+.jarvis-messages p.jarvis-assistant-message {margin-right:auto;background:linear-gradient(155deg,#646c77,#343b45);color:#fff;border-bottom-left-radius:5px;}
+.jarvis-messages p.jarvis-user-message {margin-left:auto;background:linear-gradient(145deg,color-mix(in srgb,var(--jarvis-accent) 78%,#213544),color-mix(in srgb,var(--jarvis-accent) 42%,#071b2b));color:#fff;border-bottom-right-radius:5px;}
+.jarvis-suggestions {display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 0;flex-shrink:0;}
+.jarvis-chat .jarvis-suggestions button {white-space:normal;text-align:left;font:inherit;font-size:11px;padding:6px 9px;min-height:30px;border:1px solid #ffffff29;border-radius:12px;color:#e7f4ff;background:#1b2a3acc;text-shadow:0 1px 2px #000;box-shadow:inset 0 1px #ffffff10;}
+.jarvis-chat .jarvis-suggestions button:hover:not(:disabled) {border-color:var(--jarvis-accent);background:#293d50;}
+.jarvis-pending {display:flex;align-items:center;gap:8px;font-size:12px!important;}
+.jarvis-typing-dots {display:inline-flex;gap:4px;}
+.jarvis-typing-dots i {width:5px;height:5px;border-radius:50%;background:currentColor;animation:jarvis-typing 1.2s ease-in-out infinite;}
+.jarvis-typing-dots i:nth-child(2) {animation-delay:.16s;}.jarvis-typing-dots i:nth-child(3) {animation-delay:.32s;}
+@keyframes jarvis-typing {0%,70%,100% {opacity:.3;translate:0 0;}35% {opacity:1;translate:0 -3px;}}
+@media(prefers-reduced-motion:reduce) {.jarvis-typing-dots i {animation:none;opacity:.7;}}

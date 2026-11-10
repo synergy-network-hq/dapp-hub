@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "synq-playground",
+  "name": "SynQ Playground",
+  "desc": "Lightweight SynQ development/testing",
+  "audience": "Developers",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Develop",
+  "sections": [
+    "SynQ editor",
+    "Syntax highlighting",
+    "Compile",
+    "ABI",
+    "Bytecode",
+    "Gas estimates",
+    "AIVM dry-run",
+    "Execution trace",
+    "Examples",
+    "Contract templates",
+    "Testnet deployment"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "synq-playground",
+  "release": null
+}

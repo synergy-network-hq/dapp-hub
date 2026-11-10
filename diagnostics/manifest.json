@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "diagnostics",
+  "name": "Diagnostics",
+  "desc": "Network/node/application health and troubleshooting",
+  "audience": "Advanced users",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Operate",
+  "sections": [
+    "System check",
+    "Network",
+    "RPC",
+    "Wallet",
+    "Node & validator role",
+    "NetBird",
+    "Storage",
+    "Clock synchronization",
+    "Aegis",
+    "AIVM",
+    "Jarvis investigation"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "diagnostics",
+  "release": null
+}

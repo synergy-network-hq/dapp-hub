@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon",
+  "name": "Horizon",
+  "desc": "AI models, agents, workflows and AI ecosystem",
+  "audience": "Users / Developers",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "AI",
+  "sections": [
+    "Models",
+    "AI providers",
+    "Agents",
+    "Workflows",
+    "AI applications",
+    "Inference",
+    "Evaluations",
+    "Provenance",
+    "Assurance receipts",
+    "Agent management"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "horizon",
+  "release": null
+}

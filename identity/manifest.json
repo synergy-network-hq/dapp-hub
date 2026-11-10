@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "identity",
+  "name": "Identity",
+  "desc": "SynID/UMA profile and identity management",
+  "audience": "Everyone",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Privacy & Security",
+  "sections": [
+    "SynID",
+    "UMA identity",
+    "Profiles",
+    "Aliases",
+    "Identity associations",
+    "Devices",
+    "Addresses",
+    "Credentials",
+    "Verification",
+    "Public profile",
+    "Privacy controls",
+    "Recovery relationships"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "identity",
+  "release": null
+}

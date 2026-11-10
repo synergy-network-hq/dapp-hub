@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "id": "atlas",
+  "name": "Atlas",
+  "desc": "Explorer, network intelligence and analytics",
+  "audience": "Everyone",
+  "status": "available",
+  "publisher": "Synergy Network",
+  "category": "Explore",
+  "sections": [
+    "Blocks",
+    "Transactions",
+    "Addresses",
+    "Contracts",
+    "Validators",
+    "Receipts",
+    "ETDAG evidence",
+    "Cross-chain evidence"
+  ],
+  "widgets": [
+    "Latest block",
+    "Recent transactions",
+    "Validator health"
+  ],
+  "manifest": {
+    "schemaVersion": 1,
+    "id": "atlas",
+    "name": "Atlas",
+    "version": "0.0.1",
+    "runtime": "portal-bundled",
+    "capabilities": [
+      "readNetwork",
+      "externalLinks"
+    ],
+    "widgets": [
+      {
+        "key": "latest-block",
+        "name": "Latest block"
+      },
+      {
+        "key": "transactions",
+        "name": "Recent transactions"
+      },
+      {
+        "key": "validators",
+        "name": "Validator health"
+      }
+    ]
+  },
+  "implementationStatus": "bundled",
+  "sourceDirectory": "atlas",
+  "release": null
+}

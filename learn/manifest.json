@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "learn",
+  "name": "Learn",
+  "desc": "Education, tutorials, onboarding and training",
+  "audience": "Everyone",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Explore",
+  "sections": [
+    "User onboarding",
+    "Wallet safety",
+    "Synergy architecture",
+    "PQ security",
+    "SynQ",
+    "Token creation",
+    "Running a node",
+    "Cross-chain risk",
+    "AI assurance"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "learn",
+  "release": null
+}

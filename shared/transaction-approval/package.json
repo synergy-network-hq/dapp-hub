@@ -1,0 +1,19 @@
+{
+  "name": "@synergy-network/dapp-transaction-approval",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.jsx"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18",
+    "@synergy-network/portal-native": "0.1.x"
+  },
+  "peerDependenciesMeta": {
+    "@synergy-network/portal-native": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "id": "node",
+  "name": "NodeNetwork",
+  "desc": "Closed-operator workspace for Synergy validator setup, isolation checks and managed updates",
+  "audience": "Authorized genesis operators; community enrollment closed",
+  "status": "available",
+  "publisher": "Synergy Network",
+  "sections": [
+    "Overview",
+    "Node Setup",
+    "Roles",
+    "Validator",
+    "Peers & Connectivity",
+    "Storage",
+    "Security",
+    "Performance",
+    "Logs",
+    "Diagnostics",
+    "Updates",
+    "Advanced"
+  ],
+  "category": "Operate",
+  "roles": [
+    "Node",
+    "Validator"
+  ],
+  "widgets": [
+    "Node status",
+    "Validator status"
+  ],
+  "manifest": {
+    "schemaVersion": 1,
+    "id": "node",
+    "name": "NodeNetwork",
+    "version": "0.0.1",
+    "runtime": "portal-bundled",
+    "capabilities": [
+      "readNetwork"
+    ],
+    "widgets": [
+      {
+        "key": "node-status",
+        "name": "Node status"
+      },
+      {
+        "key": "validator-status",
+        "name": "Validator status"
+      }
+    ]
+  },
+  "implementationStatus": "bundled",
+  "sourceDirectory": "nodenetwork",
+  "release": null
+}

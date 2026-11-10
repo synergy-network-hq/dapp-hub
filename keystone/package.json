@@ -1,0 +1,26 @@
+{
+  "name": "@synergy-network/dapp-keystone",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.jsx",
+    "./widget": "./src/Widget.jsx"
+  },
+  "dependencies": {
+    "@synergy-network/dapp-transaction-approval": "link:../shared/transaction-approval"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18",
+    "@synergy-network/portal-native": "0.1.x"
+  },
+  "scripts": {
+    "build": "vite build --config ../build.vite.mjs"
+  },
+  "peerDependenciesMeta": {
+    "@synergy-network/portal-native": {
+      "optional": true
+    }
+  }
+}

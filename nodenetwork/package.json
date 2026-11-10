@@ -1,0 +1,29 @@
+{
+  "name": "@synergy-network/dapp-nodenetwork",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.jsx",
+    "./model": "./src/nodeNetwork.js",
+    "./assets/*": "./assets/*",
+    "./widget": "./src/Widget.jsx"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18",
+    "@synergy-network/portal-native": "0.1.x",
+    "@tauri-apps/api": "^2"
+  },
+  "scripts": {
+    "build": "vite build --config ../build.vite.mjs"
+  },
+  "peerDependenciesMeta": {
+    "@synergy-network/portal-native": {
+      "optional": true
+    },
+    "@tauri-apps/api": {
+      "optional": true
+    }
+  }
+}

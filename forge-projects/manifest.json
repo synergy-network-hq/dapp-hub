@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "forge-projects",
+  "name": "Forge Projects",
+  "desc": "Forge projects/workspaces from inside Portal",
+  "audience": "Developers",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Develop",
+  "sections": [
+    "Projects",
+    "Workspaces",
+    "Repositories",
+    "Builds",
+    "Environments",
+    "Collaborators",
+    "API status",
+    "Recent development activity",
+    "Project health"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "forge-projects",
+  "release": null
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@synergy-network/dapp-registry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./catalog": "./catalog.js",
+    "./widgets": "./widgets.js",
+    "./renderers": "./renderers.jsx",
+    "./release-policy": "./release-policy.js",
+    "./applications": "./applications.js"
+  },
+  "dependencies": {
+    "@synergy-network/dapp-wallet": "link:../wallet",
+    "@synergy-network/dapp-atlas": "link:../atlas",
+    "@synergy-network/dapp-keystone": "link:../keystone",
+    "@synergy-network/dapp-nodenetwork": "link:../nodenetwork"
+  }
+}

@@ -1,0 +1,18 @@
+import app0 from "../wallet/manifest.json" with {type:"json"};
+import app1 from "../atlas/manifest.json" with {type:"json"};
+import app2 from "../relay/manifest.json" with {type:"json"};
+import app3 from "../keystone/manifest.json" with {type:"json"};
+import app4 from "../spark/manifest.json" with {type:"json"};
+import app5 from "../horizon/manifest.json" with {type:"json"};
+import app6 from "../vault/manifest.json" with {type:"json"};
+import app7 from "../learn/manifest.json" with {type:"json"};
+import app8 from "../nodenetwork/manifest.json" with {type:"json"};
+import app9 from "../synq-playground/manifest.json" with {type:"json"};
+import app10 from "../forge-projects/manifest.json" with {type:"json"};
+import app11 from "../deployments/manifest.json" with {type:"json"};
+import app12 from "../network-tools/manifest.json" with {type:"json"};
+import app13 from "../logs/manifest.json" with {type:"json"};
+import app14 from "../diagnostics/manifest.json" with {type:"json"};
+import app15 from "../security-center/manifest.json" with {type:"json"};
+import app16 from "../identity/manifest.json" with {type:"json"};
+export const officialCatalog=Object.freeze([app0,app1,app2,app3,app4,app5,app6,app7,app8,app9,app10,app11,app12,app13,app14,app15,app16]);

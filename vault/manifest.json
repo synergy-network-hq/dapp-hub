@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "vault",
+  "name": "Vault",
+  "desc": "Secure files, encrypted sharing and digital signatures",
+  "audience": "Everyone",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Privacy & Security",
+  "sections": [
+    "Secure documents",
+    "Encrypted storage",
+    "Digital signatures",
+    "Secure sharing",
+    "Access permissions",
+    "Integrity verification",
+    "Access receipts",
+    "Expiring shares",
+    "Protected data"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "vault",
+  "release": null
+}

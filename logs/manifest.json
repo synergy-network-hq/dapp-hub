@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "logs",
+  "name": "Logs",
+  "desc": "Centralized node/development/system log viewer",
+  "audience": "Developers / Operators",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Operate",
+  "sections": [
+    "Portal",
+    "Node",
+    "Validator role",
+    "Forge",
+    "Deployments",
+    "AIVM",
+    "RPC",
+    "Network",
+    "dApps",
+    "Search & filters",
+    "Export",
+    "Live stream",
+    "Ask Jarvis"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "logs",
+  "release": null
+}

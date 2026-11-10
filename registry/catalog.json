@@ -1,0 +1,557 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/synergy-network-hq/dapp-hub",
+  "apps": [
+    {
+      "schemaVersion": 1,
+      "id": "atlas",
+      "name": "Atlas",
+      "desc": "Explorer, network intelligence and analytics",
+      "audience": "Everyone",
+      "status": "available",
+      "publisher": "Synergy Network",
+      "category": "Explore",
+      "sections": [
+        "Blocks",
+        "Transactions",
+        "Addresses",
+        "Contracts",
+        "Validators",
+        "Receipts",
+        "ETDAG evidence",
+        "Cross-chain evidence"
+      ],
+      "widgets": [
+        "Latest block",
+        "Recent transactions",
+        "Validator health"
+      ],
+      "manifest": {
+        "schemaVersion": 1,
+        "id": "atlas",
+        "name": "Atlas",
+        "version": "0.0.1",
+        "runtime": "portal-bundled",
+        "capabilities": [
+          "readNetwork",
+          "externalLinks"
+        ],
+        "widgets": [
+          {
+            "key": "latest-block",
+            "name": "Latest block"
+          },
+          {
+            "key": "transactions",
+            "name": "Recent transactions"
+          },
+          {
+            "key": "validators",
+            "name": "Validator health"
+          }
+        ]
+      },
+      "implementationStatus": "bundled",
+      "sourceDirectory": "atlas",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "deployments",
+      "name": "Deployments",
+      "desc": "Deploy and monitor contracts/apps",
+      "audience": "Developers",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Develop",
+      "sections": [
+        "Contracts",
+        "dApps",
+        "Deployment history",
+        "Environments",
+        "Testnet & mainnet",
+        "Manifests",
+        "Contract addresses",
+        "Verification",
+        "Upgrade & rollback history",
+        "Execution receipts",
+        "Failed deployments"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "deployments",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "diagnostics",
+      "name": "Diagnostics",
+      "desc": "Network/node/application health and troubleshooting",
+      "audience": "Advanced users",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Operate",
+      "sections": [
+        "System check",
+        "Network",
+        "RPC",
+        "Wallet",
+        "Node & validator role",
+        "NetBird",
+        "Storage",
+        "Clock synchronization",
+        "Aegis",
+        "AIVM",
+        "Jarvis investigation"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "diagnostics",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "forge-projects",
+      "name": "Forge Projects",
+      "desc": "Forge projects/workspaces from inside Portal",
+      "audience": "Developers",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Develop",
+      "sections": [
+        "Projects",
+        "Workspaces",
+        "Repositories",
+        "Builds",
+        "Environments",
+        "Collaborators",
+        "API status",
+        "Recent development activity",
+        "Project health"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "forge-projects",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "horizon",
+      "name": "Horizon",
+      "desc": "AI models, agents, workflows and AI ecosystem",
+      "audience": "Users / Developers",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "AI",
+      "sections": [
+        "Models",
+        "AI providers",
+        "Agents",
+        "Workflows",
+        "AI applications",
+        "Inference",
+        "Evaluations",
+        "Provenance",
+        "Assurance receipts",
+        "Agent management"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "horizon",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "identity",
+      "name": "Identity",
+      "desc": "SynID/UMA profile and identity management",
+      "audience": "Everyone",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Privacy & Security",
+      "sections": [
+        "SynID",
+        "UMA identity",
+        "Profiles",
+        "Aliases",
+        "Identity associations",
+        "Devices",
+        "Addresses",
+        "Credentials",
+        "Verification",
+        "Public profile",
+        "Privacy controls",
+        "Recovery relationships"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "identity",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "keystone",
+      "name": "Keystone",
+      "desc": "Governance, proposals, voting and treasury governance",
+      "audience": "Everyone",
+      "status": "available",
+      "publisher": "Synergy Network",
+      "category": "Community & Governance",
+      "sections": [
+        "Proposals",
+        "Voting",
+        "Discussions",
+        "Treasury",
+        "Governance history",
+        "Delegation",
+        "Protocol changes",
+        "Governance notifications",
+        "DAO participation"
+      ],
+      "widgets": [
+        "Active proposals",
+        "Proposals requiring your vote"
+      ],
+      "manifest": {
+        "schemaVersion": 1,
+        "id": "keystone",
+        "name": "Keystone",
+        "version": "0.0.1",
+        "runtime": "portal-bundled",
+        "capabilities": [
+          "readNetwork",
+          "requestTransactions",
+          "externalLinks"
+        ],
+        "widgets": [
+          {
+            "key": "proposals",
+            "name": "Active proposals"
+          },
+          {
+            "key": "votes",
+            "name": "Proposals requiring your vote"
+          }
+        ]
+      },
+      "implementationStatus": "bundled",
+      "sourceDirectory": "keystone",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "learn",
+      "name": "Learn",
+      "desc": "Education, tutorials, onboarding and training",
+      "audience": "Everyone",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Explore",
+      "sections": [
+        "User onboarding",
+        "Wallet safety",
+        "Synergy architecture",
+        "PQ security",
+        "SynQ",
+        "Token creation",
+        "Running a node",
+        "Cross-chain risk",
+        "AI assurance"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "learn",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "logs",
+      "name": "Logs",
+      "desc": "Centralized node/development/system log viewer",
+      "audience": "Developers / Operators",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Operate",
+      "sections": [
+        "Portal",
+        "Node",
+        "Validator role",
+        "Forge",
+        "Deployments",
+        "AIVM",
+        "RPC",
+        "Network",
+        "dApps",
+        "Search & filters",
+        "Export",
+        "Live stream",
+        "Ask Jarvis"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "logs",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "network-tools",
+      "name": "Network Tools",
+      "desc": "RPC/API/connectivity/network diagnostics",
+      "audience": "Developers / Operators",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Develop",
+      "sections": [
+        "RPC tester",
+        "API explorer",
+        "Endpoint manager",
+        "Network configuration",
+        "Peer testing",
+        "Connectivity",
+        "NetBird",
+        "Latency",
+        "Chain information",
+        "Faucet",
+        "Address utilities",
+        "Transaction decoder",
+        "Contract inspector",
+        "Signature verification",
+        "Hash & encoding utilities"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "network-tools",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "node",
+      "name": "NodeNetwork",
+      "desc": "Closed-operator workspace for Synergy validator setup, isolation checks and managed updates",
+      "audience": "Authorized genesis operators; community enrollment closed",
+      "status": "available",
+      "publisher": "Synergy Network",
+      "sections": [
+        "Overview",
+        "Node Setup",
+        "Roles",
+        "Validator",
+        "Peers & Connectivity",
+        "Storage",
+        "Security",
+        "Performance",
+        "Logs",
+        "Diagnostics",
+        "Updates",
+        "Advanced"
+      ],
+      "category": "Operate",
+      "roles": [
+        "Node",
+        "Validator"
+      ],
+      "widgets": [
+        "Node status",
+        "Validator status"
+      ],
+      "manifest": {
+        "schemaVersion": 1,
+        "id": "node",
+        "name": "NodeNetwork",
+        "version": "0.0.1",
+        "runtime": "portal-bundled",
+        "capabilities": [
+          "readNetwork"
+        ],
+        "widgets": [
+          {
+            "key": "node-status",
+            "name": "Node status"
+          },
+          {
+            "key": "validator-status",
+            "name": "Validator status"
+          }
+        ]
+      },
+      "implementationStatus": "bundled",
+      "sourceDirectory": "nodenetwork",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "relay",
+      "name": "Relay",
+      "desc": "DEX, swaps, liquidity and cross-chain liquidity",
+      "audience": "Users / DeFi",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Assets & Finance",
+      "sections": [
+        "Swap",
+        "Liquidity",
+        "Pools",
+        "Positions",
+        "Cross-chain liquidity",
+        "Market information",
+        "Transaction history",
+        "Favorites & watchlist",
+        "Routing information",
+        "Settlement status"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "relay",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "security-center",
+      "name": "Security Center",
+      "desc": "Permissions, sessions, connections and security state",
+      "audience": "Everyone",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Privacy & Security",
+      "sections": [
+        "Connected dApps",
+        "Granted capabilities",
+        "Wallet sessions",
+        "Active sessions",
+        "Device trust",
+        "Security events",
+        "Signing history",
+        "Transaction approvals",
+        "Suspicious activity",
+        "Aegis status",
+        "Recovery",
+        "Hardware security",
+        "Revocation",
+        "Permission audit"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "security-center",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "spark",
+      "name": "Spark",
+      "desc": "Token/NFT/project creation and launchpad",
+      "audience": "Creators",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Create",
+      "sections": [
+        "Create token",
+        "Create NFT",
+        "Launch project",
+        "Token templates",
+        "NFT collections",
+        "Creator tools",
+        "Community projects",
+        "Launch management",
+        "Distribution",
+        "Project analytics"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "spark",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "synq-playground",
+      "name": "SynQ Playground",
+      "desc": "Lightweight SynQ development/testing",
+      "audience": "Developers",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Develop",
+      "sections": [
+        "SynQ editor",
+        "Syntax highlighting",
+        "Compile",
+        "ABI",
+        "Bytecode",
+        "Gas estimates",
+        "AIVM dry-run",
+        "Execution trace",
+        "Examples",
+        "Contract templates",
+        "Testnet deployment"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "synq-playground",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "vault",
+      "name": "Vault",
+      "desc": "Secure files, encrypted sharing and digital signatures",
+      "audience": "Everyone",
+      "status": "coming-soon",
+      "publisher": "Synergy Network",
+      "category": "Privacy & Security",
+      "sections": [
+        "Secure documents",
+        "Encrypted storage",
+        "Digital signatures",
+        "Secure sharing",
+        "Access permissions",
+        "Integrity verification",
+        "Access receipts",
+        "Expiring shares",
+        "Protected data"
+      ],
+      "implementationStatus": "planned",
+      "sourceDirectory": "vault",
+      "release": null
+    },
+    {
+      "schemaVersion": 1,
+      "id": "wallet",
+      "name": "Wallet",
+      "desc": "Assets, accounts, transactions, identity and authorization",
+      "audience": "Everyone",
+      "status": "available",
+      "publisher": "Synergy Network",
+      "category": "Assets & Finance",
+      "sections": [
+        "Portfolio",
+        "SNRG",
+        "Tokens",
+        "NFTs",
+        "Send",
+        "Receive",
+        "Transaction history",
+        "Cross-chain assets",
+        "Connected applications",
+        "Transaction approvals",
+        "Account management",
+        "Address book",
+        "Hardware wallets",
+        "Recovery & security"
+      ],
+      "widgets": [
+        "Portfolio balance",
+        "Wallet activity"
+      ],
+      "manifest": {
+        "schemaVersion": 1,
+        "id": "wallet",
+        "name": "Wallet",
+        "version": "0.0.1",
+        "runtime": "portal-bundled",
+        "capabilities": [
+          "readWallet",
+          "requestTransactions"
+        ],
+        "widgets": [
+          {
+            "key": "balance",
+            "name": "Portfolio balance"
+          },
+          {
+            "key": "activity",
+            "name": "Wallet activity"
+          }
+        ]
+      },
+      "implementationStatus": "bundled",
+      "sourceDirectory": "wallet",
+      "release": null
+    }
+  ]
+}

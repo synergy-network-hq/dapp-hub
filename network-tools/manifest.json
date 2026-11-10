@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "network-tools",
+  "name": "Network Tools",
+  "desc": "RPC/API/connectivity/network diagnostics",
+  "audience": "Developers / Operators",
+  "status": "coming-soon",
+  "publisher": "Synergy Network",
+  "category": "Develop",
+  "sections": [
+    "RPC tester",
+    "API explorer",
+    "Endpoint manager",
+    "Network configuration",
+    "Peer testing",
+    "Connectivity",
+    "NetBird",
+    "Latency",
+    "Chain information",
+    "Faucet",
+    "Address utilities",
+    "Transaction decoder",
+    "Contract inspector",
+    "Signature verification",
+    "Hash & encoding utilities"
+  ],
+  "implementationStatus": "planned",
+  "sourceDirectory": "network-tools",
+  "release": null
+}
