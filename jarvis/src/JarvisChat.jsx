@@ -1,6 +1,7 @@
 'use client';
 
 import {useEffect, useRef, useState} from 'react';
+import {historyGeneration} from './history.js';
 import {IconSend} from '@tabler/icons-react';
 import {requestExpression, replyExpression} from './robot-state.js';
 
@@ -11,7 +12,7 @@ export function savePreference(key, value) {
   try {localStorage.setItem(key, JSON.stringify(value)); return true;} catch {return false;}
 }
 function allMessages(prefix) {
-  try {return Object.keys(localStorage).filter(key => key.startsWith(prefix)).map(key => JSON.parse(localStorage.getItem(key))).filter(m => typeof m?.id === 'string' && typeof m.user === 'string' && typeof m.text === 'string' && Number.isFinite(m.time)).sort((a, b) => a.time - b.time).slice(-100);} catch {return [];}
+  try {const generation=historyGeneration(localStorage,prefix);return Object.keys(localStorage).filter(key => key.startsWith(prefix)).map(key => JSON.parse(localStorage.getItem(key))).filter(m => (m?.historyGeneration===undefined?'legacy':m.historyGeneration)===generation && typeof m?.id === 'string' && typeof m.user === 'string' && typeof m.text === 'string' && Number.isFinite(m.time)).sort((a, b) => a.time - b.time).slice(-100);} catch {return [];}
 }
 export function activeConversation(prefix) {return readPreference(`${prefix}active-chat`, 'legacy');}
 export function startNewConversation(prefix) {
@@ -35,13 +36,16 @@ export function JarvisChat({storagePrefix = 'jarvis-message:', onSend, onStateCh
   const [messages, setMessages] = useState(() => storedMessages(storagePrefix, conversationId || activeConversation(storagePrefix)));
   const [prompt, setPrompt] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [storageError, setStorageError] = useState(false);
-  const end = useRef(null), input = useRef(null), request = useRef(null), stateCallback = useRef(onStateChange);
+  const end = useRef(null), input = useRef(null), request = useRef(null), stateCallback = useRef(onStateChange),generation=useRef(null),currentChat=useRef(chatId);
   stateCallback.current = onStateChange;
   useEffect(() => {
     const refresh = event => {
       if (event.type === 'storage' && event.key && !event.key.startsWith(storagePrefix)) return;
       if (event.type === 'jarvis-messages-changed' && event.detail !== storagePrefix) return;
       const next = conversationId || activeConversation(storagePrefix);
+      let nextGeneration;try{nextGeneration=historyGeneration(localStorage,storagePrefix);}catch{setStorageError(true);return;}
+      if(generation.current!==nextGeneration||currentChat.current!==next){request.current?.abort();request.current=null;setBusy(false);setPrompt('');stateCallback.current?.('attentive');}
+      generation.current=nextGeneration;currentChat.current=next;
       setChatId(next); setMessages(storedMessages(storagePrefix, next));
     };
     refresh({type: 'refresh'});
@@ -50,14 +54,24 @@ export function JarvisChat({storagePrefix = 'jarvis-message:', onSend, onStateCh
   }, [storagePrefix, conversationId]);
   useEffect(() => {end.current?.scrollIntoView({block: 'nearest'});}, [messages, busy, error]);
   const persist = message => {
-    setMessages(old => [...old.filter(m => m.id !== message.id), message].slice(-100));
-    if (!savePreference(storagePrefix + message.id, message)) setStorageError(true);
-    else window.dispatchEvent(new CustomEvent('jarvis-messages-changed', {detail: storagePrefix}));
+    try{
+      if(historyGeneration(localStorage,storagePrefix)!==message.historyGeneration)return false;
+      const saved=savePreference(storagePrefix+message.id,message);
+      if(historyGeneration(localStorage,storagePrefix)!==message.historyGeneration){
+        const stored=readPreference(storagePrefix+message.id,null);
+        if(stored?.historyGeneration===message.historyGeneration)localStorage.removeItem(storagePrefix+message.id);
+        return false;
+      }
+      setMessages(old=>[...old.filter(value=>value.id!==message.id),message].slice(-100));
+      if(!saved)setStorageError(true);else window.dispatchEvent(new CustomEvent('jarvis-messages-changed',{detail:storagePrefix}));
+      return true;
+    }catch{setStorageError(true);return false;}
   };
   const send = async (event, suggestion) => {
     event.preventDefault(); const text = (suggestion || prompt).trim(); if (!text || request.current || readOnly) return;
     setError(''); setPrompt('');
-    const message = {id: crypto.randomUUID(), conversationId: chatId, time: Date.now(), user: text, text: ''};
+    let currentGeneration;try{currentGeneration=historyGeneration(localStorage,storagePrefix);}catch{setError('Conversation storage is unreadable; no message was sent.');return;}
+    const message = {historyGeneration:currentGeneration,id: crypto.randomUUID(), conversationId: chatId, time: Date.now(), user: text, text: ''};
     const controller = new AbortController(); request.current = controller;
     setBusy(true); stateCallback.current?.(requestExpression(text));
     setMessages(old => [...old, message]);
@@ -73,7 +87,7 @@ export function JarvisChat({storagePrefix = 'jarvis-message:', onSend, onStateCh
       });
       if (controller.signal.aborted) return;
       if (typeof reply !== 'string' || !reply.trim()) throw new Error('No reply was returned. Please try again.');
-      persist({...message, text: reply}); stateCallback.current?.(replyExpression(text));
+      if(persist({...message,text:reply}))stateCallback.current?.(replyExpression(text));
     } catch (cause) {
       if (controller.signal.aborted) return;
       setMessages(old => old.filter(m => m.id !== message.id)); setPrompt(text);
