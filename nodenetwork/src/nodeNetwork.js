@@ -1,9 +1,3 @@
-// Public observations never grant enrollment, installation or signing authority.
-export const CANARY_PROFILE = Object.freeze({
- id:'posy-canary', name:'PoSy Canary', chainId:99999,
- rpc:'https://canary-rpc.synergy-network.io',
-});
-
 export function nodeNetworkTarget(value) {
  if(value?.root!==undefined&&value.root!=='/opt/Synergy')throw Error('Saved validator root is unsupported; recover the original configuration before selecting a target.');
  if(value?.kind==='local')return {kind:'local',root:'/opt/Synergy'};

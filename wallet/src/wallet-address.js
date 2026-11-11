@@ -1,5 +1,6 @@
 // Extracted from synergy-wallet@50d9981d588043f7db3a16dc7b5c8ca3e7db80cc
 // packages/wallet-core/src/address.js; canonical checksum/active-prefix validation only.
+import {parseProtectedWalletAddress} from './public-address/protected-address.js';
 import {bech32m} from 'bech32';
 const TARGET_ADDRESS_LEN = 41;
 const CHECKSUM_LEN = 6;
@@ -20,9 +21,9 @@ export const SYNERGY_TYPED_HASH_HEX_LENGTHS = Object.freeze({
 });
 
 const KEY_CONTROLLED_PREFIXES = new Set([
-  'synw', 'syns', 'syna', 'synz',
+  'syns', 'syna', 'synz',
   'synv1', 'synv2', 'synv3', 'synv4', 'synv5',
-  'syno', 'syny', 'synm', 'synu', 'synl',
+  'syno', 'syny',
 ]);
 
 const OBJECT_ADDRESS_PREFIXES = new Set([
@@ -39,6 +40,9 @@ const ACTIVE_ADDRESS_PREFIXES = new Set([
 ]);
 
 export function isValidSynergyAddress(address) {
+  if (typeof address === 'string' && address.startsWith('synw')) {
+    try {parseProtectedWalletAddress(address);return true;}catch{return false;}
+  }
   if (typeof address !== 'string' || address !== address.toLowerCase()) {
     return false;
   }
@@ -53,3 +57,10 @@ export function isValidSynergyAddress(address) {
   }
 }
 
+
+// Older saved contacts remain visible and removable without becoming valid new addresses.
+export function isLegacySavedWalletAddress(address) {
+  if (typeof address !== 'string' || address.length !== 41 || address !== address.toLowerCase()) return false;
+  try {const {prefix,words}=bech32m.decode(address);return ['synw','synm','synu','synl'].includes(prefix)&&words.length===30;}
+  catch {return false;}
+}

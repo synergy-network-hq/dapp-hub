@@ -8,14 +8,15 @@
     "./widget": "./src/Widget.jsx"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
     "@synergy-network/dapp-data-view": "link:../shared/data-view",
-    "qrcode": "1.5.4",
-    "bech32": "2.0.0"
+    "bech32": "2.0.0",
+    "qrcode": "1.5.4"
   },
   "peerDependencies": {
+    "@synergy-network/portal-native": "0.1.x",
     "react": ">=18",
-    "react-dom": ">=18",
-    "@synergy-network/portal-native": "0.1.x"
+    "react-dom": ">=18"
   },
   "scripts": {
     "build": "vite build --config ../build.vite.mjs"

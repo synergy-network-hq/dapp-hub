@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::{Path, Component}};
 
-fn read_public_bytes(root: &Path, relative: &str) -> Result<Vec<u8>, String> {
+fn public_path(root: &Path, relative: &str) -> Result<std::path::PathBuf, String> {
     let relative = Path::new(relative);
     if relative.components().any(|c| !matches!(c, Component::Normal(_))) {
         return Err("Invalid public installation path".into());
@@ -15,6 +15,10 @@ fn read_public_bytes(root: &Path, relative: &str) -> Result<Vec<u8>, String> {
             return Err("Installation metadata contains a symlink".into());
         }
     }
+    Ok(path)
+}
+fn read_public_bytes(root: &Path, relative: &str) -> Result<Vec<u8>, String> {
+    let path = public_path(root, relative)?;
     let metadata = fs::metadata(&path).map_err(|_| "Public installation metadata is inaccessible")?;
     if !metadata.is_file() || metadata.len() > 1_000_000 {
         return Err("Public installation metadata exceeds its limit".into());
@@ -25,6 +29,30 @@ fn read_public_bytes(root: &Path, relative: &str) -> Result<Vec<u8>, String> {
         .take(1_000_001).read_to_end(&mut bytes).map_err(|_| "Cannot read public installation metadata")?;
     if bytes.len() > 1_000_000 { return Err("Public installation metadata exceeds its limit".into()); }
     Ok(bytes)
+}
+
+fn provider_digest(root: &Path, name: &str) -> Result<String, String> {
+    use std::io::Read;
+    const MAX: u64 = 64 * 1024 * 1024;
+    let path = public_path(root, name)?;
+    let metadata = fs::metadata(&path).map_err(|_| "APQE provider library is inaccessible")?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX {
+        return Err("APQE provider library is not a bounded regular file".into());
+    }
+    let file = fs::File::open(path).map_err(|_| "APQE provider library is inaccessible")?;
+    let mut file = file.take(MAX + 1);
+    let mut hash = Sha256::new();
+    let mut total = 0;
+    let mut chunk = [0u8; 65536];
+    loop {
+        let n = file.read(&mut chunk).map_err(|_| "Cannot hash APQE provider library")?;
+        if n == 0 { break; }
+        total += n as u64;
+        if total > MAX { return Err("APQE provider library exceeds size limit".into()); }
+        hash.update(&chunk[..n]);
+    }
+    if total != metadata.len() { return Err("APQE provider library changed during inspection".into()); }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 fn read_public(root: &Path, relative: &str) -> Result<Value, String> {
@@ -49,11 +77,44 @@ pub fn review_master(root: &Path) -> Result<Value, String> {
     for name in ["bin/synergy-node", "tools/synergy_linux.py", "tools/lifecycle.py", "lib/apqe/build-report.json"] {
         if !files.contains_key(name) { return Err("Master inventory is missing a required component.".into()); }
     }
+    let apqe = &manifest["apqe_provider"];
+    let report_path = "lib/apqe/build-report.json";
+    let report_bytes = read_public_bytes(root, report_path)?;
+    let report_sha = format!("{:x}", Sha256::digest(&report_bytes));
+    if apqe["report_path"] != report_path || apqe["report_sha256"] != report_sha
+        || files.get(report_path).and_then(Value::as_str) != Some(report_sha.as_str())
+        || apqe["profile"] != "PQ-VSESSION-01-candidate-v1" || apqe["production_qualified"] != false {
+        return Err("Master APQE report bytes or engineering profile do not match the package manifest.".into());
+    }
+    let report: Value = serde_json::from_slice(&report_bytes).map_err(|_| "Invalid APQE build report")?;
+    let libraries = report["artifacts"].as_array().filter(|a| a.len()==8)
+        .ok_or("Master APQE report must declare all eight provider artifacts")?;
+    if report["validation"] != false || report["required_variant_count"] != 8
+        || report["backend_policy"]["selected_backend"] != "portable" {
+        return Err("Master APQE report does not declare the expected portable engineering provider.".into());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for library in libraries {
+        let name = library["path"].as_str().filter(|n| n.starts_with("libaegis") && n.ends_with(".so")
+            && n.bytes().all(|b|b.is_ascii_alphanumeric()||b"._-".contains(&b)))
+            .ok_or("Unsafe APQE library name")?;
+        let hash = library["sha256"].as_str().filter(|h| h.len()==64
+            && h.bytes().all(|b|b.is_ascii_digit()|| (b'a'..=b'f').contains(&b)))
+            .ok_or("Invalid APQE library digest")?;
+        let relative = format!("lib/apqe/{name}");
+        if !seen.insert(name) || files.get(&relative).and_then(Value::as_str)!=Some(hash) {
+            return Err("APQE library inventory differs between the master manifest and build report.".into());
+        }
+        if provider_digest(root, &relative)? != hash {
+            return Err("APQE provider library bytes differ from the declared digest.".into());
+        }
+    }
     let release = manifest["release_id"].as_str().filter(|id|
         (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
         .ok_or("Invalid master release identifier")?;
     Ok(json!({"release":release,"architecture":"Linux x86_64","fileCount":files.len(),
         "manifestSha256":format!("{:x}", Sha256::digest(&bytes)),
+        "apqeReportSha256":report_sha,"apqeProfile":apqe["profile"],"apqeLibraryCount":libraries.len(),
         "releaseTrustVerified":false,"installAuthorized":false}))
 }
 
@@ -101,6 +162,48 @@ pub fn status() -> Result<Value, String> {
             assert_eq!(value["controlAvailable"],false);
             assert_eq!(value["qualification"],"not-verified");
         }
+    }
+    #[test] fn master_review_refuses_altered_provider_bytes() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().canonicalize().unwrap()
+            .join(format!("nodenetwork-master-{}-{nonce}", std::process::id()));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        fs::create_dir(&base).unwrap();
+        let _cleanup = Cleanup(base.clone());
+        let root = base.join("Synergy");
+        fs::create_dir_all(root.join("lib/apqe")).unwrap();
+        let mut files = serde_json::Map::new();
+        let mut artifacts = Vec::new();
+        for n in 0..8 {
+            let name = format!("libaegis-test-{n}.so");
+            let path = format!("lib/apqe/{name}");
+            let content = format!("test provider artifact {n}");
+            let digest = format!("{:x}", Sha256::digest(content.as_bytes()));
+            fs::write(root.join(&path), content).unwrap();
+            files.insert(path, json!(digest));
+            artifacts.push(json!({"path":name,"sha256":digest}));
+        }
+        let report = json!({"artifacts":artifacts,"validation":false,"required_variant_count":8,
+            "backend_policy":{"selected_backend":"portable"}}).to_string();
+        let report_path = "lib/apqe/build-report.json";
+        fs::write(root.join(report_path), &report).unwrap();
+        let digest = format!("{:x}", Sha256::digest(report.as_bytes()));
+        files.insert(report_path.into(), json!(digest));
+        for name in ["bin/synergy-node", "tools/synergy_linux.py", "tools/lifecycle.py"] {
+            files.insert(name.into(), json!("0".repeat(64)));
+        }
+        fs::write(root.join("package.json"), json!({"format":"synergy-universal-linux-v1",
+            "architecture":"x86_64","release_id":"test-fixture","files":files,
+            "apqe_provider":{"profile":"PQ-VSESSION-01-candidate-v1","production_qualified":false,
+            "report_path":report_path,"report_sha256":digest}}).to_string()).unwrap();
+        let value = review_master(&root).unwrap();
+        assert_eq!(value["apqeLibraryCount"], 8);
+        assert_eq!(value["installAuthorized"], false);
+        fs::write(root.join("lib/apqe/libaegis-test-0.so"), b"changed").unwrap();
+        assert!(review_master(&root).unwrap_err().contains("library bytes differ"));
+        fs::write(root.join(report_path), format!("{report}\n")).unwrap();
+        assert!(review_master(&root).unwrap_err().contains("report bytes"));
     }
     #[test] fn master_review_hashes_exact_bytes_without_granting_authority() {
         // Use the operator's selected artifact when explicitly supplied.
