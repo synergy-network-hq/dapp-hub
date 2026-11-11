@@ -25,7 +25,11 @@ export async function readNodeNetwork(request, profile, signal) {
  }
  const chainReceivedAt=Date.now();
  const names=['node','posy','sync'];
- const results=await Promise.allSettled(names.map(async name=>({value:await request(`synergy_${name}Status`,[],options),receivedAt:Date.now()})));
+ const results=await Promise.allSettled(names.map(async name=>{
+  const value=await request(`synergy_${name}Status`,[],options);
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error(`${name} status response is unavailable or unsupported; no healthy or empty state is inferred.`);
+  return {value,receivedAt:Date.now()};
+ }));
  const observations={}, errors={},receivedAt={};
  results.forEach((result,index)=>{
   if(result.status==='fulfilled'){observations[names[index]]=result.value.value;receivedAt[names[index]]=result.value.receivedAt;}
