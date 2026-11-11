@@ -38,3 +38,5 @@ Native confirmation target review now includes local/remote kind and the effecti
 Bootstrap review now includes the validated node name and SHA-256 of the selected normalized operator public-key text. The fingerprint is a local comparison aid, not independent key authorization or APQE proof. No key material is journaled; native dialog/runtime acceptance remains unverified.
 
 Saved-target recovery distinguishes missing/null records from unreadable/unsupported records. The latter retain their original bytes, show an error and block Save rather than silently treating corruption as a fresh target. No controller mounts for the invalid target. Reviewed recovery and storage-failure/browser/native acceptance remain open.
+
+Local record parsing now checks raw string size before JSON parsing: Wallet contacts512Ki characters, Node public draft16Ki and saved target4Ki. Supported formats fit within these bounds. Oversized originals remain untouched and reads/writes report unavailable instead of inferring empty data. Browser storage-failure/full acceptance remains open.

@@ -2,6 +2,7 @@ import {isValidSynergyAddress} from './wallet-address.js';
 export const CONTACT_KEY='synergy-wallet-contacts:synergy-testnet-v3:1266:v1';
 export function readContacts(storage){
  const raw=storage.getItem(CONTACT_KEY);if(raw===null)return [];
+ if(raw.length>524288)throw new Error('Contacts exceed the supported storage size. The saved data has been retained.');
  let value;try{value=JSON.parse(raw);}catch{throw new Error('Contacts could not be read. The saved data has been retained.');}
  if(!Array.isArray(value)||value.length>200||value.some(item=>!item||typeof item.id!=='string'||!item.id||item.id.length>100||typeof item.name!=='string'||!item.name.trim()||item.name.length>80||!isValidSynergyAddress(item.address))||new Set(value.map(item=>item.address)).size!==value.length||new Set(value.map(item=>item.id)).size!==value.length)throw new Error('Contacts are incompatible. The saved data has been retained.');
  return value;

@@ -16,7 +16,7 @@ import {CANARY_PROFILE,readNodeNetwork,nodeNetworkTarget} from './nodeNetwork.js
 
 export function NodeNetworkApp(){
  const n=useNative(),[section,setSection]=useState('overview'),[settingsTab,setSettingsTab]=useState('Installation isolation');
- const [savedTarget]=useState(()=>{try{const raw=localStorage.getItem('portal-native-v1:nodeNetworkTarget'),saved=raw===null?null:JSON.parse(raw);return {target:saved===null?null:nodeNetworkTarget(saved),error:''};}catch{return {target:null,error:'Saved target configuration is unreadable or unsupported. Original storage is retained; saving is blocked until it is recovered through a reviewed procedure.'};}});
+ const [savedTarget]=useState(()=>{try{const raw=localStorage.getItem('portal-native-v1:nodeNetworkTarget');if(raw!==null&&raw.length>4096)throw Error('Saved target exceeds supported size.');const saved=raw===null?null:JSON.parse(raw);return {target:saved===null?null:nodeNetworkTarget(saved),error:''};}catch{return {target:null,error:'Saved target configuration is unreadable or unsupported. Original storage is retained; saving is blocked until it is recovered through a reviewed procedure.'};}});
  const [target,setTarget]=useState(savedTarget.target);
  const [kind,setKind]=useState(target?.kind||'local'),[host,setHost]=useState(target?.host||''),[port,setPort]=useState(String(target?.port||22)),[targetError,setTargetError]=useState(savedTarget.error);
  const [savedDraft]=useState(()=>{try{return {form:readProvisioningDraft(),error:''};}catch{return {form:emptyProvisioningDraft(),error:'Saved provisioning draft could not be read. Original storage is retained; saving is blocked until it is recovered.'};}});

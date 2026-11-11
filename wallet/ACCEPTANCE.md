@@ -22,3 +22,5 @@ Common boundaries: `source-records.js` rejects unsupported inventories without c
 Next sequence: validate qualified native custody and upstream session proofs with the supported phone protocol; obtain canonical transaction and broadcast/finality contracts before enabling writes; integrate supported cursor/inventory/media APIs without inventing fields; run connected and native acceptance on the migrated sources. Preserve the upstream design and the host SDK boundary.
 
 Widget response follow-up: the dashboard account read now rejects null, scalar and array response shapes like the full Wallet view. Unsupported payloads produce an unavailable state rather than an inferred empty history. Source builds do not establish connected/native acceptance.
+
+Local record parsing now checks raw string size before JSON parsing: Wallet contacts512Ki characters, Node public draft16Ki and saved target4Ki. Supported formats fit within these bounds. Oversized originals remain untouched and reads/writes report unavailable instead of inferring empty data. Browser storage-failure/full acceptance remains open.
