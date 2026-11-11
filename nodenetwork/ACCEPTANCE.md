@@ -30,3 +30,5 @@ Next sequence: obtain reviewed canonical engine provenance; compile full native 
 Permission-scope follow-up: target controller remounts when effective inspection permission changes, immediately dropping displayed prior-scope results and invalidating late response publication through its existing unmount guard. The module-level mutation latch remains across remounts. This does not cancel native transport or establish native grant-revocation acceptance.
 
 Public status response follow-up: node/PoSy/sync reads reject null/scalar/array payloads independently, preserving successful sibling observations and showing failed-source errors. An HTTP/RPC success alone does not establish a usable status object or managed-host readiness.
+
+Controller capability parsing rejects non-array/oversize tables, missing/duplicate operation entries and non-Boolean availability; blocker presentation accepts bounded plain text only. These frontend denials do not replace native validation or establish host authorization.

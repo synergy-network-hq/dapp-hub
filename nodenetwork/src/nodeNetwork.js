@@ -40,8 +40,12 @@ export async function readNodeNetwork(request, profile, signal) {
 
 export const R5_BASELINE=Object.freeze({release_id:'synergy-linux-389c509e47e55219',manifest_sha256:'43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b'});
 export function controllerOperation(target,operation){
- const entry=target?.operations?.find(row=>row.operation===operation);
- return entry?.available===true?{available:true,blocker:null}:{available:false,blocker:entry?.blocker||'Inspect an enrolled target to establish controller capabilities.'};
+ const unavailable={available:false,blocker:'Inspect an enrolled target to establish unambiguous controller capabilities.'};
+ if(!Array.isArray(target?.operations)||target.operations.length>100)return unavailable;
+ const matches=target.operations.filter(row=>row&&typeof row==='object'&&!Array.isArray(row)&&row.operation===operation);
+ if(matches.length!==1)return unavailable;
+ const entry=matches[0];
+ return entry.available===true?{available:true,blocker:null}:{available:false,blocker:typeof entry.blocker==='string'&&entry.blocker.length>0&&entry.blocker.length<=512&&!/[\u0000-\u001f\u007f]/.test(entry.blocker)?entry.blocker:unavailable.blocker};
 }
 export function installParameters(form){
  const chain_id=Number(form.chain_id);
