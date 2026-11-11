@@ -1,1 +1,2 @@
 Run `pnpm exec vite --config forge-projects/qa/vite.config.mjs` from the Hub. Port4196 serves the actual Forge UI; /relay.html serves the actual Relay public reader. Preview grants no native or Wallet authority. Use a synthetic Counter starter only. Browser local stores are outside the developer package.
+`/spark.html` serves the actual Spark component for synthetic local plans and compilation; no native or chain operations.

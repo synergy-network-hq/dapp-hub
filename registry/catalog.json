@@ -461,7 +461,7 @@
       "name": "Spark",
       "desc": "Token/NFT/project creation and launchpad",
       "audience": "Creators",
-      "status": "coming-soon",
+      "status": "available",
       "publisher": "Synergy Network",
       "category": "Create",
       "sections": [
@@ -476,9 +476,18 @@
         "Distribution",
         "Project analytics"
       ],
-      "implementationStatus": "planned",
+      "implementationStatus": "bundled",
       "sourceDirectory": "spark",
-      "release": null
+      "release": null,
+      "manifest": {
+        "schemaVersion": 1,
+        "id": "spark",
+        "name": "Spark",
+        "version": "0.0.1",
+        "runtime": "portal-bundled",
+        "capabilities": [],
+        "widgets": []
+      }
     },
     {
       "schemaVersion": 1,

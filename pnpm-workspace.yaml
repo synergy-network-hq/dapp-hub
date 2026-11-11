@@ -6,6 +6,7 @@ packages:
   - nodenetwork
   - relay
   - forge-projects
+  - spark
   - registry
   - shared/*
 overrides:

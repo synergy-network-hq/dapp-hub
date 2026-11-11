@@ -1,0 +1,38 @@
+// Launch registry prototype. Not a token factory, sale escrow or liquidity locker.
+// Stores creator-declared references only; token code/ownership is not attested.
+pragma synq ^1.0.0;
+contract SparkLaunchRegistry {
+    UInt256 public launchCount;
+    mapping(UInt256 => Address) public creators;
+    mapping(UInt256 => Address) public tokenContracts;
+    mapping(UInt256 => Bytes) public metadataHashes;
+    mapping(UInt256 => UInt256) public requestedLockDays;
+    mapping(UInt256 => Bool) public cancelled;
+    event LaunchRegistered(UInt256 indexed id, Address indexed creator, Address tokenContract);
+    event LaunchCancelled(UInt256 indexed id);
+    constructor() { launchCount = 0; }
+    function registerLaunch(Address tokenContract, Bytes metadataHash, UInt256 lockDays) public -> UInt256 {
+        require(msg.value == 0, "Registry does not accept funds");
+        require(tokenContract != Address(0), "Token reference required");
+        require(metadataHash.length == 32, "Expected 32-byte metadata digest");
+        require(lockDays >= 30, "Requested lock duration too short");
+        require(lockDays <= 3650, "Requested lock duration too long");
+        UInt256 id = launchCount + 1;
+        launchCount = id;
+        creators[id] = msg.sender;
+        tokenContracts[id] = tokenContract;
+        metadataHashes[id] = metadataHash;
+        requestedLockDays[id] = lockDays;
+        cancelled[id] = false;
+        emit LaunchRegistered(id, msg.sender, tokenContract);
+        return id;
+    }
+    function cancelLaunch(UInt256 id) public {
+        require(msg.value == 0, "Registry does not accept funds");
+        require(creators[id] != Address(0), "Unknown launch");
+        require(creators[id] == msg.sender, "Only creator may cancel");
+        require(!cancelled[id], "Already cancelled");
+        cancelled[id] = true;
+        emit LaunchCancelled(id);
+    }
+}

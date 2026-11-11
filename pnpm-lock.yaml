@@ -80,6 +80,9 @@ importers:
       '@synergy-network/dapp-relay':
         specifier: link:../relay
         version: link:../relay
+      '@synergy-network/dapp-spark':
+        specifier: link:../spark
+        version: link:../spark
       '@synergy-network/dapp-wallet':
         specifier: link:../wallet
         version: link:../wallet
@@ -93,6 +96,12 @@ importers:
   shared/data-view: {}
 
   shared/transaction-approval: {}
+
+  spark:
+    dependencies:
+      '@synergy-network/dapp-forge-projects':
+        specifier: link:../forge-projects
+        version: link:../forge-projects
 
   wallet:
     dependencies:

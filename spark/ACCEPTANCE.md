@@ -1,0 +1,9 @@
+# Spark local preparation acceptance
+
+Restores existing launch-form/panel/card styles, launch-plan validation, token constructor preparation and saved SparkLaunchToken/SparkLaunchRegistry prototypes from backup0cc2ccd6b973157ec02420520ef8128f1914fe25. Uses Forge’s explicit compiler export instead of duplicating its pinned WebAssembly. All inputs and actions here stay local. No native shell, credentials, network quote, wallet or chain authority is added.
+
+Plans retain integer supply and nwei precision. Reads validate bounded schema, IDs and draft-only execution fields; preparation checks SHA-256 content integrity. Save checks the retained raw baseline before and after asynchronous hashing, preserves corrupt/unsupported data and refuses stale writes. This is conflict detection, not atomic cross-window storage. Failed persistence does not publish a successful save.
+
+Actual-module synthetic smoke verifies large supply/nwei precision, constructor scaling, invalid key shape, stale-save refusal and original corrupt-store preservation. Real pinned compiler compiles both saved prototypes. Actual browser preview saved a synthetic large-supply plan, retained it after reload, selected it and compiled both token and registry (compiler1.0.0). Constructor review, concurrent-window UI, storage failure and export/import acceptance remain open. Synthetic preview storage is not packaged.
+
+Local AIVM execution/report import/export from the saved implementation needs a reviewed split native boundary and is not connected yet. Compiler success does not prove VM or live-chain compatibility. Factory, escrow/liquidity lock, phone signing, attestations and launch execution remain unavailable. These prototypes are not audited production contracts. Host selection stays deferred; release remains null.

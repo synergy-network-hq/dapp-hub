@@ -1,0 +1,1 @@
+import React from 'react';import {createRoot} from 'react-dom/client';import {SparkApp} from '../../spark/src/index.jsx';createRoot(document.getElementById('root')).render(<><p>Isolated source preview. Synthetic plans only; no native, Wallet or chain authority.</p><SparkApp/></>);
