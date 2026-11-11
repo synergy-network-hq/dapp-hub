@@ -1,0 +1,24 @@
+/* Saved Relay panel/button design, scoped to this app. */
+.relay-migrated{--bg:#030206;--bg-elevated:#0b0a13d1;--panel:#0e0d18c7;--panel-strong:#191528eb;--panel-glass:linear-gradient(180deg, #0f0e18db, #0a0a12e6);--border:#a397b726;--border-bright:#00ced16b;--border-cyan:#00ced16b;--text:#f7f2fc;--text-muted:#8c839d;--text-soft:#b8adca;--primary:#00ced1;--primary-bright:#2af4f7;--primary-soft:#00ced129;--primary-glow:#00ced18c;--lime:#0f6;--cyan:#00ced1;--cyan-bright:#2af4f7;--blue:#0060ff;--purple:#7d00ff;--purple-bright:#b300ff;--gold:gold;--orange:#ff9d3a;--pink:#ff5d9e;--danger:#ff5d7d;--radius-sm:.6rem;--radius-md:1rem;--radius-lg:1.4rem;--radius-pill:999px;--shadow:0 24px 70px #00000080;--shadow-primary:0 0 30px #00ced173;--shadow-purple:0 0 30px #7d00ff59;--grid-size:30px;--sidebar-w:17rem;--topbar-h:5rem;--lightningcss-light: ;--lightningcss-dark:initial;color-scheme:dark}
+.relay-migrated{--sidebar-w:0rem}
+.relay-migrated .eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--text-muted);font-size:.72rem}
+.relay-migrated .panel{background:var(--panel-glass);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);padding:1.25rem;position:relative;overflow:hidden}
+.relay-migrated .panel--accent:before{content:"";filter:blur(50px);pointer-events:none;background:#00ced124;border-radius:999px;width:12rem;height:12rem;position:absolute;inset:-25% auto auto 60%}
+.relay-migrated .panel--cyan-edge{border-left:2px solid var(--cyan)}
+.relay-migrated .panel--lime-edge{border-left:2px solid var(--lime)}
+.relay-migrated .panel--purple-edge{border-left:2px solid var(--purple)}
+.relay-migrated .panel--gold-edge{border-left:2px solid var(--gold)}
+.relay-migrated .panel-heading{justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem;display:flex}
+.relay-migrated .panel-heading h2{margin:.2rem 0 0;font-size:1.3rem}
+.relay-migrated .panel-heading-meta{color:var(--text-muted);font-size:.85rem}
+.relay-migrated .btn{border-radius:var(--radius-md);border:1px solid var(--border);min-height:2.6rem;color:var(--text);cursor:pointer;background:#ffffff0a;justify-content:center;align-items:center;gap:.5rem;padding:0 1rem;font-size:.92rem;font-weight:500;transition:background .14s,border-color .14s,transform 80ms;display:inline-flex}
+.relay-migrated .btn:hover{background:#ffffff12;border-color:#00ced173}
+.relay-migrated .btn:active{transform:scale(.98)}
+.relay-migrated .btn--primary{background:linear-gradient(135deg, var(--cyan), var(--cyan-bright));color:#002a2b;letter-spacing:.05em;text-transform:uppercase;box-shadow:var(--shadow-primary);border:0;font-weight:700}
+.relay-migrated .btn--primary:hover{background:linear-gradient(135deg,#00e1e4,#58fafd);border:0}
+.relay-migrated .btn--purple{background:linear-gradient(135deg, var(--purple), var(--purple-bright));color:#fff;letter-spacing:.05em;text-transform:uppercase;box-shadow:var(--shadow-purple);border:0;font-weight:700}
+.relay-migrated .btn--purple:hover{background:linear-gradient(135deg,#8a1aff,#c016ff);border:0}
+.relay-migrated .btn--ghost{border:1px solid var(--border);background:0 0}
+.relay-migrated .btn--cyan{color:var(--cyan);background:#00ced11f;border:1px solid #00ced166}
+.relay-migrated .btn--block{width:100%;min-height:3.4rem}
+.relay-migrated{max-width:900px;padding:24px;margin:auto}.relay-migrated form{display:grid;gap:16px}.relay-migrated label{display:grid;gap:6px}.relay-migrated select,.relay-migrated input{width:100%;max-width:100%}

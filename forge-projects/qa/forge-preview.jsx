@@ -1,0 +1,1 @@
+import {createRoot} from 'react-dom/client';import {ForgeApp} from '../src/index.jsx';createRoot(document.getElementById('root')).render(<><p>Isolated local Forge workspace and pinned compiler. No Portal/native permission, host, shell, wallet, repository or deployment authority. Synthetic starter only for verification; do not enter secrets.</p><ForgeApp/></>);

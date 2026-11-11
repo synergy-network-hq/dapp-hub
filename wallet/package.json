@@ -8,7 +8,9 @@
     "./widget": "./src/Widget.jsx"
   },
   "dependencies": {
-    "@synergy-network/dapp-transaction-approval": "link:../shared/transaction-approval"
+    "@synergy-network/dapp-data-view": "link:../shared/data-view",
+    "qrcode": "1.5.4",
+    "bech32": "2.0.0"
   },
   "peerDependencies": {
     "react": ">=18",

@@ -36,7 +36,13 @@ impl Target {
             _ => Err("Choose this machine or an enrolled remote hostname without credentials or commands.".into()),
         }
     }
-    pub fn label(&self) -> &str { self.host.as_deref().unwrap_or("This machine") }
+    pub fn label(&self) -> String {
+        if self.kind == "local" { "Local · this machine".into() }
+        else { format!("Remote · {} · SSH port {}", self.host.as_deref().unwrap_or("Unavailable"), self.port.unwrap_or(22)) }
+    }
+    pub fn journal_identity(&self) -> Value {
+        json!({"kind":self.kind,"host":self.host.as_ref().map(|h|h.to_ascii_lowercase()),"port":if self.kind=="remote" {Some(self.port.unwrap_or(22))} else {None},"root":self.root})
+    }
 }
 impl Request {
     pub fn validate(&self) -> Result<bool, String> {

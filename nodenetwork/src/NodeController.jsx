@@ -1,12 +1,12 @@
-import {useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap} from "./native-services.js";
 import {Card,Detail,ErrorMessage,useResource,Resource} from "@synergy-network/portal-native/dapp-sdk";
-import {R5_BASELINE,controllerOperation,installParameters} from './nodeNetwork.js';
+import {controllerOperation,installParameters} from './nodeNetwork.js';
 
-export function NodeController({target,permitted,tab,master,localSupported}){
+export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
- const [form,setForm]=useState({...R5_BASELINE,network_id:'',chain_id:'99999',node_name:''});
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null),[confirmation,setConfirmation]=useState('');
+ const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const key=JSON.stringify(target);
  const capabilities=useResource(()=>{
   if(!permitted)throw new Error('Allow NodeNetwork inspection in Security & permissions.');
@@ -16,16 +16,17 @@ export function NodeController({target,permitted,tab,master,localSupported}){
  async function run(operation,parameters={}){
   if(!permitted||busy)return;
   setBusy(true);setError('');setResult(null);
-  try{setResult({operation,result:await nodeNetworkController(target,operation,parameters)});if(['install','commission','register','uninstall'].includes(operation))capabilities.reload();}
-  catch(failure){setError(String(failure?.message||failure));}
-  finally{setBusy(false);}
+  const submitted={...parameters};
+  try{const response=await nodeNetworkController(target,operation,submitted);if(alive.current){setResult({operation,submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
+  catch(failure){if(alive.current)setError(String(failure?.message||failure));}
+  finally{if(alive.current)setBusy(false);}
  }
  async function bootstrap(){
   if(!permitted||busy)return;
   setBusy(true);setError('');setResult(null);
-  try{const response=await nodeNetworkBootstrap(target,operator,installParameters(form));if(response){setResult({operation:'bootstrap',result:response});capabilities.reload();}}
-  catch(failure){setError(String(failure?.message||failure));}
-  finally{setBusy(false);}
+  try{const submitted=installParameters(form);const response=await nodeNetworkBootstrap(target,operator,submitted);if(response&&alive.current){setResult({operation:'bootstrap',submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
+  catch(failure){if(alive.current)setError(String(failure?.message||failure));}
+  finally{if(alive.current)setBusy(false);}
  }
  function button(operation,label,parameters=()=>({})){
   const gate=controllerOperation(state,operation);
@@ -40,7 +41,7 @@ export function NodeController({target,permitted,tab,master,localSupported}){
   </Card>
   {tab==='Validator setup'&&<div className="native-grid">
    <Card title="Approved installation package">
-    {field('release_id','Approved release ID')}{field('manifest_sha256','Approved manifest SHA-256')}{field('network_id','Approved network incarnation')}{field('chain_id','Approved chain ID')}{field('node_name','Validator node name')}
+    <Detail data={form}/><p>Edit package and network references in the provisioning draft above. Native execution validates these references again.</p>
     {master&&<button onClick={()=>setForm({...form,release_id:master.release,manifest_sha256:master.manifestSha256})}>Use inspected manifest in preflight</button>}
     <label>Existing administrative SSH account<input aria-label="Existing administrative SSH account" value={operator} onChange={event=>setOperator(event.target.value)} autoComplete="off"/></label>
     <button disabled={!permitted||busy||!operator||(target.kind==='local'&&!localSupported)} onClick={bootstrap}>Bootstrap clean target from approved master</button>
@@ -74,6 +75,6 @@ export function NodeController({target,permitted,tab,master,localSupported}){
    <p>Uninstall removes node custody, signing-safety records and chain data. Review the host scope and preserve required material through an approved operational procedure first.</p>
   </Card>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&<Card title={`Controller result · ${result.operation}`}><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }

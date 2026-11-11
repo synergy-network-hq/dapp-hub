@@ -2,7 +2,11 @@ packages:
   - wallet
   - atlas
   - keystone
+  - learn
   - nodenetwork
+  - relay
+  - forge-projects
+  - spark
   - registry
   - shared/*
 overrides:
