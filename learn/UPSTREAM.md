@@ -1,0 +1,9 @@
+# Learn migration provenance and limits
+
+Reader/card/lesson design reuses Portal backup0cc2ccd6b973157ec02420520ef8128f1914fe25 packages/portal-integrations/src/learn.jsx and vendor/learn/{palette,styles}.css. Only relevant reader rules and palette variables are scoped under .learn-migrated; global root/body/sidebar/font imports are excluded. No image generator, replacement theme, inline remote HTML or arbitrary script execution is used.
+
+Retired broker imports/mountIntegration are not restored. Hub owns Learn source and assets; Portal adds only explicit learn public-read SDK export, fixed service endpoint/proxy and strict catalog / lessons/:slug GET paths. No supplied URL, query, auth, progress, quiz submission, rewards or signing path is accepted. Existing main-window/response-size/time/redirect boundaries remain. Learn JSON MIME is checked before parsing, in browser and native service source. Native service source syntax parsed; full native app remains engine-blocked.
+
+Live https://learn.synergy-network.io/api/catalog returned HTTP200 text/html on2026-11-11. Browser reader and Refresh displayed the exact non-JSON /api-routing guidance, with no substituted curriculum or progress. Endpoint success, live lesson reading and deployed JSON contracts are still unqualified. Fix the owner reverse-proxy/backend publication before claiming a live catalog. No remote configuration was changed.
+
+Catalog/lesson parsers bound counts, slugs/text/table/code fields, reject duplicate catalog slugs and mismatched lesson echoes, preserve missing duration as unavailable, and render content as React text only. Synthetic parser checks pass; they are not live content/assessment acceptance. All17 catalog releases remain null. The source loader/discovery state means bundled development implementation, not qualified installation.

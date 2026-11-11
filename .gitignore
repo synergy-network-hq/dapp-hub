@@ -9,3 +9,5 @@ target/
 !.env.example
 
 wallet/dist-qa/
+
+keystone/dist-qa/

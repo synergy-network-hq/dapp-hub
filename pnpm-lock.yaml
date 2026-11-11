@@ -39,6 +39,12 @@ importers:
         specifier: link:../shared/data-view
         version: link:../shared/data-view
 
+  learn:
+    dependencies:
+      '@synergy-network/dapp-data-view':
+        specifier: link:../shared/data-view
+        version: link:../shared/data-view
+
   nodenetwork:
     dependencies:
       '@synergy-network/dapp-data-view':
@@ -53,6 +59,9 @@ importers:
       '@synergy-network/dapp-keystone':
         specifier: link:../keystone
         version: link:../keystone
+      '@synergy-network/dapp-learn':
+        specifier: link:../learn
+        version: link:../learn
       '@synergy-network/dapp-nodenetwork':
         specifier: link:../nodenetwork
         version: link:../nodenetwork

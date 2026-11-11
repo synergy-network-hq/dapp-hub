@@ -14,6 +14,7 @@
     "@synergy-network/dapp-wallet": "link:../wallet",
     "@synergy-network/dapp-atlas": "link:../atlas",
     "@synergy-network/dapp-keystone": "link:../keystone",
-    "@synergy-network/dapp-nodenetwork": "link:../nodenetwork"
+    "@synergy-network/dapp-nodenetwork": "link:../nodenetwork",
+    "@synergy-network/dapp-learn": "link:../learn"
   }
 }

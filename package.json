@@ -6,12 +6,13 @@
   "scripts": {
     "validate": "python3 registry/validate.py",
     "test": "node --test registry/*.test.mjs",
-    "build:apps": "pnpm --filter \"@synergy-network/dapp-wallet\" --filter \"@synergy-network/dapp-atlas\" --filter \"@synergy-network/dapp-keystone\" --filter \"@synergy-network/dapp-nodenetwork\" run build"
+    "build:apps": "pnpm --filter \"@synergy-network/dapp-wallet\" --filter \"@synergy-network/dapp-atlas\" --filter \"@synergy-network/dapp-keystone\" --filter \"@synergy-network/dapp-learn\" --filter \"@synergy-network/dapp-nodenetwork\" run build"
   },
   "workspaces": [
     "wallet",
     "atlas",
     "keystone",
+    "learn",
     "nodenetwork",
     "registry",
     "shared/*"

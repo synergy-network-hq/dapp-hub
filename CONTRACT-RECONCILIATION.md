@@ -20,3 +20,7 @@ Node deployment, signing, package approval and host-operation controls are uncha
 ## Keystone follow-through
 
 The older Keystone migration still built guessed vote/proposal envelopes and hard-coded bond/timing/gas/signature fields. Removed that write path instead of treating legacy payloads as the newly found runtime codec. Existing indexed list/detail/filter design remains, with source-age, unavailable and finality limitations. Local text draft persistence is independent of a contract payload. Account-specific filtering uses an explicit readWallet capability/gate; requestTransactions is removed. Source scope/consent, native/browser and full governance scan acceptance remain open; no live grant or transaction occurred.
+
+## Learn source restoration
+
+Learn now has a bundled public reader with its saved card/lesson/palette design scoped to its own surface. Portal exposes only fixed catalog and validated lesson-slug GET reads; readNetwork consent remains mandatory in the production wrapper. HTML SPA fallback is rejected as non-JSON in browser/native service source. Actual catalog currently returns HTTP200 HTML; deployment remains unavailable, with retry guidance. No account, progress, quiz, reward or signing authority is added, and release stays null. See learn/UPSTREAM.md and learn/ACCEPTANCE.md.
