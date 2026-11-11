@@ -16,3 +16,7 @@ Both observation integrations first check selected RPC chain ID and remain withi
 Live checks used only public no-argument RPC reads; no account query, selected host, phone, transaction, VPN operation, key/provider or OS action. The initial readiness parser mistakenly required text incarnation; integer source/runtime values are now normalized exactly. Synthetic checks cover unsafe values, malformed scope, inconsistent readiness, mismatched nested context, private-field exclusion and cancellation. Builds and scoped native checks remain separate from full native runtime acceptance.
 
 Node deployment, signing, package approval and host-operation controls are unchanged. Wallet transfers remain disabled. These integrations do not qualify a downloadable release.
+
+## Keystone follow-through
+
+The older Keystone migration still built guessed vote/proposal envelopes and hard-coded bond/timing/gas/signature fields. Removed that write path instead of treating legacy payloads as the newly found runtime codec. Existing indexed list/detail/filter design remains, with source-age, unavailable and finality limitations. Local text draft persistence is independent of a contract payload. Account-specific filtering uses an explicit readWallet capability/gate; requestTransactions is removed. Source scope/consent, native/browser and full governance scan acceptance remain open; no live grant or transaction occurred.

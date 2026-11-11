@@ -1,0 +1,5 @@
+const key='synergy-keystone:local-proposal-draft:v1';
+const empty=()=>({version:1,title:'',summary:''});
+function validate(value){if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join(',')!=='summary,title,version'||value.version!==1||typeof value.title!=='string'||value.title.length>160||typeof value.summary!=='string'||value.summary.length>8000)throw Error('Saved local draft is unsupported; original storage retained.');return value;}
+export function readProposalDraft(){const raw=localStorage.getItem(key);if(raw!==null&&raw.length>65536)throw Error('Saved local draft exceeds supported size; original storage retained.');return {raw,value:raw===null?empty():validate(JSON.parse(raw))};}
+export function saveProposalDraft(value,baseline){const current=readProposalDraft();if(baseline===undefined||current.raw!==baseline)throw Error('The saved draft changed. Your edits are retained; review the saved copy before replacing them.');const clean=validate(value),raw=JSON.stringify(clean);localStorage.setItem(key,raw);return {raw,value:clean};}

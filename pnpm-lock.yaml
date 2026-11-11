@@ -35,9 +35,9 @@ importers:
 
   keystone:
     dependencies:
-      '@synergy-network/dapp-transaction-approval':
-        specifier: link:../shared/transaction-approval
-        version: link:../shared/transaction-approval
+      '@synergy-network/dapp-data-view':
+        specifier: link:../shared/data-view
+        version: link:../shared/data-view
 
   nodenetwork:
     dependencies:
