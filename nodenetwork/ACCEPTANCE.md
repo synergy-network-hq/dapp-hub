@@ -48,3 +48,5 @@ Target canonicalization now rejects an explicitly incompatible root and non-deci
 Public watchlist has explicit local refresh after reviewed storage recovery. Failed reads retain displayed prior identities, mark editing unavailable and never write storage. Successful refresh adopts validated saved identities and re-enables editing; each mutation still rereads current storage. Raw parse input is bounded64Ki characters. Browser/storage/concurrency acceptance remains open; no host is contacted by refresh.
 
 Enrollment presentation now reports policy not verified when no authenticated policy has been obtained. Removed static genesis-only/closed assertions from the reusable frame defaults and live workspace. Native target communityEnrollment observations remain separate; no policy/grant/readiness authority is created.
+
+Controller result presentation retains the submitted public parameter snapshot for controller/bootstrap requests, independently of later provisioning edits. This local input copy is explicitly not a signed plan, native package/key receipt or authoritative target state. Native confirmation/grants and durable-plan acceptance remain separate.

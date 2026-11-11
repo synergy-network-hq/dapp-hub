@@ -16,14 +16,15 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  async function run(operation,parameters={}){
   if(!permitted||busy)return;
   setBusy(true);setError('');setResult(null);
-  try{const response=await nodeNetworkController(target,operation,parameters);if(alive.current){setResult({operation,result:response,receivedAt:Date.now()});capabilities.reload();}}
+  const submitted={...parameters};
+  try{const response=await nodeNetworkController(target,operation,submitted);if(alive.current){setResult({operation,submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
   catch(failure){if(alive.current)setError(String(failure?.message||failure));}
   finally{if(alive.current)setBusy(false);}
  }
  async function bootstrap(){
   if(!permitted||busy)return;
   setBusy(true);setError('');setResult(null);
-  try{const response=await nodeNetworkBootstrap(target,operator,installParameters(form));if(response&&alive.current){setResult({operation:'bootstrap',result:response,receivedAt:Date.now()});capabilities.reload();}}
+  try{const submitted=installParameters(form);const response=await nodeNetworkBootstrap(target,operator,submitted);if(response&&alive.current){setResult({operation:'bootstrap',submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
   catch(failure){if(alive.current)setError(String(failure?.message||failure));}
   finally{if(alive.current)setBusy(false);}
  }
@@ -74,6 +75,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <p>Uninstall removes node custody, signing-safety records and chain data. Review the host scope and preserve required material through an approved operational procedure first.</p>
   </Card>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }
