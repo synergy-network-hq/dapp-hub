@@ -4,7 +4,7 @@ import {emptyProvisioningDraft,readProvisioningSnapshot,saveProvisioningDraft} f
 import './monitor.css';
 import {ValidatorMonitor} from './ValidatorMonitor.jsx';
 import {NodeWatchlist} from './NodeWatchlist.jsx';
-import {useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {useNative} from "@synergy-network/portal-native/dapp-sdk";
 import {atlas,rpc} from "@synergy-network/portal-native/dapp-sdk";
 import {nodeNetworkHostStatus,nodeNetworkReviewMaster} from "./native-services.js";
@@ -27,10 +27,16 @@ export function NodeNetworkApp(){
  const profile=profiles.find(p=>p.id===profileId)||CANARY_PROFILE;
  const tab=({overview:'Network',operations:'Validator setup',monitoring:'Management',logs:'Management',settings:settingsTab})[section];
  const permitted=n.permit('node','readNetwork');
+ const masterScope=useRef({permitted,generation:0});
+ if(masterScope.current.permitted!==permitted)masterScope.current={permitted,generation:masterScope.current.generation+1};
+ useEffect(()=>{setMaster(null);setMasterError('');setReviewing(false);return()=>{masterScope.current.generation++;};},[permitted]);
  async function reviewMaster(){
+  if(!permitted)return;
+  const generation=++masterScope.current.generation;
   setReviewing(true);setMasterError('');setMaster(null);
-  try{setMaster(await nodeNetworkReviewMaster());}catch(error){setMasterError(String(error?.message||error));}
-  finally{setReviewing(false);}
+  try{const value=await nodeNetworkReviewMaster();if(masterScope.current.permitted&&masterScope.current.generation===generation)setMaster(value);}
+  catch(error){if(masterScope.current.permitted&&masterScope.current.generation===generation)setMasterError(String(error?.message||error));}
+  finally{if(masterScope.current.generation===generation)setReviewing(false);}
  }
  const local=useResource(()=>{
   if(!permitted)throw new Error('Allow NodeNetwork inspection in Security & permissions.');
