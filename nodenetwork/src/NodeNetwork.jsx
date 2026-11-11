@@ -11,6 +11,7 @@ import {nodeNetworkHostStatus,nodeNetworkReviewMaster} from "./native-services.j
 import {readStore} from "@synergy-network/portal-native/dapp-sdk";
 import {Card,Detail,ErrorMessage,Resource,useResource} from "@synergy-network/portal-native/dapp-sdk";
 import {NodeController} from './NodeController.jsx';
+import {RequestHistory} from './RequestHistory.jsx';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
 import {CANARY_PROFILE,readNodeNetwork,nodeNetworkTarget} from './nodeNetwork.js';
 
@@ -60,6 +61,7 @@ export function NodeNetworkApp(){
    <Card title="Audit status"><p>A host isolation audit is required before installation and after every update. Inspect the target inventory and conformance results below; a configured target is not automatically marked compliant.</p><p>Removing NodeNetwork from Portal does not uninstall a validator or delete chain state, keys or signing journals.</p></Card>
   </div>}
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>No target controller will be contacted until you explicitly save a target in Settings. Public network observations do not select or authenticate a host.</p><button onClick={()=>setSection('settings')}>Review target settings</button></Card>}
+  {tab==='Management'&&<RequestHistory permitted={permitted}/>}
   {target&&tab&&tab!=='Network'&&<NodeController key={JSON.stringify(target)} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true}/>}
  </NodeNetworkPanelFrame>;
 }

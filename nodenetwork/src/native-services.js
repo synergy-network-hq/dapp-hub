@@ -1,4 +1,14 @@
 import {isTauri,invoke} from "@tauri-apps/api/core";
+export async function nodeNetworkRequests(){
+ if(!isTauri())throw Error('Local request history requires the native Portal app. No native history has been read.');
+ const value=await invoke('portal_nodenetwork_requests');
+ const pin=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+ const states=new Set(['dispatch_intent','uncertain','response_received']);
+ const operations=new Set(['bootstrap','install','commission','register','start','stop','restart','upgrade','uninstall']);
+ const time=value=>Number.isSafeInteger(value)&&value>=0&&value<=8640000000000000;
+ if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
+ return value;
+}
 // First-party native extension only; remote community HTML has no Tauri bridge.
 export async function nodeNetworkHostStatus(){if(!isTauri())throw new Error('Open the native Portal app to inspect this machine.');return invoke('portal_nodenetwork_status');}
 export async function nodeNetworkReviewMaster(){if(!isTauri())throw new Error('Open the native Portal app to inspect the node master.');return invoke('portal_nodenetwork_review_master');}

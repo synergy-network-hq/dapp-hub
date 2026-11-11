@@ -3,3 +3,4 @@ pub mod node_network;
 pub mod node_controller;
 pub mod node_bootstrap;
 pub mod commands;
+pub mod request_journal;

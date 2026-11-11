@@ -37,6 +37,9 @@ impl Target {
         }
     }
     pub fn label(&self) -> &str { self.host.as_deref().unwrap_or("This machine") }
+    pub fn journal_identity(&self) -> Value {
+        json!({"kind":self.kind,"host":self.host.as_ref().map(|h|h.to_ascii_lowercase()),"port":if self.kind=="remote" {Some(self.port.unwrap_or(22))} else {None},"root":self.root})
+    }
 }
 impl Request {
     pub fn validate(&self) -> Result<bool, String> {
