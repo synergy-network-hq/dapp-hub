@@ -51,7 +51,7 @@ export function NodeNetworkPanelTrendGrid({children,label='Live metric trends'})
  return <section className="v18-overview-trend-grid" aria-label={label}>{children}</section>;
 }
 
-export function NodeNetworkPanelFrame({section='overview',onSectionChange,title,subtitle,statusLabel='Not inspected',statusTone='gray',onRefresh,refreshing=false,logoSrc='/assets/nodenetwork.png',nodeLabel,version,footerNote='Genesis operators · Community enrollment closed',headerActions,statusItems=[],metrics=[],children}) {
+export function NodeNetworkPanelFrame({section='overview',onSectionChange,title,subtitle,statusLabel='Not inspected',statusTone='gray',onRefresh,refreshing=false,logoSrc='/assets/nodenetwork.png',nodeLabel,version,footerNote='Enrollment requires verified policy and host authorization',headerActions,statusItems=[],metrics=[],children}) {
  const active=NODE_NETWORK_SECTIONS.find(item=>item.id===section)||NODE_NETWORK_SECTIONS[0];
  const tone=['green','blue','purple','yellow','red','gray'].includes(statusTone)?statusTone:'gray';
  return <div className="nodenetwork-panel" aria-label="NodeNetwork operator workspace">
