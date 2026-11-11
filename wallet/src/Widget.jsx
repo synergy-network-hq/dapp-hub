@@ -8,7 +8,7 @@ export function DappWidget({widgetKey:key}){
  const value=useResource(async signal=>{
   if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');
   if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');
-  const data=await atlas(`address/${encodeURIComponent(connection.address)}`,{signal});return {data,receivedAt:Date.now()};
+  const data=await atlas(`address/${encodeURIComponent(connection.address)}`,{signal});if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Account response is unavailable or unsupported; no empty history or zero balance is inferred.');return {data,receivedAt:Date.now()};
  },JSON.stringify([connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,ready]));
  if(!permitted)return <p>Allow Wallet account access in Security.</p>;
  if(!connection)return <p>Connect Synergy Wallet to see your account.</p>;
