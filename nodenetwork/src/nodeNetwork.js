@@ -5,6 +5,7 @@ export const CANARY_PROFILE = Object.freeze({
 });
 
 export function nodeNetworkTarget(value) {
+ if(value?.root!==undefined&&value.root!=='/opt/Synergy')throw Error('Saved validator root is unsupported; recover the original configuration before selecting a target.');
  if(value?.kind==='local')return {kind:'local',root:'/opt/Synergy'};
  if(value?.kind!=='remote' || typeof value.host!=='string')throw new Error('Choose this machine or a remote host.');
  const host=value.host.trim().toLowerCase();
@@ -12,7 +13,10 @@ export function nodeNetworkTarget(value) {
  const hostname=host.length<=253 && host.split('.').every(label=>/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
  if(!host || !(ipv6||hostname))throw new Error('Enter a hostname or IP address without credentials, paths or commands.');
  try {new URL(`https://${host}`);}catch{throw new Error('Invalid remote hostname or IP address.');}
- const port=value.port==null||value.port===''?22:Number(value.port);
+ const rawPort=value.port;
+ if(rawPort!=null&&typeof rawPort!=='string'&&typeof rawPort!=='number')throw Error('SSH port must be a decimal number.');
+ if(typeof rawPort==='string'&&rawPort!==''&&!/^[0-9]{1,5}$/.test(rawPort))throw Error('SSH port must contain decimal digits only.');
+ const port=rawPort==null||rawPort===''?22:Number(rawPort);
  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Enter an SSH port between 1 and 65535.');
  return {kind:'remote',host,...(port!==22?{port}:{}),root:'/opt/Synergy'};
 }
