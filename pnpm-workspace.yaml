@@ -4,6 +4,8 @@ packages:
   - keystone
   - learn
   - nodenetwork
+  - relay
+  - forge-projects
   - registry
   - shared/*
 overrides:

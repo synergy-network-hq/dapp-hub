@@ -1,0 +1,30 @@
+/* Saved Forge layout/editor styling, scoped to this app. */
+.forge-integration *{box-sizing:border-box}
+.forge-integration{margin:0;background:#020907;color:#e8f6ed;font:14px Inter,system-ui,sans-serif}
+.forge-integration{padding:24px;max-width:1700px;margin:auto}
+.forge-integration .integration-banner{padding:10px 14px;border:1px solid #414964;background:#182039;color:#d5c4ff;border-radius:10px;margin-bottom:24px}
+.forge-integration header{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.forge-integration h1{font-size:40px;margin:10px 0}
+.forge-integration h2{font-size:17px}
+.forge-integration .forge-eyebrow{text-transform:uppercase;letter-spacing:.16em;color:#80f3b6}
+.forge-integration p{color:#9ab8a7;line-height:1.6}
+.forge-integration button,.forge-integration input,.forge-integration select{font:inherit;padding:10px 12px;border:1px solid #203c31;border-radius:8px;background:#0a1713;color:inherit}
+.forge-integration button{cursor:pointer}
+.forge-integration button:disabled{opacity:.4;cursor:default}
+.forge-integration button:hover:not(:disabled),.forge-integration button[aria-current=page]{border-color:#50ec99;background:#123c29}
+.forge-integration label{display:grid;gap:6px}
+.forge-integration form,.forge-integration .forge-actions,.forge-integration .forge-toolbar{display:flex;align-items:end;gap:12px;flex-wrap:wrap}
+.forge-integration .forge-actions{margin:24px 0}
+.forge-integration .forge-toolbar{align-items:center;padding:14px;background:#0a1713;border:1px solid #203c31;border-radius:12px}
+.forge-integration .forge-panel{padding:18px;border:1px solid #203c31;background:#07110e;border-radius:12px;margin:18px 0}
+.forge-integration .forge-workspace{display:grid;grid-template-columns:290px 1fr;gap:18px}
+.forge-integration .forge-workspace aside>button{display:block;width:100%;text-align:left;overflow-wrap:anywhere;margin-bottom:8px}
+.forge-integration .forge-workspace aside form{margin-top:20px}
+.forge-integration .forge-editor{min-width:0}
+.forge-integration .forge-editor textarea{width:100%;min-height:540px;resize:vertical;background:#030b08;color:#d9fbe4;padding:20px;border:1px solid #203c31;border-radius:12px;font:14px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:4;white-space:pre;overflow:auto}
+.forge-integration pre{white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,monospace}
+.forge-integration article{border-top:1px solid #203c31;padding:14px 0}
+.forge-integration [role=alert]{color:#ffb4bf}
+.forge-integration{padding:14px}
+.forge-integration .forge-workspace{grid-template-columns:1fr}
+.forge-integration .forge-editor textarea{min-height:360px}

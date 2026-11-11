@@ -4,7 +4,7 @@
   "name": "Forge Projects",
   "desc": "Forge projects/workspaces from inside Portal",
   "audience": "Developers",
-  "status": "coming-soon",
+  "status": "available",
   "publisher": "Synergy Network",
   "category": "Develop",
   "sections": [
@@ -18,7 +18,16 @@
     "Recent development activity",
     "Project health"
   ],
-  "implementationStatus": "planned",
+  "implementationStatus": "bundled",
   "sourceDirectory": "forge-projects",
-  "release": null
+  "release": null,
+  "manifest": {
+    "schemaVersion": 1,
+    "id": "forge-projects",
+    "name": "Forge Projects",
+    "version": "0.0.1",
+    "runtime": "portal-bundled",
+    "capabilities": [],
+    "widgets": []
+  }
 }

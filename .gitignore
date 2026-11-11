@@ -11,3 +11,5 @@ target/
 wallet/dist-qa/
 
 keystone/dist-qa/
+
+forge-projects/dist-qa/
