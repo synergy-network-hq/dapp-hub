@@ -1,0 +1,18 @@
+# Portal contract reconciliation
+
+2026-11-11. Source reference: testnet-v3 `05610db7eb1eaa582caec0adf0c7967c820d5e34`, especially runtime/src/rpc/rpc_server.rs and runtime/src/gas/fee_market.rs. This is a compatibility decision record, not protocol or release qualification.
+
+| Requirement / source | Compatible integration | Remaining gate |
+| --- | --- | --- |
+| Wallet fee information / synergy_getFeeMarket, version1 | Read-only Send-section observation using existing Resource/Detail/SourceAge design. Exact unsigned values, explicit endpoint-reported context, no transaction preparation. Narrow native read allowlist entry. | Live gateway returned RPC-32001. Keep unavailable; do not infer zero, quote a total fee, sign or submit. Version changes require review. |
+| Node monitoring / synergy_getReadiness | Public Network-section report, separately labelled from managed-host readiness. Validate duplicated chain context, Boolean/status consistency and numeric fields; project only safe display fields. Narrow native read allowlist entry. | Live public response validated with integer chain_incarnation5 and reported healthy/ready at height0. This does not prove current chain head, sync safety, host identity, admission, duties or participation. |
+| Transaction codec/admission / runtime transaction.rs, ETDAG admission/submission methods | Source provenance and future adapter boundary identified. No guessed envelope or signing transport enabled. | Supported phone/APQE codec and session/result proof, deployed admission preparation, nonce/fee simulation, broadcast ownership and finality reconciliation must agree. |
+| Website mobileWalletLink transport / sessions/:id/requests | Existing request transport is useful owner reference. Portal keeps opaque native credential custody and current read-only grants. | Transport alone does not qualify operation payloads, identity ownership, expiry, replay or remote cleanup acknowledgement. No scope expansion. |
+| Older Node control panel Innernet onboarding | Source workflows and coordinator-owned allocation are retained as reference, not copied into host execution. | Reconcile NetBird-oriented Portal spec, one-time custody, signed plans/jobs and /opt/Synergy-only isolation with Innernet, receipt scheme and legacy paths. No renderer token/admin key or implicit local target. |
+| Reconciliation branch node-platform/tools/bootstrap shell scripts | Found and documented as candidate owner source. | Not the required tools/linux-node/bootstrap.py or a qualified replacement. Native build gate remains. |
+
+Both observation integrations first check selected RPC chain ID and remain within their existing app read gates. Requests carry cancellation; late aborted results are rejected. Missing/unsupported/mismatched responses are errors, never empty/healthy/zero defaults. Numeric fields reject unsafe JavaScript numbers; exact decimal strings remain strings. Server-reported chain/genesis/incarnation metadata is not independent identity proof.
+
+Live checks used only public no-argument RPC reads; no account query, selected host, phone, transaction, VPN operation, key/provider or OS action. The initial readiness parser mistakenly required text incarnation; integer source/runtime values are now normalized exactly. Synthetic checks cover unsafe values, malformed scope, inconsistent readiness, mismatched nested context, private-field exclusion and cancellation. Builds and scoped native checks remain separate from full native runtime acceptance.
+
+Node deployment, signing, package approval and host-operation controls are unchanged. Wallet transfers remain disabled. These integrations do not qualify a downloadable release.

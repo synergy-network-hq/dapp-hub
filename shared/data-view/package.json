@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/model.js",
-    "./source-age": "./src/SourceAge.jsx"
+    "./source-age": "./src/SourceAge.jsx",
+    "./protocol-observations": "./src/protocol-observations.js"
   },
   "peerDependencies": {
     "react": ">=18"
