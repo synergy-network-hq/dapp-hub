@@ -25,7 +25,7 @@ export function languageForPath(path: string): ForgeFileLanguage {
 
 export function normalizeProjectPath(path: string) {
   return path
-    .replaceAll("\\", "/")
+    .replace(/\\/g, "/")
     .replace(/^\/+/, "")
     .replace(/\/+/g, "/")
     .split("/")
@@ -237,7 +237,7 @@ export async function projectFromZip(
     if(importedBytes+declaredSize>25000000)throw Error("ZIP declares more than25 MB of source data.");
     const content=await new Promise<Uint8Array>((resolve,reject)=>{
       const chunks:Uint8Array[]=[];let length=0,failed=false;
-      const stream=item.internalStream("uint8array");
+      const stream=(item as unknown as {internalStream(type:"uint8array"):JSZip.JSZipStreamHelper<Uint8Array>}).internalStream("uint8array");
       stream.on("data",chunk=>{if(failed)return;if(length+chunk.byteLength>declaredSize||length+chunk.byteLength>1000000){failed=true;stream.pause();reject(Error("ZIP entry exceeds its bounded declared size."));return;}length+=chunk.byteLength;chunks.push(chunk);});
       stream.on("error",error=>{failed=true;reject(error);});
       stream.on("end",()=>{if(failed)return;if(length!==declaredSize){reject(Error("ZIP entry size does not match its declaration."));return;}const data=new Uint8Array(length);let offset=0;for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.byteLength;}resolve(data);});

@@ -69,7 +69,7 @@ function generatedArtifactFiles(
   sourcePath: string,
   artifacts: SynqArtifacts,
 ): ForgeWorkspaceFile[] {
-  const stem = sourcePath.split("/").at(-1)?.replace(/\.synq$/, "") || "contract";
+  const stem = sourcePath.split("/").slice(-1)[0]?.replace(/\.synq$/, "") || "contract";
   return [
     makeWorkspaceFile(
       `artifacts/${stem}.abi.json`,
@@ -321,7 +321,7 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
       if (!current) return current;
       const tabs = current.openTabs.filter((tab) => tab !== path);
       const activeFile =
-        current.activeFile === path ? tabs.at(-1) || null : current.activeFile;
+        current.activeFile === path ? tabs.slice(-1)[0] || null : current.activeFile;
       return { ...current, openTabs: tabs, activeFile, updatedAt: now() };
     });
   }, []);
@@ -396,7 +396,7 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
         ...current,
         files,
         openTabs: tabs,
-        activeFile: current.activeFile === path ? tabs.at(-1) || null : current.activeFile,
+        activeFile: current.activeFile === path ? tabs.slice(-1)[0] || null : current.activeFile,
         updatedAt: now(),
       };
     });
