@@ -1,4 +1,4 @@
-@font-face{font-family:"Sora Local";src:url("/assets/nodenetwork-sora.ttf") format("truetype");font-weight:100 900;font-style:normal;font-display:swap;}
+@font-face{font-family:"Sora Local";src:url("../assets/nodenetwork-sora.ttf") format("truetype");font-weight:100 900;font-style:normal;font-display:swap;}
 /* Selected presentation from original src/styles/controlPanelV18.css.
    Scoped to the Portal dApp; no legacy runtime, global theme or routing imported. */
 .nodenetwork-panel {
