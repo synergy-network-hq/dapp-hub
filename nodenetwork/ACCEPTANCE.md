@@ -34,3 +34,5 @@ Public status response follow-up: node/PoSy/sync reads reject null/scalar/array 
 Controller capability parsing rejects non-array/oversize tables, missing/duplicate operation entries and non-Boolean availability; blocker presentation accepts bounded plain text only. These frontend denials do not replace native validation or establish host authorization.
 
 Native confirmation target review now includes local/remote kind and the effective SSH port (including default22) for controller and bootstrap prompts. This distinguishes configured connections but is not host identity proof or a signed plan. Actual controller compilation is checked in isolation; full command/dialog runtime remains engine-blocked.
+
+Bootstrap review now includes the validated node name and SHA-256 of the selected normalized operator public-key text. The fingerprint is a local comparison aid, not independent key authorization or APQE proof. No key material is journaled; native dialog/runtime acceptance remains unverified.

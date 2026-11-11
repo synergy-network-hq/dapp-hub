@@ -1,4 +1,5 @@
 use serde_json::Value;
+use sha2::{Digest,Sha256};
 use tauri::Manager;
 use crate::{node_network,node_controller,node_bootstrap,request_journal};
 #[tauri::command]
@@ -56,7 +57,7 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
   node_bootstrap::prepare(&root,&key,&fields).map(Some)
  }).await.map_err(|_|"Master bootstrap inspection did not finish.")??;
  let Some(prepared)=prepared else{return Ok(None)};
- let message=format!("Target: {}\nAdministrative account: {}\nRoot: /opt/Synergy\nRelease: {}\nManifest SHA-256: {}\nEmbedded bootstrap SHA-256: {}\nNetwork incarnation: {}\nChain: {}\n\nThis stages the verified software and installs a restricted host controller account, rooted SSH/sudo definitions and OS registration links. The target must be clean. No community enrollment, custody creation, consensus membership or activation is authorized. No passwords are requested or stored by Portal.",target.label(),operator,prepared.release,prepared.manifest_sha256,node_bootstrap::script_pin(),parameters["network_id"],parameters["chain_id"]);
+ let message=format!("Target: {}\nAdministrative account: {}\nRoot: /opt/Synergy\nRelease: {}\nManifest SHA-256: {}\nEmbedded bootstrap SHA-256: {}\nNetwork incarnation: {}\nChain: {}\nNode name: {}\nOperator public-key SHA-256: {}\n\nThis stages the verified software and installs a restricted host controller account, rooted SSH/sudo definitions and OS registration links. The target must be clean. No community enrollment, custody creation, consensus membership or activation is authorized. No passwords are requested or stored by Portal.",target.label(),operator,prepared.release,prepared.manifest_sha256,node_bootstrap::script_pin(),parameters["network_id"],parameters["chain_id"],parameters["node_name"],format!("{:x}",Sha256::digest(prepared.public_key.as_bytes())));
  let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title("Authorize NodeNetwork target bootstrap")
   .buttons(MessageDialogButtons::OkCancelCustom("Bootstrap selected target once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Bootstrap confirmation did not finish.")?;
  if !confirmed{return Err("Operator canceled; no bootstrap was sent.".into());}
