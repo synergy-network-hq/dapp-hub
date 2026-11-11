@@ -4,10 +4,10 @@ import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {readAccountHistory} from './account-history.js';
 import {WalletActivity} from './WalletActivity.jsx';
 import {WalletTransactionDetails} from './WalletTransactionDetails.jsx';
-export function WalletHistory({account,endpoint,recent,recentAt}){
+export function WalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas=atlas}){
  const [epoch,setEpoch]=useState(0),[pages,setPages]=useState([]),[position,setPosition]=useState(0),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const request=useRef({generation:0,controller:null,pending:false});
- async function load(cursor,previous,signal){if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet history chain1266.');return readAccountHistory(atlas,account,{cursor,previous,signal});}
+ async function load(cursor,previous,signal){if(chainIdNumber(await readRpc('synergy_getChainId',[],{endpoint:endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet history chain1266.');return readAccountHistory(readAtlas,account,{cursor,previous,signal});}
  const first=useResource(signal=>load(null,null,signal),`account-history:${epoch}`);
  useEffect(()=>{if(first.data){setPages([{...first.data,ordinal:1}]);setPosition(0);setSelected(null);}},[first.data]);
  useEffect(()=>()=>{request.current.generation++;request.current.controller?.abort();},[]);
