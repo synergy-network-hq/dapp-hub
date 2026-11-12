@@ -97,7 +97,7 @@ pub async fn execute(target:Target,operator:String,parameters:Value,prepared:Pre
 async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
     target.validate()?;validate_operator(&operator)?;
     let _guard=node_controller::SERIAL.lock().await;
-    if target.kind=="remote" {node_controller::close_connection(&target,control_dir).await;}
+    if target.kind=="remote" {node_controller::close_connection(&target,control_dir,&operator).await;}
     authenticate_release(&prepared.release,&prepared.manifest_sha256)?;
     let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP);
     let mut command=if target.kind=="local"{
@@ -126,7 +126,7 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
     let mut upload=tokio::spawn(transfer);
     let result=tokio::time::timeout(Duration::from_secs(300),async {let bytes=response.await?;(&mut upload).await.map_err(|_|"Master upload task did not finish.")??;let status=child.wait().await.map_err(|_|"Bootstrap did not finish.")?;if !status.success(){return Err("Bootstrap transport failed; verify SSH host identity, agent authentication and restricted sudo permissions.");}let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid bootstrap response.")?;if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported bootstrap response.");}Ok(reply)}).await;
     upload.abort();
-    node_controller::close_connection(&target,control_dir).await;
+    node_controller::close_connection(&target,control_dir,&operator).await;
     match result{Ok(out)=>out.map_err(String::from),Err(_)=>Err("Bootstrap timed out. Inspect target state before retrying; no automatic retry occurred.".into())}
 }
 

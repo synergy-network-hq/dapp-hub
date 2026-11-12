@@ -74,9 +74,23 @@ pub fn review_master(root: &Path) -> Result<Value, String> {
     }
     let files = manifest["files"].as_object().filter(|m| (1..=4096).contains(&m.len()))
         .ok_or("Missing master file inventory")?;
-    for name in ["bin/synergy-node", "tools/synergy_linux.py", "tools/lifecycle.py", "lib/apqe/build-report.json"] {
+    for name in ["bin/synergy-node", "tools/synergy_linux.py", "tools/lifecycle.py", "lib/apqe/build-report.json", "roles/roles.json"] {
         if !files.contains_key(name) { return Err("Master inventory is missing a required component.".into()); }
     }
+    let roles_bytes = read_public_bytes(root, "roles/roles.json")?;
+    let roles_sha = format!("{:x}", Sha256::digest(&roles_bytes));
+    if files["roles/roles.json"] != roles_sha { return Err("Master role catalog digest differs.".into()); }
+    let catalog: Value = serde_json::from_slice(&roles_bytes).map_err(|_| "Invalid master role catalog")?;
+    let roles = catalog["roles"].as_array().filter(|roles| (1..=64).contains(&roles.len()))
+        .ok_or("Invalid master role count")?;
+    let mut roles_seen = std::collections::BTreeSet::new();
+    for role in roles {
+        let id = role.as_str().filter(|id| !id.is_empty() && id.len()<=64
+            && id.as_bytes()[0].is_ascii_lowercase() && id.bytes().all(|c|c.is_ascii_lowercase()||c.is_ascii_digit()||b"_-".contains(&c)))
+            .ok_or("Invalid master role ID")?;
+        if !roles_seen.insert(id) { return Err("Duplicate master role ID.".into()); }
+    }
+    if !roles_seen.contains("validator") { return Err("Master does not declare the validator role.".into()); }
     let apqe = &manifest["apqe_provider"];
     let report_path = "lib/apqe/build-report.json";
     let report_bytes = read_public_bytes(root, report_path)?;
@@ -114,7 +128,7 @@ pub fn review_master(root: &Path) -> Result<Value, String> {
         .ok_or("Invalid master release identifier")?;
     Ok(json!({"release":release,"architecture":"Linux x86_64","fileCount":files.len(),
         "manifestSha256":format!("{:x}", Sha256::digest(&bytes)),
-        "apqeReportSha256":report_sha,"apqeProfile":apqe["profile"],"apqeLibraryCount":libraries.len(),
+        "apqeReportSha256":report_sha,"apqeProfile":apqe["profile"],"apqeLibraryCount":libraries.len(),"roleCatalog":roles,
         "releaseTrustVerified":false,"installAuthorized":false}))
 }
 
@@ -190,6 +204,10 @@ pub fn status() -> Result<Value, String> {
         fs::write(root.join(report_path), &report).unwrap();
         let digest = format!("{:x}", Sha256::digest(report.as_bytes()));
         files.insert(report_path.into(), json!(digest));
+        fs::create_dir(root.join("roles")).unwrap();
+        let roles = br#"{"roles":["validator","archive"],"implemented":["validator"]}"#;
+        fs::write(root.join("roles/roles.json"), roles).unwrap();
+        files.insert("roles/roles.json".into(), json!(format!("{:x}", Sha256::digest(roles))));
         for name in ["bin/synergy-node", "tools/synergy_linux.py", "tools/lifecycle.py"] {
             files.insert(name.into(), json!("0".repeat(64)));
         }
@@ -199,7 +217,11 @@ pub fn status() -> Result<Value, String> {
             "report_path":report_path,"report_sha256":digest}}).to_string()).unwrap();
         let value = review_master(&root).unwrap();
         assert_eq!(value["apqeLibraryCount"], 8);
+        assert_eq!(value["roleCatalog"], json!(["validator","archive"]));
         assert_eq!(value["installAuthorized"], false);
+        fs::write(root.join("roles/roles.json"), b"{}").unwrap();
+        assert!(review_master(&root).unwrap_err().contains("role catalog digest differs"));
+        fs::write(root.join("roles/roles.json"), roles).unwrap();
         fs::write(root.join("lib/apqe/libaegis-test-0.so"), b"changed").unwrap();
         assert!(review_master(&root).unwrap_err().contains("library bytes differ"));
         fs::write(root.join(report_path), format!("{report}\n")).unwrap();

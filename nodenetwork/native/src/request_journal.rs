@@ -94,11 +94,12 @@ fn load(path: &Path) -> Result<Vec<Record>, String> {
         file.take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|_| failure())?;
         if bytes.len() as u64 > MAX_BYTES { return Err(failure()); }
         let record: Record = serde_json::from_slice(&bytes).map_err(|_| failure())?;
-        let operation = matches!(record.operation.as_str(), "bootstrap" | "install" | "commission" | "register" | "start" | "stop" | "restart" | "upgrade" | "uninstall");
+        let operation = matches!(record.operation.as_str(), "bootstrap" | "install" | "identity_generate" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall");
         let state = match record.state.as_str() {
             "dispatch_intent" => record.observed_at_ms.is_none() && record.response_ok.is_none(),
             "uncertain" => record.observed_at_ms.is_some() && record.response_ok.is_none(),
             "response_received" => record.observed_at_ms.is_some() && record.response_ok.is_some(),
+            "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"formation_prepare"|"genesis_stage"|"genesis_bind"),
             _ => false,
         };
         if record.version != 1 || name != format!("{}.json", record.id) || !pin(&record.id) || !pin(&record.target_digest) || !pin(&record.request_digest) || !operation || !state { return Err(failure()); }
@@ -129,12 +130,12 @@ impl Dispatch {
     /// Caller must validate the typed target/request and obtain native consent first.
     pub fn begin(base: &Path, target: &Value, operation: &str, request: &Value) -> Result<Self, String> {
         let _serial = SERIAL.lock().map_err(|_| failure())?;
-        if !matches!(operation, "bootstrap" | "install" | "commission" | "register" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
+        if !matches!(operation, "bootstrap" | "install" | "identity_generate" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;
         let target_digest = digest(target);
-        if records.iter().any(|r| r.target_digest == target_digest && r.state != "response_received") {
+        if records.iter().any(|r| r.target_digest == target_digest && matches!(r.state.as_str(),"dispatch_intent"|"uncertain")) {
             return Err("An earlier local dispatch for this target has an uncertain outcome. Reconcile the target through a qualified procedure before another mutation; Portal will not replay or clear it automatically.".into());
         }
         if records.len() >= MAX_RECORDS { return Err("Local request journal is full. Records are retained; another mutation requires an approved retention procedure.".into()); }
@@ -150,12 +151,32 @@ impl Dispatch {
         let _serial = SERIAL.lock().map_err(|_| failure())?;
         let _writer = WriterLock::acquire(&self.directory)?;
         let records = load(&self.directory)?;
-        if !records.iter().any(|r| r.id == self.record.id && r.state == "dispatch_intent") { return Err(failure()); }
+        let recorded=records.iter().find(|r| r.id==self.record.id).ok_or_else(failure)?;
+        // A read from another Portal process may already have confirmed durable
+        // completion while the original transport response was still in flight.
+        if recorded.state=="verified_target_outcome" {return Ok(());}
+        if recorded.state!="dispatch_intent" {return Err(failure());}
         self.record.observed_at_ms = Some(now()?);
         self.record.response_ok = result.as_ref().ok().filter(|v| v["version"] == 1).and_then(|v| v["ok"].as_bool());
         self.record.state = if self.record.response_ok.is_some() { "response_received" } else { "uncertain" }.into();
         write(&self.directory, &self.record, false)
     }
+}
+
+/// No retries, clearing, or inferred failure. A target status can reconcile
+/// only the matching original formation preparation, Genesis staging or Genesis bind.
+pub(crate) fn reconcile_verified(base:&Path,target:&Value,operation:&str,request_digest:&str)->Result<bool,String>{
+    if !matches!(operation,"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(request_digest){return Err(failure());}
+    let _serial=SERIAL.lock().map_err(|_|failure())?;
+    let Some(directory)=directory(base,false)? else{return Ok(false);};
+    let _writer=WriterLock::acquire(&directory)?;
+    let target_digest=digest(target);
+    let Some(mut record)=load(&directory)?.into_iter().find(|r|r.target_digest==target_digest&&r.operation==operation&&r.request_digest==request_digest&&matches!(r.state.as_str(),"dispatch_intent"|"uncertain"))else{return Ok(false);};
+    record.state="verified_target_outcome".into();
+    record.observed_at_ms=Some(now()?);
+    record.response_ok=Some(true);
+    write(&directory,&record,false)?;
+    Ok(true)
 }
 
 pub fn inspect(base: &Path) -> Result<Value, String> {

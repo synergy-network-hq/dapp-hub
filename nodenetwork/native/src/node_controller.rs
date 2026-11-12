@@ -8,9 +8,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub const ROOT: &str = "/opt/Synergy";
 const CONTROLLER: &str = "/opt/Synergy/tmp/controller/controller.py";
 const LIMIT: u64 = 1_000_000;
+const REQUEST_LIMIT: usize = 16_384;
 pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target { pub kind: String, pub host: Option<String>, pub port: Option<u16>, pub root: String }
 
@@ -49,19 +50,23 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight" => false,
-            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight" => false,
+            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
             "install"|"install_preflight" => &["release_id","manifest_sha256","network_id","chain_id","node_name"],
             "upgrade"|"upgrade_preflight" => &["release_id","manifest_sha256"],
             "uninstall" => &["confirmation"],
+            "identity_generate"|"genesis_bind" => &["genesis_sha256"],
+            "formation_prepare" => &["formation_sha256"],
+            "genesis_stage" => &["artifacts"],
             _ => &[],
         };
         if p.len() != expected.len() || expected.iter().any(|k| !p.contains_key(*k)) {
             return Err("Unexpected controller parameters; paths, secrets and shell commands are forbidden.".into());
         }
+        if self.operation=="genesis_stage" { crate::formation::stage_artifacts(&p["artifacts"])?; }
         if expected.contains(&"release_id") {
             let release = p["release_id"].as_str().ok_or("Missing release ID.")?;
             let pin = p["manifest_sha256"].as_str().ok_or("Missing manifest digest.")?;
@@ -79,9 +84,22 @@ impl Request {
             }
         }
         if self.operation=="uninstall" && p["confirmation"]!=ROOT { return Err("Confirm the exact Synergy root before uninstalling.".into()); }
+        for (field, error) in [
+            ("genesis_sha256", "Review the exact authenticated Genesis before binding custody."),
+            ("formation_sha256", "Review the exact approved network formation before preparing custody."),
+        ] {
+            if expected.contains(&field) && !p[field].as_str().is_some_and(|pin|
+                pin.len()==64 && pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) {
+                return Err(error.into());
+            }
+        }
         Ok(mutation)
     }
-    pub fn canonical(&self) -> Value { json!({"version":self.version,"operation":self.operation,"parameters":self.parameters}) }
+    pub fn canonical(&self) -> Value {
+        let mut value=json!({"version":self.version,"operation":self.operation,"parameters":self.parameters});
+        value.sort_all_objects();
+        value
+    }
     pub fn approval_id(&self) -> String { format!("{:x}",Sha256::digest(self.canonical().to_string().as_bytes())) }
 }
 
@@ -108,13 +126,13 @@ pub(super) fn control_directory(home:&Path)->Result<std::path::PathBuf,String>{
     Ok(directory)
 }
 
-fn control_socket(target:&Target,directory:&Path)->std::path::PathBuf {
-    directory.join(format!("{:x}",Sha256::digest(format!("{}:{}",target.host.as_deref().unwrap_or(""),target.port.unwrap_or(22)).as_bytes()))[..24].to_string())
+fn control_socket(target:&Target,directory:&Path,account:&str)->std::path::PathBuf {
+    directory.join(format!("{:x}",Sha256::digest(format!("{account}@{}:{}",target.host.as_deref().unwrap_or(""),target.port.unwrap_or(22)).as_bytes()))[..24].to_string())
 }
 pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>)->Result<tokio::process::Command,String>{
     target.validate()?;
     #[cfg(unix)] ensure_private_control_dir(directory)?;
-    let socket=control_socket(target,directory);
+    let socket=control_socket(target,directory,account);
     if socket.as_os_str().len()>95 {return Err("Portal SSH control path is too long on this platform.".into());}
     let qualification_pin=if known_hosts.is_none()&&cfg!(debug_assertions)&&target.host.as_deref()==Some("127.0.0.1")&&target.port==Some(22280){
         if let Some(pin)=option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"){
@@ -142,10 +160,10 @@ pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:
     c.arg("--").arg(format!("{}@{}",account,target.host.as_deref().ok_or("Missing remote host.")?.trim_matches(['[',']']))).arg(remote);
     Ok(c)
 }
-pub(super) async fn close_connection(target:&Target,directory:&Path){
+pub(super) async fn close_connection(target:&Target,directory:&Path,account:&str){
     if target.kind!="remote" {return;}
     let _=tokio::time::timeout(Duration::from_secs(5),tokio::process::Command::new("/usr/bin/ssh")
-        .args(["-F","/dev/null","-S"]).arg(control_socket(target,directory))
+        .args(["-F","/dev/null","-S"]).arg(control_socket(target,directory,account))
         .args(["-O","exit","--"]).arg(target.host.as_deref().unwrap_or("")).stdout(Stdio::null()).stderr(Stdio::null()).status()).await;
 }
 
@@ -155,6 +173,10 @@ pub async fn execute(target: Target, request: Request, control_dir: &Path) -> Re
 
 async fn execute_pinned(target: Target, request: Request, control_dir: &Path, known_hosts: Option<&Path>) -> Result<Value, String> {
     target.validate()?; request.validate()?;
+    let mut wire=request.canonical().to_string().into_bytes();
+    let input_limit=if request.operation=="genesis_stage" {12*1024*1024} else {REQUEST_LIMIT};
+    if wire.len()>=input_limit { return Err("Controller request exceeds the operation's safe wire limit.".into()); }
+    wire.push(b'\n');
     let _serial=SERIAL.lock().await;
     if !cfg!(unix) { return Err("This Portal platform has no qualified native controller transport.".into()); }
     let mut command = if target.kind=="local" {
@@ -169,9 +191,8 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
     let mut child=command.spawn().map_err(|_|"Controller could not start. Enroll the target and verify its SSH host identity first.")?;
     let mut input=child.stdin.take().ok_or("Controller input unavailable.")?;
     let mut output=child.stdout.take().ok_or("Controller output unavailable.")?.take(LIMIT+1);
-    let result=tokio::time::timeout(Duration::from_secs(180),async {
-        input.write_all(request.canonical().to_string().as_bytes()).await.map_err(|_|"Cannot send controller request.")?;
-        input.write_all(b"\n").await.map_err(|_|"Cannot complete controller request.")?;
+    let result=tokio::time::timeout(Duration::from_secs(if request.operation=="vpn_enroll" {240} else {180}),async {
+        input.write_all(&wire).await.map_err(|_|"Cannot send controller request.")?;
         drop(input);
         let mut bytes=Vec::new();
         output.read_to_end(&mut bytes).await.map_err(|_|"Cannot read controller response.")?;
@@ -194,6 +215,21 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert!(path.join("0".repeat(24)).as_os_str().len()<=95);
         assert!(control_directory(Path::new("relative")).is_err());
         assert!(control_directory(&Path::new("/Users").join("x".repeat(80))).is_err());
+    }
+    #[test] fn bootstrap_and_controller_never_share_the_same_ssh_master() {
+        let target=Target{kind:"remote".into(),host:Some("host.example".into()),port:None,root:ROOT.into()};
+        let path=Path::new("/tmp/short");
+        assert_ne!(control_socket(&target,path,"operator"),control_socket(&target,path,"synergy-nodenetwork"));
+    }
+    #[test] fn vpn_enrollment_never_accepts_credentials_from_the_renderer() {
+        let mut request=Request{version:1,operation:"vpn_enroll".into(),parameters:json!({})};
+        assert_eq!(request.validate(),Ok(true));
+        request.parameters=json!({"setup_key":"never accepted"});
+        assert!(request.validate().is_err());
+        request.operation="vpn_status".into();
+        assert!(request.validate().is_err());
+        request.parameters=json!({});
+        assert_eq!(request.validate(),Ok(false));
     }
     #[test] fn renderer_cannot_select_commands_paths_or_unbounded_parameters() {
         for host in ["-oProxyCommand=bad","host;reboot","user@host","host/path","host:22","bad..host"] {

@@ -36,7 +36,6 @@ export async function readNodeNetwork(request, profile, signal) {
  return {chain,chainReceivedAt,observations,receivedAt,errors,checkedAt:Date.now()};
 }
 
-export const R5_BASELINE=Object.freeze({release_id:'synergy-linux-389c509e47e55219',manifest_sha256:'43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b'});
 export function controllerOperation(target,operation){
  const unavailable={available:false,blocker:'Inspect an enrolled target to establish unambiguous controller capabilities.'};
  if(!Array.isArray(target?.operations)||target.operations.length>100)return unavailable;
@@ -48,10 +47,10 @@ export function controllerOperation(target,operation){
 export function provisioningChecks(form){
  const checks=[
   ['release_id','Release ID',value=>typeof value==='string'&&/^[a-zA-Z0-9._-]{1,128}$/.test(value),'Enter the approved release ID using letters, digits, dots, underscores or hyphens.'],
-  ['manifest_sha256','Manifest SHA-256',value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value),'Enter the exact64-character lowercase manifest SHA-256.'],
+  ['manifest_sha256','Manifest SHA-256',value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value),'Enter the exact 64-character lowercase manifest SHA-256.'],
   ['network_id','Network incarnation',value=>typeof value==='string'&&/^[a-z0-9][a-z0-9_-]{1,127}$/.test(value),'Enter the exact approved network incarnation.'],
   ['chain_id','Chain ID',value=>typeof value==='string'&&/^[1-9][0-9]{0,15}$/.test(value)&&Number.isSafeInteger(Number(value)),'Enter a positive safe integer chain ID in decimal digits without leading zeros.'],
-  ['node_name','Node name',value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(value),'Enter a node name using up to64 letters, digits, underscores or hyphens.'],
+  ['node_name','Node name',value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(value),'Enter a node name using up to 64 letters, digits, underscores or hyphens.'],
  ];
  return checks.map(([field,label,accept,message])=>({field,label,valid:accept(form?.[field]),message}));
 }

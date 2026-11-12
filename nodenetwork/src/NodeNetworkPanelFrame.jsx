@@ -1,10 +1,11 @@
 import './NodeNetworkPanel.css';
+import nodeNetworkLogo from '../assets/nodenetwork.png';
 
 // Presentation adapted from the original ControlPanelV18 AppShell/Card/MetricCard.
 // It owns no node operations, routing, credentials, or telemetry sources.
 export const NODE_NETWORK_SECTIONS = [
   {id:'overview',label:'Overview',icon:'home',title:'Operations Overview'},
-  {id:'operations',label:'Operations',icon:'terminal',title:'Node Controls'},
+  {id:'operations',label:'Operations',icon:'terminal',title:'Validator Setup & Lifecycle'},
   {id:'performance',label:'Performance',icon:'chart',title:'Performance'},
   {id:'monitoring',label:'Monitoring',icon:'activity',title:'Monitoring'},
   {id:'logs',label:'Logs',icon:'file',title:'Logs & Diagnostics'},
@@ -51,7 +52,7 @@ export function NodeNetworkPanelTrendGrid({children,label='Live metric trends'})
  return <section className="v18-overview-trend-grid" aria-label={label}>{children}</section>;
 }
 
-export function NodeNetworkPanelFrame({section='overview',onSectionChange,title,subtitle,statusLabel='Not inspected',statusTone='gray',onRefresh,refreshing=false,logoSrc='/assets/nodenetwork.png',nodeLabel,version,footerNote='Enrollment requires verified policy and host authorization',headerActions,statusItems=[],metrics=[],children}) {
+export function NodeNetworkPanelFrame({section='overview',onSectionChange,title,subtitle,statusLabel='Not inspected',statusTone='gray',onRefresh,refreshing=false,logoSrc=nodeNetworkLogo,nodeLabel,version,footerNote='Enrollment requires verified policy and host authorization',headerActions,statusItems=[],metrics=[],children}) {
  const active=NODE_NETWORK_SECTIONS.find(item=>item.id===section)||NODE_NETWORK_SECTIONS[0];
  const tone=['green','blue','purple','yellow','red','gray'].includes(statusTone)?statusTone:'gray';
  return <div className="nodenetwork-panel" aria-label="NodeNetwork operator workspace">

@@ -1,6 +1,6 @@
 const key='synergy-nodenetwork:provisioning-draft:v1';
 const fields=['release_id','manifest_sha256','network_id','chain_id','node_name'];
-export const emptyProvisioningDraft=()=>({release_id:'',manifest_sha256:'',network_id:'',chain_id:'99999',node_name:''});
+export const emptyProvisioningDraft=()=>({release_id:'',manifest_sha256:'',network_id:'',chain_id:'',node_name:''});
 function validate(value){
  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(name=>!['version','form'].includes(name))||value.version!==1||!value.form||typeof value.form!=='object'||Array.isArray(value.form)||Object.keys(value.form).some(name=>!fields.includes(name))||!fields.every(name=>typeof value.form[name]==='string'&&value.form[name].length<=128&&!/[\u0000-\u001f\u007f]/.test(value.form[name])))throw Error('Saved provisioning draft is unsupported or unreadable; original storage retained.');
  return Object.fromEntries(fields.map(name=>[name,value.form[name]]));
