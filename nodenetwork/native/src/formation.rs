@@ -396,7 +396,7 @@ mod tests {
             "8d36830f011ff1c18001d26015e1cec30dca4abe71e42241cd23b6ceb839863c"
         );
         let target =
-            json!({"kind":"remote","host":"stage-fixture.invalid","port":22,"root":"/opt/Synergy"});
+            json!({"kind":"remote","host":"stage-fixture.invalid","port":22,"root":"/opt/synergy"});
         let dispatch = crate::request_journal::Dispatch::begin(
             &temp,
             &target,
@@ -415,7 +415,7 @@ mod tests {
         )
         .is_err());
         let wrong_target =
-            json!({"kind":"remote","host":"other-fixture.invalid","port":22,"root":"/opt/Synergy"});
+            json!({"kind":"remote","host":"other-fixture.invalid","port":22,"root":"/opt/synergy"});
         assert!(!crate::request_journal::reconcile_verified(
             &temp,
             &wrong_target,

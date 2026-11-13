@@ -1,6 +1,6 @@
 export function nodeNetworkTarget(value) {
- if(value?.root!==undefined&&value.root!=='/opt/Synergy')throw Error('Saved validator root is unsupported; recover the original configuration before selecting a target.');
- if(value?.kind==='local')return {kind:'local',root:'/opt/Synergy'};
+ if(value?.root!==undefined&&value.root!=='/opt/synergy')throw Error('Saved validator root is unsupported; recover the original configuration before selecting a target.');
+ if(value?.kind==='local')return {kind:'local',root:'/opt/synergy'};
  if(value?.kind!=='remote' || typeof value.host!=='string')throw new Error('Choose this machine or a remote host.');
  const host=value.host.trim().toLowerCase();
  const ipv6=/^\[[0-9a-f:]+\]$/.test(host);
@@ -12,7 +12,7 @@ export function nodeNetworkTarget(value) {
  if(typeof rawPort==='string'&&rawPort!==''&&!/^[0-9]{1,5}$/.test(rawPort))throw Error('SSH port must contain decimal digits only.');
  const port=rawPort==null||rawPort===''?22:Number(rawPort);
  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Enter an SSH port between 1 and 65535.');
- return {kind:'remote',host,...(port!==22?{port}:{}),root:'/opt/Synergy'};
+ return {kind:'remote',host,...(port!==22?{port}:{}),root:'/opt/synergy'};
 }
 
 export async function readNodeNetwork(request, profile, signal) {

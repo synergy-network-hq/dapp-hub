@@ -8,7 +8,7 @@ const address='synv11lrh6jcxaejkj4zv994j7qwn2rk6u3ar4emn';
 const prepared={...formation,address,pending:true,possession_verified:true,membership_granted:false,request_sha256:'c'.repeat(64)};
 const genesis={schema:'nodenetwork-genesis-binding-v1',network_id:formation.network_id,chain_id:formation.chain_id,address,genesis_sha256:'d'.repeat(64),genesis_authority_verified:true,membership_verified:true,bound:false};
 const bound={...genesis,bound:true,request_sha256:'e'.repeat(64),enrollment_sha256:'f'.repeat(64)};
-const target={kind:'remote',host:'disposable.example',root:'/opt/Synergy'};
+const target={kind:'remote',host:'disposable.example',root:'/opt/synergy'};
 const operations=['formation_preflight','formation_prepare','formation_status','formation_export','genesis_binding_preflight','genesis_bind','commission'].map(operation=>({operation,available:true}));
 const gate=(operation,extra={})=>workflowGate({operation,target,state:{installed:true,operations},permitted:true,form:{network_id:formation.network_id,chain_id:formation.chain_id},...extra});
 

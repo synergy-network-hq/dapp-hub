@@ -49,7 +49,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     if(!acceptedReview(operation,parameters,raw,target))throw Error('The target did not return an affirmative result for this preflight. No matching review was recorded.');
     setReview({target:targetKey,scope:approvedReviewScope(operation,parameters)});
    }
-   if(operation==='bootstrap'&&(raw?.root!==target.root||raw.controllerEnrolled!==true||raw.stagedRelease!==parameters.release_id||raw.manifestSha256!==parameters.manifest_sha256))throw Error('The controller enrollment response did not confirm the selected target and release. Inspect the target before attempting another operation.');
+   if(operation==='bootstrap'&&(raw?.root!==target.root||raw.controllerEnrolled!==true||raw.rootDeletionGuardActive!==true||raw.stagedRelease!==parameters.release_id||raw.manifestSha256!==parameters.manifest_sha256))throw Error('The controller enrollment response did not confirm the selected target, release and removal guard. Inspect the target before attempting another operation.');
    const response=operation==='diagnostics'?diagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
     operation==='identity_status'?identityStatusView(raw):
     operation==='identity_preflight'||operation==='identity_generate'?identityView(raw,operation==='identity_generate'):

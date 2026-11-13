@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub const ROOT: &str = "/opt/Synergy";
-const CONTROLLER: &str = "/opt/Synergy/tmp/controller/controller.py";
+pub const ROOT: &str = "/opt/synergy";
+const CONTROLLER: &str = "/opt/synergy/tmp/controller/controller.py";
 const LIMIT: u64 = 1_000_000;
 const REQUEST_LIMIT: usize = 16_384;
 pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -30,7 +30,7 @@ fn host_name(s: &str) -> bool {
 }
 impl Target {
     pub fn validate(&self) -> Result<(), String> {
-        if self.root != ROOT { return Err("Validator root must be /opt/Synergy.".into()); }
+        if self.root != ROOT { return Err("Validator root must be /opt/synergy.".into()); }
         match self.kind.as_str() {
             "local" if self.host.is_none() && self.port.is_none() => Ok(()),
             "remote" if self.host.as_deref().is_some_and(host_name) && self.port.is_none_or(|p| p>0) => Ok(()),
@@ -185,7 +185,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         c.args(["-n","/usr/bin/python3","-I","-B",CONTROLLER]); c
     } else {
         remote_command(&target,control_dir,"synergy-nodenetwork",
-            "/usr/bin/sudo -n /usr/bin/python3 -I -B /opt/Synergy/tmp/controller/controller.py",known_hosts)?
+            "/usr/bin/sudo -n /usr/bin/python3 -I -B /opt/synergy/tmp/controller/controller.py",known_hosts)?
     };
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child=command.spawn().map_err(|_|"Controller could not start. Enroll the target and verify its SSH host identity first.")?;

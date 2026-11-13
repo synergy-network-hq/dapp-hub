@@ -19,7 +19,7 @@ fn reviewed_disposable_software_operation_uses_the_production_bridge(){
     tauri::async_runtime::block_on(async {
         let inventory=node_controller::execute(serde_json::from_str(&target_json).unwrap(),node_controller::Request{version:1,operation:"inventory".into(),parameters:json!({})},&directory).await.unwrap();
         assert_eq!(inventory["ok"],true);
-        assert_eq!(inventory["result"]["root"],"/opt/Synergy");
+        assert_eq!(inventory["result"]["root"],"/opt/synergy");
         assert!(!inventory["result"]["members"].as_array().unwrap().is_empty());
         let result=node_controller::execute(serde_json::from_str(&target_json).unwrap(),request,&directory).await.unwrap();
         assert_eq!(result["ok"],true,"the exact host-authorized software operation must complete");

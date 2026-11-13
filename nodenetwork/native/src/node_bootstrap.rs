@@ -7,10 +7,7 @@ use tokio::io::{AsyncReadExt,AsyncWriteExt};
 const MAX_ARCHIVE:u64=256*1024*1024;
 const BOOTSTRAP:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/bootstrap.py"));
 
-const R5_RELEASE:&str="synergy-linux-389c509e47e55219";
-const R5_PIN:&str="43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b";
-fn authenticate_release(release:&str,pin:&str)->Result<(),String>{
-    if release==R5_RELEASE&&pin==R5_PIN{return Ok(());}
+fn authenticate_release(pin:&str)->Result<(),String>{
     if cfg!(debug_assertions)&&option_env!("SYNERGY_NODENETWORK_QUALIFICATION_MANIFEST_SHA256").is_some_and(|approved|approved==pin){return Ok(());}
     Err("The selected release has no independent native approval. Self-declared manifests cannot authorize privileged installation.".into())
 }
@@ -58,12 +55,12 @@ fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,Stri
 }
 pub fn prepare(root:&Path,key:&Path,parameters:&Value)->Result<Prepared,String>{
     Request{version:1,operation:"install_preflight".into(),parameters:parameters.clone()}.validate()?;
-    if root.file_name().and_then(|s|s.to_str())!=Some("Synergy")||root.ancestors().any(|p|!fs::symlink_metadata(p).is_ok_and(|m|m.is_dir())){return Err("Choose the direct Synergy master directory.".into());}
+    if root.file_name().and_then(|s|s.to_str())!=Some("synergy")||root.ancestors().any(|p|!fs::symlink_metadata(p).is_ok_and(|m|m.is_dir())){return Err("Choose the direct lowercase synergy master directory.".into());}
     let raw=read_bounded(&root.join("package.json"),1_000_000)?;
     let pin=format!("{:x}",Sha256::digest(&raw));
     let manifest:Value=serde_json::from_slice(&raw).map_err(|_|"Invalid master manifest.")?;
     if parameters["manifest_sha256"]!=pin||parameters["release_id"]!=manifest["release_id"]||manifest["format"]!="synergy-universal-linux-v1"||manifest["architecture"]!="x86_64"{return Err("Selected package does not match the reviewed release and manifest pin.".into());}
-    authenticate_release(manifest["release_id"].as_str().ok_or("Invalid release identifier.")?,&pin)?;
+    authenticate_release(&pin)?;
     let files:BTreeMap<String,String>=serde_json::from_value(manifest["files"].clone()).map_err(|_|"Invalid master file inventory.")?;
     if files.is_empty()||files.len()>4096||files.iter().any(|(name,pin)|!safe_member(name)||pin.len()!=64||!pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Invalid master inventory paths or digests.".into());}
     let mut members=Vec::new();let mut total=1024;walk(root,root,&mut members,&files,&mut total)?;
@@ -98,7 +95,7 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
     target.validate()?;validate_operator(&operator)?;
     let _guard=node_controller::SERIAL.lock().await;
     if target.kind=="remote" {node_controller::close_connection(&target,control_dir,&operator).await;}
-    authenticate_release(&prepared.release,&prepared.manifest_sha256)?;
+    authenticate_release(&prepared.manifest_sha256)?;
     let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP);
     let mut command=if target.kind=="local"{
         if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local bootstrap requires Linux x86_64.".into());}
@@ -151,14 +148,14 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
         let response=tauri::async_runtime::block_on(execute_pinned(target,operator,parameters,prepared,&scratch,Some(&pin))).unwrap();
         assert_eq!(response["ok"],true,"bootstrap must return a successful verified result");
         assert_eq!(response["result"]["root"],node_controller::ROOT);
+        assert_eq!(response["result"]["rootDeletionGuardActive"],true);
         assert_eq!(response["result"]["stagedRelease"],manifest["release_id"]);
     }
     #[test] fn self_consistent_manifest_never_grants_itself_native_approval(){
         let manifest=json!({"format":"synergy-universal-linux-v1","architecture":"x86_64","release_id":"self-declared","files":{}});
         let pin=format!("{:x}",Sha256::digest(manifest.to_string().as_bytes()));
-        assert!(authenticate_release("self-declared",&pin).is_err());
-        assert!(authenticate_release(R5_RELEASE,R5_PIN).is_ok());
-        assert!(authenticate_release("different-release",R5_PIN).is_err());
+        assert!(authenticate_release(&pin).is_err());
+        assert!(authenticate_release("43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b").is_err());
     }
     #[test] fn static_tar_and_operator_contract_is_restricted(){
         assert!(safe_member("tools/controller.py"));for name in ["/etc/passwd","../keys","a/../b","a\\b"]{assert!(!safe_member(name));}

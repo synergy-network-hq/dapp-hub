@@ -62,10 +62,10 @@ fn read_public(root: &Path, relative: &str) -> Result<Value, String> {
 
 /// A review of the master manifest, never release authorization or execution.
 pub fn review_master(root: &Path) -> Result<Value, String> {
-    if root.file_name().and_then(|name| name.to_str()) != Some("Synergy")
+    if root.file_name().and_then(|name| name.to_str()) != Some("synergy")
         || root.ancestors().any(|p| !fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
     {
-        return Err("Choose the direct Synergy master directory.".into());
+        return Err("Choose the direct lowercase synergy master directory.".into());
     }
     let bytes = read_public_bytes(root, "package.json")?;
     let manifest: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid master manifest")?;
@@ -158,7 +158,7 @@ pub fn status() -> Result<Value, String> {
             "controlAvailable":false,"qualification":"not-verified",
             "reason":"The current master validator package targets Linux x86_64. Use an authenticated remote Linux target."}));
     }
-    let mut value = inspect(Path::new("/opt/Synergy"))?;
+    let mut value = inspect(Path::new("/opt/synergy"))?;
     value["platform"] = json!(std::env::consts::OS);
     value["localValidatorSupported"] = json!(cfg!(target_arch = "x86_64"));
     Ok(value)
@@ -167,8 +167,8 @@ pub fn status() -> Result<Value, String> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn refuses_traversal_before_opening_any_public_file() {
-        assert_eq!(read_public(Path::new("/opt/Synergy"), "../keys/unlock").unwrap_err(), "Invalid public installation path");
-        assert!(read_public(Path::new("/opt/Synergy"), "/root/file").is_err());
+        assert_eq!(read_public(Path::new("/opt/synergy"), "../keys/unlock").unwrap_err(), "Invalid public installation path");
+        assert!(read_public(Path::new("/opt/synergy"), "/root/file").is_err());
     }
     #[test] fn host_discovery_never_grants_control_authority() {
         if !cfg!(target_os="linux") {
@@ -185,7 +185,7 @@ pub fn status() -> Result<Value, String> {
         impl Drop for Cleanup { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
         fs::create_dir(&base).unwrap();
         let _cleanup = Cleanup(base.clone());
-        let root = base.join("Synergy");
+        let root = base.join("synergy");
         fs::create_dir_all(root.join("lib/apqe")).unwrap();
         let mut files = serde_json::Map::new();
         let mut artifacts = Vec::new();
