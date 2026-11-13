@@ -3,8 +3,9 @@ import {useNative,atlas,rpc,useResource,ErrorMessage,short} from '@synergy-netwo
 import {amount,text} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {sourceRecords} from './source-records.js';
+import {matchesPairedIndexProfile} from './paired-index-profile.js';
 export function DappWidget({widgetKey:key}){
- const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=permitted&&connection?.chainId==='synergy:1266'&&Number(n.endpoint.chainId)===1266;
+ const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=permitted&&matchesPairedIndexProfile(connection,n.endpoint);
  const value=useResource(async signal=>{
   if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');
   if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');
@@ -12,7 +13,7 @@ export function DappWidget({widgetKey:key}){
  },JSON.stringify([connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,ready]));
  if(!permitted)return <p>Allow Wallet account access in Security.</p>;
  if(!connection)return <p>Connect Synergy Wallet to see your account.</p>;
- if(!ready)return <p>Wallet observations require a connected account and endpoint on chain 1266.</p>;
+ if(!ready)return <p>Paired Wallet observations require the canonical Synergy Testnet v3 endpoint.</p>;
  if(value.loading)return <p role="status">Reading Wallet observations…</p>;
  if(value.error)return <ErrorMessage error={value.error}/>;
  const data=value.data?.data,history=sourceRecords(data?.recentTransactions,'Transaction history');
