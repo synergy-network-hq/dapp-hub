@@ -247,6 +247,67 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
+fn health_reply(reply: &Value) -> Result<Value, &'static str> {
+    use std::collections::HashSet;
+    const UNSUPPORTED: &str = "The selected controller returned unsupported service health evidence.";
+    if reply["ok"] != true {
+        return Err("The selected controller could not provide service health.");
+    }
+    let admin = &reply["result"];
+    let request_id = admin["request_id"].as_str()
+        .and_then(|id| id.strip_prefix("synergy-node-"))
+        .and_then(|pair| pair.split_once('-'));
+    if !reply.as_object().is_some_and(|fields| fields.len() == 3)
+        || reply["version"] != 1
+        || !admin.as_object().is_some_and(|fields| fields.len() == 4)
+        || admin["schema_version"] != 1 || admin["ok"] != true
+        || !request_id.is_some_and(|(pid, nanos)| {
+            (1..=10).contains(&pid.len()) && pid.bytes().all(|byte| byte.is_ascii_digit())
+                && (1..=39).contains(&nanos.len()) && nanos.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        || !admin["result"].as_object().is_some_and(|fields| fields.len() == 1) {
+        return Err(UNSUPPORTED);
+    }
+    let services = admin["result"]["services"].as_array()
+        .filter(|services| services.len() <= 128).ok_or(UNSUPPORTED)?;
+    let mut seen = HashSet::new();
+    let mut observations = Vec::with_capacity(services.len());
+    for service in services {
+        if !service.as_object().is_some_and(|fields| fields.len() == 4) {
+            return Err(UNSUPPORTED);
+        }
+        let id = service["id"].as_str().filter(|id| {
+            (1..=64).contains(&id.len())
+                && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        }).ok_or(UNSUPPORTED)?;
+        if !seen.insert(id) { return Err(UNSUPPORTED); }
+        let state = service["state"].as_str().filter(|state| matches!(*state,
+            "registered" | "starting" | "running" | "restarting" | "stopping" | "stopped" | "failed"
+        )).ok_or(UNSUPPORTED)?;
+        let health = if service["health"] == "healthy" {
+            "healthy"
+        } else {
+            let health = service["health"].as_object().filter(|fields| fields.len() == 1).ok_or(UNSUPPORTED)?;
+            let (kind, value) = health.iter().next().ok_or(UNSUPPORTED)?;
+            if !matches!(kind.as_str(), "degraded" | "unhealthy")
+                || !value.as_object().is_some_and(|fields| fields.len() == 1)
+                || !value["reason"].is_string() {
+                return Err(UNSUPPORTED);
+            }
+            kind.as_str()
+        };
+        let readiness = &service["readiness"];
+        let field_count = readiness.as_object().map(|fields| fields.len());
+        let readiness = match readiness["status"].as_str() {
+            Some("ready") if field_count == Some(1) => "ready",
+            Some(kind @ ("pending" | "blocked")) if field_count == Some(2) && readiness["reason"].is_string() => kind,
+            _ => return Err(UNSUPPORTED),
+        };
+        observations.push(json!({"id":id,"state":state,"health":health,"readiness":readiness}));
+    }
+    Ok(json!({"version":1,"ok":true,"result":{"schema_version":1,"services":observations}}))
+}
+
 async fn execute_pinned(target: Target, request: Request, control_dir: &Path, known_hosts: Option<&Path>) -> Result<Value, String> {
     target.validate()?; request.validate()?;
     let _serial=SERIAL.lock().await;
@@ -275,6 +336,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Controller returned an invalid response.")?;
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
         match request.operation.as_str() {
+            "health" => health_reply(&value),
             "install_preflight" => install_preflight_reply(&request, &value),
             "vpn_status" => vpn_status_reply(&value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
@@ -304,6 +366,53 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert_eq!(request.approval_id(),"9887b763bee52b22d58471c0e0adc4a7753458601c2e23db52437e040cc3c084");
         request.operation="target".into(); assert_eq!(request.validate(),Ok(false));
         request.operation="shell".into(); assert!(request.validate().is_err());
+    }
+    fn health_fixture() -> Value {
+        json!({"version":1,"ok":true,"result":{
+            "schema_version":1,"request_id":"synergy-node-25-1731256289000000000","ok":true,"result":{"services":[
+                {"id":"network","state":"running","health":{"degraded":{"reason":"fixture local details"}},
+                 "readiness":{"status":"pending","reason":"fixture private path"}},
+                {"id":"storage","state":"running","health":"healthy","readiness":{"status":"ready"}},
+                {"id":"sync","state":"failed","health":{"unhealthy":{"reason":"fixture process details"}},
+                 "readiness":{"status":"blocked","reason":"fixture failure details"}}
+            ]}
+        }})
+    }
+    #[test] fn health_is_an_empty_parameter_read() {
+        let mut request = Request {version:1, operation:"health".into(), parameters:json!({})};
+        assert_eq!(request.validate(), Ok(false));
+        request.parameters = json!({"admin_socket":"/other/path"});
+        assert!(request.validate().is_err());
+    }
+    #[test] fn health_projects_owner_admin_service_enums_without_private_details() {
+        let mut report = health_fixture();
+        assert_eq!(health_reply(&report).unwrap(), json!({"version":1,"ok":true,"result":{"schema_version":1,"services":[
+            {"id":"network","state":"running","health":"degraded","readiness":"pending"},
+            {"id":"storage","state":"running","health":"healthy","readiness":"ready"},
+            {"id":"sync","state":"failed","health":"unhealthy","readiness":"blocked"}
+        ]}}));
+        report["result"]["result"]["services"] = json!([]);
+        assert_eq!(health_reply(&report).unwrap()["result"]["services"], json!([]));
+        let refused = json!({"version":1,"ok":false,"error":{"message":"fixture private failure"}});
+        assert_eq!(health_reply(&refused), Err("The selected controller could not provide service health."));
+    }
+    #[test] fn health_rejects_ambiguous_or_unversioned_replies() {
+        for (path, data) in [
+            ("/result/schema_version", json!(2)),
+            ("/result/request_id", json!("private-request")),
+            ("/result/ok", json!(false)),
+            ("/result/result/services/0/id", json!("storage")),
+            ("/result/result/services/0/id", json!("network\n")),
+            ("/result/result/services/0/health", json!({"degraded":{"reason":0}})),
+            ("/result/result/services/0/health", json!({"degraded":{"reason":"fixture","address":"private"}})),
+            ("/result/result/services/0/readiness", json!({"status":"ready","reason":"fixture"})),
+            ("/result/result/services/0/state", json!("unknown")),
+            ("/result/result/services", json!(vec![Value::Null; 129])),
+        ] {
+            let mut report = health_fixture();
+            *report.pointer_mut(path).unwrap() = data;
+            assert_eq!(health_reply(&report), Err("The selected controller returned unsupported service health evidence."), "{path}");
+        }
     }
     #[test] fn install_preflight_preserves_exact_read_and_rejects_unbound_reply() {
         let request = Request{version:1,operation:"install_preflight".into(),parameters:json!({

@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap} from "./native-services.js";
-import {Card,Detail,ErrorMessage,useResource,Resource} from "@synergy-network/portal-native/dapp-sdk";
+import {Card,Detail,ErrorMessage,useResource,Resource,Table} from "@synergy-network/portal-native/dapp-sdk";
 import {controllerOperation,installParameters} from './nodeNetwork.js';
 import {installPreflightChecklist,installPreflightObservation} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
@@ -11,12 +11,30 @@ import {VpnStatus} from './VpnStatus.jsx';
 import {vpnStatusObservation} from './vpn-status.js';
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
+import {targetHealthObservation} from './target-health.js';
 
 const typedStatus = {
+ health: targetHealthObservation,
  vpn_status: vpnStatusObservation,
  identity_status: response => custodyStatusObservation('identity_status',response),
  formation_status: response => custodyStatusObservation('formation_status',response),
 };
+
+const healthColumns = [
+ {key:'id',label:'Service'},
+ ...[['state','Lifecycle'],['health','Health'],['readiness','Service readiness']].map(([key,label])=>({
+  key,label,render:row=>row[key][0].toUpperCase()+row[key].slice(1),
+ })),
+];
+
+function TargetHealth({report}) {
+ return <div>
+  <h3>Reported service health</h3>
+  <ControllerReceipt receivedAt={report.receivedAt}/>
+  <Table columns={healthColumns} rows={report.result} empty="The controller returned no service observations."/>
+  <p>Service readiness describes each reported service. Consensus readiness and validator membership have separate checks.</p>
+ </div>;
+}
 
 function ControllerReceipt({receivedAt}) {
  const [now, setNow] = useState(Date.now);
@@ -44,8 +62,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const state=capabilities.data;
  const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
  const statusGates=Object.fromEntries(Object.keys(typedStatus).map(operation=>[operation,installedControllerRead(state,operation)]));
- const vpn=statusGates.vpn_status;
  const statusResult=permitted&&statusGates[result?.operation]?.available?result:null;
+ const healthResult=statusResult?.operation==='health'?statusResult:null;
  const vpnResult=statusResult?.operation==='vpn_status'?statusResult:null;
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  async function run(operation,parameters={}){
@@ -85,6 +103,13 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   const gate=controllerOperation(state,operation);
   return <div className="native-controller-action" key={operation}><button disabled={!permitted||busy||!gate.available} onClick={()=>{try{run(operation,parameters());}catch(failure){setError(failure.message);}}}>{label}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
  }
+ function statusAction(operation,label){
+  const gate=statusGates[operation];
+  return <div className="native-controller-action" key={operation}>
+   <button disabled={!permitted||busy||!gate.available} onClick={()=>run(operation)}>{label}</button>
+   {permitted&&!gate.available&&<small>{gate.blocker}</small>}
+  </div>;
+ }
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
    if(typedStatus[result?.operation])setResult(null);
@@ -111,7 +136,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     {button('register','Register contained service')}
    </Card>
    <Card title="Lifecycle and monitoring">
-    {button('health','Read target health')}{button('start','Start node')}{button('stop','Stop node')}{button('restart','Restart node')}
+    {statusAction('health','Read target health')}{button('start','Start node')}{button('stop','Stop node')}{button('restart','Restart node')}
+    {healthResult&&<TargetHealth report={healthResult}/>}
     <p>Mutations require native operator confirmation and a matching one-time grant on the target. Software installation does not grant consensus membership.</p>
    </Card>
    <InstallPreflight checklist={preflight} action={
@@ -119,27 +145,19 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    }/>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
-   {button('health','Read target health')}{button('inventory','Inventory node-owned files')}
+   {statusAction('health','Read target health')}{button('inventory','Inventory node-owned files')}
    {button('start','Start node')}{button('stop','Stop node')}{button('restart','Restart node')}
    {button('recovery_preflight','Diagnose recovery readiness')}
+   {healthResult&&<TargetHealth report={healthResult}/>}
    <p>Health and diagnostics use the selected target controller. Public RPC observations describe their RPC node. Recovery executes only through a separately qualified procedure; this interface does not offer arbitrary checkpoint imports or shell access.</p>
   </Card>}
   {tab==='Management'&&<VpnStatus
-   action={<div className="native-controller-action">
-    <button disabled={!permitted||busy||!vpn.available} onClick={()=>run('vpn_status')}>Read VPN status</button>
-    {permitted&&!vpn.available&&<small>{vpn.blocker}</small>}
-   </div>}
+   action={statusAction('vpn_status','Read VPN status')}
    observation={vpnResult?.result}
    receipt={vpnResult&&<ControllerReceipt receivedAt={vpnResult.receivedAt}/>}
    onOpenDiagnostics={onOpenDiagnostics}/>}
   {tab==='Management'&&<CustodyStatus
-   actions={<div className="native-actions">{custodyStatusReads.map(({operation,label})=>{
-    const gate=statusGates[operation];
-    return <div className="native-controller-action" key={operation}>
-     <button disabled={!permitted||busy||!gate.available} onClick={()=>run(operation)}>{label}</button>
-     {permitted&&!gate.available&&<small>{gate.blocker}</small>}
-    </div>;
-   })}</div>}
+   actions={<div className="native-actions">{custodyStatusReads.map(({operation,label})=>statusAction(operation,label))}</div>}
    observation={custodyResult?.result}
    receipt={custodyResult&&<ControllerReceipt receivedAt={custodyResult.receivedAt}/>}
    onOpenHistory={onOpenDiagnostics}/>}
