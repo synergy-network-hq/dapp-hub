@@ -1,13 +1,16 @@
-import {useState} from 'react';
-import {Card, Detail, Resource, chainIdNumber, rpc, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {useLayoutEffect, useRef, useState} from 'react';
+import {Card, Detail, Resource, chainIdNumber, rpc, rpcNftInventoryObservation, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
-import {ATLAS_NFT_LIMIT, collectibleObservations} from './collectible-observations.js';
+import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
+import {ATLAS_NFT_LIMIT, RPC_OWNER_NFT_LIMIT, collectibleObservations, ownerCollectibleObservation} from './collectible-observations.js';
 import {requireAtlasAccountKey} from './atlas-account.js';
+import {isProtectedWalletAddress} from './wallet-address.js';
+import {checkConfiguredReceiptGenesis as checkConfiguredGenesis, rpcReceiptReadiness as testnetReadiness} from './rpc-receipt-observation.js';
 
 const classLabels = {nf1: 'NF1 standard NFT', nf2: 'NF2 controlled NFT'};
 const collectionStatusLabels = {verified: 'Atlas marks this collection verified', active: 'Atlas reports an active collection'};
 
-function CollectibleList({items, receivedAt}) {
+function CollectibleList({items, receivedAt, indexed = true}) {
   const [collection, setCollection] = useState('');
   const [status, setStatus] = useState('');
   const [selection, setSelection] = useState(null);
@@ -16,7 +19,7 @@ function CollectibleList({items, receivedAt}) {
   const visible = items.filter(item => (!collection || item.collectionId === collection) && (!status || item.status === status));
   const selected = visible.find(item => item.key === selection);
   return <>
-    <SourceAge source="Atlas public token registry" updatedAt={receivedAt}/>
+    <SourceAge source={indexed ? 'Atlas public token registry' : 'Selected RPC STS snapshot'} updatedAt={receivedAt}/>
     {items.length ? <>
       <label>Filter by collection<select value={collection} onChange={event => {
         setCollection(event.target.value);
@@ -25,14 +28,14 @@ function CollectibleList({items, receivedAt}) {
         <option value="">All returned collections</option>
         {[...collections].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
       </select></label>
-      <label>Filter by indexed status<select value={status} onChange={event => {
+      <label>{indexed ? 'Filter by indexed status' : 'Filter by reported status'}<select value={status} onChange={event => {
         setStatus(event.target.value);
         setSelection(null);
       }}>
         <option value="">All returned statuses</option>
         {statuses.map(value => <option key={value}>{value}</option>)}
       </select></label>
-      <div className="native-grid" aria-label="Indexed collectible records">
+      <div className="native-grid" aria-label={indexed ? 'Indexed collectible records' : 'RPC collectible records'}>
         {visible.map(item => <article key={item.key} className="native-card">
           <p>Media unavailable</p>
           <h3>{item.name}</h3>
@@ -50,20 +53,23 @@ function CollectibleList({items, receivedAt}) {
           collectionId: selected.collectionId,
           tokenId: selected.nftId,
           tokenAddress: selected.address ?? 'Unavailable',
-          indexedOwner: selected.ownerAddress,
-          indexedStatus: selected.status,
-          indexedQuantity: selected.quantity,
+          [indexed ? 'indexedOwner' : 'reportedOwner']: selected.ownerAddress,
+          [indexed ? 'indexedStatus' : 'reportedStatus']: selected.status,
+          [indexed ? 'indexedQuantity' : 'reportedQuantity']: selected.quantity,
           reportedTokenClass: classLabels[selected.tokenClass] ?? 'Unavailable',
-          reportedCollectionStatus: collectionStatusLabels[selected.collectionStatus] ?? 'Unavailable',
-          indexedCreationBlock: selected.creationBlock ?? 'Unavailable',
-          indexedCreationTransaction: selected.creationHash ?? 'Unavailable',
+          ...(indexed && {
+            reportedCollectionStatus: collectionStatusLabels[selected.collectionStatus] ?? 'Unavailable',
+            indexedCreationBlock: selected.creationBlock ?? 'Unavailable',
+            indexedCreationTransaction: selected.creationHash ?? 'Unavailable',
+          }),
           provenance: 'Unverified',
           metadata: selected.metadataStatus,
           reportedMetadataHash: selected.metadataHash ?? 'Unavailable',
         }}/>
         <p>Media unavailable. Wallet does not load the metadata reference.</p>
       </aside>}
-    </> : <p>No matching NFT records were returned. This limited view cannot establish an empty inventory.</p>}
+    </> : <p>{indexed ? 'No matching NFT records were returned. This limited view cannot establish an empty inventory.' :
+      'The selected RPC returned no matching NFTs at this snapshot.'}</p>}
   </>;
 }
 
@@ -109,5 +115,60 @@ export function WalletCollectibles({account, endpoint, readRpc, readAtlas}) {
       <CollectibleList items={observation.items} receivedAt={observation.receivedAt}/>
     }</Resource>
     <button disabled={loading} onClick={() => setRevision(value => value + 1)}>Refresh collectible observations</button>
+  </Card>;
+}
+
+export function WalletOwnerCollectibles({account, endpoint, canRead}) {
+  const [request, setRequest] = useState(0);
+  const mounted = useRef(false);
+  const supportedAccount = isProtectedWalletAddress(account);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {mounted.current = false;};
+  }, []);
+
+  const observation = useResource(async signal => {
+    if (!request) return null;
+    function checkScope() {
+      signal.throwIfAborted();
+      if (!mounted.current || !canRead()) throw Error('The Wallet collectible context changed.');
+    }
+
+    checkScope();
+    if (!supportedAccount || Number(endpoint.chainId) !== 1266) throw Error('A protected Wallet account on chain 1266 is required.');
+    const readiness = await readProtocolObservation(async (method, params, options) => {
+      checkScope();
+      const value = await rpc(method, params, options);
+      checkScope();
+      return value;
+    }, 'synergy_getReadiness', endpoint, signal, testnetReadiness);
+    checkConfiguredGenesis(readiness.chain, endpoint.genesisHash);
+    const incarnation = Number(readiness.chain.incarnation);
+    if (!Number.isSafeInteger(incarnation) || incarnation <= 0) throw Error('The selected RPC did not report a supported Testnet incarnation.');
+
+    checkScope();
+    let response;
+    try {
+      response = await rpcNftInventoryObservation({endpoint: endpoint.rpc, signal, owner: account, limit: RPC_OWNER_NFT_LIMIT});
+    } catch {
+      checkScope();
+      throw Error('The owner NFT snapshot is unavailable from the selected RPC.');
+    }
+    checkScope();
+    return ownerCollectibleObservation(response, account, readiness);
+  }, request);
+
+  return <Card title="Selected RPC collectibles">
+    {supportedAccount ? <>
+      <p>Check up to {RPC_OWNER_NFT_LIMIT} NFT records from the endpoint’s reported STS snapshot. This check sends your public Wallet address to the selected RPC.</p>
+      <button disabled={!!request && observation.loading} onClick={() => setRequest(value => value + 1)}>
+        {request ? 'Check owner NFT snapshot again' : 'Check owner NFT snapshot'}
+      </button>
+      {!!request && <Resource value={{...observation, reload: undefined}}>{value => <>
+        <Detail data={{reportedSnapshotHeight: value.snapshotHeight, reportedSnapshotHash: value.snapshotHash}}/>
+        {value.items.length === RPC_OWNER_NFT_LIMIT && <p>The response reached the limit of {RPC_OWNER_NFT_LIMIT} records. Additional records may be available.</p>}
+        <CollectibleList items={value.items} receivedAt={value.receivedAt} indexed={false}/>
+      </>}</Resource>}
+    </> : <p>A current protected Wallet address is required for this check.</p>}
   </Card>;
 }

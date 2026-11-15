@@ -14,7 +14,7 @@ import {readAtlasTokenBalances} from './token-balance-inventory.js';
 import {readAtlasAddress} from './atlas-account.js';
 import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
-import {WalletCollectibles} from './WalletCollectibles.jsx';
+import {WalletCollectibles, WalletOwnerCollectibles} from './WalletCollectibles.jsx';
 import {WalletOverview} from './WalletOverview.jsx';
 import {WalletOneTimeDraft, WalletRecipientDraft} from './WalletRecipientDraft.jsx';
 import {atlasEndpointRequired, canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
@@ -41,7 +41,7 @@ export function WalletApp() {
   const atlasScope = JSON.stringify([scope, atlasReady, n.endpoint.genesisHash, n.walletConsentSession]);
   const atlasKey = `${atlasScope}:${revision}`;
   const draftScope = JSON.stringify([scope, n.endpoint.chainId, n.endpoint.genesisHash, n.walletConsentSession]);
-  const canReviewDraft = () => !n.recoverySuspended && n.permit('wallet', 'readWallet');
+  const canReadWallet = () => !n.recoverySuspended && n.permit('wallet', 'readWallet');
   if (recipientDraft && recipientDraft.scope !== draftScope) setRecipientDraft(null);
 
   const tokens = useResource(async signal => {
@@ -90,8 +90,11 @@ export function WalletApp() {
           </>}</Resource></Card>
         </> : <Card title="Live assets"><p>{atlasEndpointRequired}</p></Card>;
       case 'Collectibles':
-        return atlasReady ? <WalletCollectibles key={atlasKey} account={connection.address} endpoint={n.endpoint} readAtlas={readAtlas}/>
-          : <Card title="Collectibles"><p>{atlasEndpointRequired}</p></Card>;
+        return <>
+          {atlasReady ? <WalletCollectibles key={atlasKey} account={connection.address} endpoint={n.endpoint} readAtlas={readAtlas}/>
+            : <Card title="Collectibles"><p>{atlasEndpointRequired}</p></Card>}
+          <WalletOwnerCollectibles key={`owner-nfts:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+        </>;
       case 'Activity':
         return <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
           endpoint={n.endpoint} readAtlas={readAtlas} recent={data} recentAt={data?.portalReceivedAt}/> : <p>{atlasEndpointRequired}</p>}</Card>;
@@ -112,9 +115,9 @@ export function WalletApp() {
           <p>Transfers remain unavailable until the network’s authoritative ETDAG transaction preparation and mobile signing contracts are integrated. No nonce, fees, signature algorithm or transaction envelope is guessed.</p>
           {recipientDraft?.scope === draftScope ? <WalletRecipientDraft contact={recipientDraft.contact} account={connection.address} endpoint={n.endpoint}
             onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}
-            canReview={canReviewDraft}/> : <WalletOneTimeDraft key={draftScope} account={connection.address} endpoint={n.endpoint}
-            canReview={canReviewDraft}/>}
-          <WalletFeeMarket key={`fee:${draftScope}`} endpoint={n.endpoint} canRead={canReviewDraft}/>
+            canReview={canReadWallet}/> : <WalletOneTimeDraft key={draftScope} account={connection.address} endpoint={n.endpoint}
+            canReview={canReadWallet}/>}
+          <WalletFeeMarket key={`fee:${draftScope}`} endpoint={n.endpoint} canRead={canReadWallet}/>
           <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
         </Card>;
     }

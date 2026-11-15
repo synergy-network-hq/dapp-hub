@@ -28,6 +28,17 @@ export function isProtectedWalletAddress(address) {
   return body === expected;
 }
 
+export function isStsNftObjectId(address, nftClass) {
+  const expectedPrefix = nftClass === 'nf1' ? 'synn1' : nftClass === 'nf2' ? 'synn2' : null;
+  if (!expectedPrefix || typeof address !== 'string' || address.length !== 44 || address !== address.toLowerCase()) return false;
+  try {
+    const {prefix, words} = bech32m.decode(address);
+    return prefix === expectedPrefix && words.length === 32;
+  } catch {
+    return false;
+  }
+}
+
 // A contact format classifier for local storage and display. This does not verify ownership or transfer eligibility.
 export function contactAddressProfile(address) {
   if (typeof address !== 'string') return null;
