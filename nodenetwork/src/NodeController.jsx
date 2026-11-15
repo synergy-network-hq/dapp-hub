@@ -11,6 +11,8 @@ import {VpnStatus} from './VpnStatus.jsx';
 import {vpnStatusObservation} from './vpn-status.js';
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
+import {IdentityPreflight} from './IdentityPreflight.jsx';
+import {identityPreflightObservation,identityPreflightReads} from './identity-preflight.js';
 import {targetHealthObservation} from './target-health.js';
 
 const typedStatus = {
@@ -18,6 +20,8 @@ const typedStatus = {
  vpn_status: vpnStatusObservation,
  identity_status: response => custodyStatusObservation('identity_status',response),
  formation_status: response => custodyStatusObservation('formation_status',response),
+ identity_preflight: response => identityPreflightObservation('identity_preflight',response),
+ formation_preflight: response => identityPreflightObservation('formation_preflight',response),
 };
 
 const healthColumns = [
@@ -66,6 +70,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const healthResult=statusResult?.operation==='health'?statusResult:null;
  const vpnResult=statusResult?.operation==='vpn_status'?statusResult:null;
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
+ const preparationResult=identityPreflightReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  async function run(operation,parameters={}){
   const read=statusGates[operation];
   const isPreflight=operation==='install_preflight';
@@ -143,6 +148,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <InstallPreflight checklist={preflight} action={
     <button disabled={busy||!preflight.canRun} onClick={()=>run('install_preflight',installParameters(form))}>Run installation preflight</button>
    }/>
+   <IdentityPreflight
+    actions={<div className="native-actions">{identityPreflightReads.map(({operation,label})=>statusAction(operation,label))}</div>}
+    observation={preparationResult?.result}
+    receipt={preparationResult&&<ControllerReceipt receivedAt={preparationResult.receivedAt}/>}/>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
    {statusAction('health','Read target health')}{button('inventory','Inventory node-owned files')}

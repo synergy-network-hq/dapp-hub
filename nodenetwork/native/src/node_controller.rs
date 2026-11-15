@@ -49,7 +49,7 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status" => false,
+            "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight" => false,
             "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
@@ -206,8 +206,42 @@ fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
-fn custody_digest(value: &Value) -> bool {
+fn lowercase_digest(value: &Value) -> bool {
     value.as_str().is_some_and(|pin| pin.len() == 64 && pin.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+fn validator_network_context(result: &Value) -> bool {
+    result["network_id"].as_str().is_some_and(|network| {
+        (2..=128).contains(&network.len()) && network.as_bytes()[0].is_ascii_alphanumeric()
+            && network.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
+    }) && result["chain_id"].as_str().is_some_and(|chain| {
+        chain.parse::<u64>().is_ok_and(|number| number > 0 && number.to_string() == chain)
+    })
+}
+
+fn preparation_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
+    const UNSUPPORTED: &str = "The selected controller returned unsupported validator preparation evidence.";
+    if reply["ok"] != true {
+        if reply["error"]["code"] == "authorization_required" {
+            return Err("The controller has no confirmed approval for these preparation inputs. Review the required pins with the node operator.");
+        }
+        return Err("The controller could not confirm preparation. Review the staged inputs and any existing custody with the node operator.");
+    }
+    let result = &reply["result"];
+    let fields = result.as_object().ok_or(UNSUPPORTED)?;
+    let valid_operation = match operation {
+        "identity_preflight" => fields.len() == 4 && result["genesis_authority_verified"] == true
+            && lowercase_digest(&result["genesis_sha256"]),
+        "formation_preflight" => fields.len() == 5 && result["schema"] == "nodenetwork-formation-v1"
+            && lowercase_digest(&result["formation_sha256"]) && lowercase_digest(&result["formation_id"])
+            && result["formation_id"].as_str().is_some_and(|id| id.bytes().any(|byte| byte != b'0')),
+        _ => false,
+    };
+    if !reply.as_object().is_some_and(|fields| fields.len() == 3) || reply["version"] != 1
+        || !validator_network_context(result) || !valid_operation {
+        return Err(UNSUPPORTED);
+    }
+    Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
 fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
@@ -223,23 +257,17 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
     if result["pending"] == false && fields.len() == 1 {
         return Ok(json!({"version":1,"ok":true,"result":result}));
     }
-    let valid_context = result["network_id"].as_str().is_some_and(|network| {
-        (2..=128).contains(&network.len()) && network.as_bytes()[0].is_ascii_alphanumeric()
-            && network.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
-    }) && result["chain_id"].as_str().is_some_and(|chain| {
-        chain.parse::<u64>().is_ok_and(|number| number > 0 && number.to_string() == chain)
-    });
     let valid_address = result["address"].as_str().and_then(|value| value.strip_prefix("synv1")).is_some_and(|tail| {
         (10..=90).contains(&tail.len()) && tail.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     });
-    if result["pending"] != true || !valid_context || !valid_address
+    if result["pending"] != true || !validator_network_context(result) || !valid_address
         || result["possession_verified"] != true || result["membership_granted"] != false {
         return Err(UNSUPPORTED);
     }
     let valid_kind = match operation {
-        "identity_status" => fields.len() == 8 && result["genesis_authority_verified"] == true && custody_digest(&result["genesis_sha256"]),
+        "identity_status" => fields.len() == 8 && result["genesis_authority_verified"] == true && lowercase_digest(&result["genesis_sha256"]),
         "formation_status" => fields.len() == 10 && result["schema"] == "nodenetwork-formation-v1"
-            && ["formation_sha256", "formation_id", "request_sha256"].iter().all(|key| custody_digest(&result[*key]))
+            && ["formation_sha256", "formation_id", "request_sha256"].iter().all(|key| lowercase_digest(&result[*key]))
             && result["formation_id"].as_str().is_some_and(|id| id.bytes().any(|byte| byte != b'0')),
         _ => false,
     };
@@ -340,6 +368,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "diagnostics" => crate::node_diagnostics::reply(&value),
             "install_preflight" => install_preflight_reply(&request, &value),
             "vpn_status" => vpn_status_reply(&value),
+            "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
             _ => Ok(value),
         }
@@ -509,6 +538,56 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert!(custody_status_reply("formation_status", &reply).is_ok());
         assert!(custody_status_reply("identity_status", &json!({"ok":false,"error":{"code":"reconciliation_required","message":"private fixture"}}))
             .unwrap_err().contains("Preserve it"));
+    }
+    #[test] fn preparation_reads_are_independent_empty_parameter_operations() {
+        for operation in ["identity_preflight", "formation_preflight"] {
+            let mut request = Request {version:1, operation:operation.into(), parameters:json!({})};
+            assert_eq!(request.validate(), Ok(false));
+            request.parameters = json!({"genesis_sha256":"a".repeat(64)});
+            assert!(request.validate().is_err());
+        }
+        for operation in ["identity_generate", "formation_prepare", "genesis_stage", "genesis_bind"] {
+            let request = Request {version:1, operation:operation.into(), parameters:json!({})};
+            assert!(request.validate().is_err());
+        }
+    }
+    #[test] fn preparation_reply_separates_exact_genesis_and_formation_evidence() {
+        let identity = json!({"version":1,"ok":true,"result":{
+            "network_id":"fixture-network","chain_id":"18446744073709551615",
+            "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true}});
+        let formation = json!({"version":1,"ok":true,"result":{
+            "schema":"nodenetwork-formation-v1","network_id":"fixture-network","chain_id":"1266",
+            "formation_sha256":"b".repeat(64),"formation_id":"c".repeat(64)}});
+        assert_eq!(preparation_reply("identity_preflight", &identity), Ok(identity.clone()));
+        assert_eq!(preparation_reply("formation_preflight", &formation), Ok(formation.clone()));
+        assert!(preparation_reply("identity_preflight", &formation).is_err());
+        assert!(preparation_reply("formation_preflight", &identity).is_err());
+        for (source,operation,path,data) in [
+            (&identity,"identity_preflight","/result/chain_id",json!("18446744073709551616")),
+            (&identity,"identity_preflight","/result/chain_id",json!("1266\n")),
+            (&identity,"identity_preflight","/result/genesis_authority_verified",json!(false)),
+            (&identity,"identity_preflight","/result/network_id",json!("private/path")),
+            (&formation,"formation_preflight","/result/formation_id",json!("0".repeat(64))),
+            (&formation,"formation_preflight","/result/formation_sha256",json!("fixture path")),
+        ] {
+            let mut changed = source.clone();
+            *changed.pointer_mut(path).unwrap() = data;
+            assert!(preparation_reply(operation, &changed).is_err(), "{path}");
+        }
+        let mut changed = identity;
+        changed["result"]["private_metadata"] = json!("fixture");
+        assert!(preparation_reply("identity_preflight", &changed).is_err());
+    }
+    #[test] fn preparation_refuses_with_fixed_guidance_without_host_details() {
+        for (code,guidance) in [
+            ("authorization_required", "Review the required pins"),
+            ("operation_refused", "Review the staged inputs"),
+        ] {
+            let reply = json!({"version":1,"ok":false,"error":{"code":code,"message":"private fixture"}});
+            let error = preparation_reply("identity_preflight", &reply).unwrap_err();
+            assert!(error.contains(guidance));
+            assert!(!error.contains("private fixture"));
+        }
     }
     #[test]
     #[ignore = "Requires an explicitly enrolled disposable Linux VM and its authenticated SSH host pin"]
