@@ -43,3 +43,38 @@ Node Control Panel main remained `608f2529dfe6c7d8a0d932342aa478c2995a20c3` at t
 Testnet v3 `05610db7eb1eaa582caec0adf0c7967c820d5e34` exposes `synergy_getValidators` in `runtime/src/rpc/rpc_server.rs`. It filters the node’s `network_validator_snapshot` to `ValidatorStatus::Active`. That snapshot combines source validator state and configured/genesis inputs. The separately implemented `synergy_getValidatorSetSnapshot` builds a finalized membership response and needs its own Portal admission. The existing Portal allowlist admits the public active list and chain ID. NodeNetwork uses those two reads for the selected Testnet endpoint and scopes the result to observation only.
 
 Hub delivery branch `delivery/nodenetwork-existing-chain-2026-11-15` at `ad4b4f30864167cf93c54ddd63c3e7dee505b7cc` contains typed NetBird status/enrollment, validator identity and formation preparation, signed Genesis staging/binding, interrupted custody reconciliation, authenticated removal, and scoped controller diagnostics. The branch also changes the managed root to `/opt/synergy`. Our saved target and install/update/offboarding contracts currently use `/opt/Synergy` and need an explicit migration with the compatible Portal native bridge. The delivery acceptance refers to an external canonical engine used in its type-check. Its engine prerequisite remains in `nodenetwork/native/build.rs`, and the branch tree contains no engine. The dApp release descriptor is still null. Qualified release verification, VPN issuance, and isolated target runtime acceptance remain prerequisites for managed execution. This source review leaves the delivery branch and local lifecycle unchanged.
+
+## Pinned uppercase engine build evidence
+
+The current Testnet v3 `reconcile/core-protocol-root-2026-09-15` and `delivery/canary-epoch5-timeout-2026-11-15` `node-platform/tools` subtrees contain the canonical engine with the lowercase `/opt/synergy` contract. Their root recursive listings were truncated. Core commit `b1641323713f0307140de0c89ad73f1c86005568` introduced that root change. Its parent `613fa6ab8732c6fcb2a8afb40291b68874f4c27f` contains the matching uppercase bootstrap and controller. The bootstrap uses Portal’s seven-field v1 header and independent native manifest digest authorization. The exact bootstrap Git blob is `2e86690192108d8a4d83944750c7236702fbfb30` and its SHA-256 is `266f996706f258380f304afcdc7120e91798da361b558eadc97dc54998c34866`.
+
+Full hostless `cargo check --locked --offline` passed on Apple Silicon at Portal `4c4571f8930392b37dde71ee59277f9eced53f6e` and Hub `4faa5c912ea0e3d575a97d01df33d1c9e6129efb`. The actual native adapter and desktop compiled. `OperationGate::restart` produced an unused-method warning. The exact file was embedded from temporary storage and never executed. Build evidence leaves APQE release authority, compatible master artifacts, native window behavior and host lifecycle qualification open.
+
+From the Portal root with an existing frontend build, authenticated `gh` repository access and locked Cargo dependencies cached, this reproduces the pinned hostless check. The temporary engine and Cargo output are removed afterward.
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import hashlib
+import os
+import subprocess
+
+ref = '613fa6ab8732c6fcb2a8afb40291b68874f4c27f'
+path = f'repos/synergy-network-hq/testnet-v3/contents/node-platform/tools/linux-node/bootstrap.py?ref={ref}'
+bootstrap = subprocess.check_output(['gh', 'api', '-H', 'Accept: application/vnd.github.raw+json', path])
+digest = '266f996706f258380f304afcdc7120e91798da361b558eadc97dc54998c34866'
+if hashlib.sha256(bootstrap).hexdigest() != digest:
+    raise SystemExit('Pinned bootstrap digest mismatch')
+with TemporaryDirectory(prefix='portal-hostless-check-', dir='/private/tmp') as directory:
+    root = Path(directory)
+    engine = root / 'linux-node'
+    engine.mkdir(mode=0o700)
+    (engine / 'bootstrap.py').write_bytes(bootstrap)
+    env = {**os.environ, 'SYNERGY_NODE_ENGINE_ROOT': str(engine), 'CARGO_TARGET_DIR': str(root / 'cargo-target')}
+    for key in ('SYNERGY_NODENETWORK_QUALIFICATION_MANIFEST_SHA256', 'SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN'):
+        env.pop(key, None)
+    result = subprocess.run(['cargo', 'check', '--locked', '--offline', '--manifest-path', 'apps/desktop/src-tauri/Cargo.toml'], env=env)
+    raise SystemExit(result.returncode)
+PY
+```

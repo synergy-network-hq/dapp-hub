@@ -32,7 +32,7 @@ function recentActivity(raw, account) {
   return preview;
 }
 
-export function WalletOverview({account, endpoint, revision, observation, onActivity, onCollectibles}) {
+export function WalletOverview({account, endpoint, revision, observation, readAtlas, onActivity, onCollectibles}) {
   return <div className="native-grid">
     <Card title="Recent activity" action={<button onClick={onActivity}>View full Activity</button>}>
       <Resource value={{...observation, error: observation.error ? 'Atlas recent activity is unavailable.' : null}}>{result => {
@@ -44,6 +44,6 @@ export function WalletOverview({account, endpoint, revision, observation, onActi
         </>;
       }}</Resource>
     </Card>
-    <WalletCollectiblesPreview {...{account, endpoint, revision}} onBrowse={onCollectibles}/>
+    <WalletCollectiblesPreview {...{account, endpoint, revision, readAtlas}} onBrowse={onCollectibles}/>
   </div>;
 }

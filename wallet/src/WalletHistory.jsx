@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
-import {atlas,rpc,chainIdNumber,useNative,useResource,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
+import {rpc,chainIdNumber,useNative,useResource,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {readAccountHistory} from './account-history.js';
 import {WalletActivity} from './WalletActivity.jsx';
@@ -14,7 +14,7 @@ export function WalletHistory(props) {
  return <ScopedWalletHistory key={scope} {...props}/>;
 }
 
-function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas=atlas}){
+function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas}){
  const [epoch,setEpoch]=useState(0),[pages,setPages]=useState([]),[position,setPosition]=useState(0),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const request=useRef({generation:0,controller:null,pending:false});
  async function load(cursor,previous,signal){if(chainIdNumber(await readRpc('synergy_getChainId',[],{endpoint:endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet history chain1266.');return readAccountHistory(readAtlas,account,{cursor,previous,signal});}

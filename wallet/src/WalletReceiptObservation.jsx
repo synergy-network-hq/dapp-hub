@@ -1,24 +1,22 @@
 import {useState} from 'react';
-import {atlas, Detail, Resource, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {Detail, Resource, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {atlasAccountKey} from './atlas-account.js';
+import {canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
 import {atlasReceiptObservation, blockHeight} from './transaction-observation.js';
 
-function ReceiptLookup({hash, account, height, permit}) {
+function ReceiptLookup({hash, account, height, native}) {
   const [revision, setRevision] = useState(0);
   const check = () => setRevision(value => value + 1);
   const observation = useResource(async signal => {
     if (!revision) return null;
     signal.throwIfAborted();
-    if (!permit('wallet', 'readWallet')) throw Error('Wallet receipt access is unavailable in this Portal context.');
-
     let result;
     try {
-      result = await atlas(`txs/${encodeURIComponent(hash)}`, {signal});
+      result = await readScopedWalletAtlas(native, `txs/${encodeURIComponent(hash)}`, {signal});
     } catch {
       throw Error('The Atlas receipt check could not be completed. Try again.');
     }
     signal.throwIfAborted();
-    if (!permit('wallet', 'readWallet')) throw Error('Wallet receipt access is unavailable in this Portal context.');
     return {...atlasReceiptObservation(result, hash, account, height), checkedAt: new Date().toISOString()};
   }, revision);
 
@@ -38,10 +36,11 @@ function ReceiptLookup({hash, account, height, permit}) {
   </section>;
 }
 
-export function WalletReceiptObservation({hash, account, block}) {
+export function WalletReceiptObservation({hash, account, endpoint, block}) {
   const n = useNative();
   const height = blockHeight(block);
-  if (height === null || !atlasAccountKey(account) || !n?.permit('wallet', 'readWallet')) return null;
-  return <ReceiptLookup key={JSON.stringify([hash, account, height, n.walletConsentSession])}
-    hash={hash} account={account} height={height} permit={n.permit}/>;
+  const key = atlasAccountKey(account);
+  if (height === null || !key || !canReadWalletAtlas(n, endpoint) || atlasAccountKey(n.wallet.connection.address) !== key) return null;
+  return <ReceiptLookup key={JSON.stringify([hash, account, height, endpoint.id, endpoint.rpc, endpoint.networkKey, n.walletConsentSession])}
+    hash={hash} account={account} height={height} native={n}/>;
 }

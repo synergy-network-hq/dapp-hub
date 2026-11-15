@@ -78,7 +78,7 @@ export function WalletConnections({canRead}) {
         <div><dt>Transaction signing and submission</dt><dd>Unavailable in this Wallet integration</dd></div>
       </dl>
       <p>Transaction-request grants allow a separate review. Signing requires phone approval and a supported integration.</p>
-      <p>Balances and activity come from the selected RPC and Atlas. Index coverage and spendability may be unavailable.</p>
+      <p>Wallet reads balances from the selected RPC. Atlas account observations require the canonical Testnet v3 RPC endpoint. Index coverage and spendability may be unavailable.</p>
       <p>Use Wallet connection in Portal to disconnect locally and check pending remote cleanup. Phone sessions can also be revoked from the phone.</p>
     </Card>
   </>;

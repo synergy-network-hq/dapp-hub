@@ -4,6 +4,8 @@ import {Copy, Detail, ErrorMessage, Resource, chainIdNumber, openExternal, useAc
 import {text} from '@synergy-network/dapp-data-view';
 import {indexedTransactionAmount, indexedTransactionTime, transactionDirection} from './WalletActivity.jsx';
 import {sourceRecords} from './source-records.js';
+import {canReadWalletAtlas} from './atlas-scope.js';
+import {atlasAccountKey} from './atlas-account.js';
 import {WalletReceiptObservation} from './WalletReceiptObservation.jsx';
 import {blockLookupHeight, comparableTransactionHash, compareIndexedBlock, reportedBlockMembership,
   transactionObservation} from './transaction-observation.js';
@@ -105,15 +107,16 @@ function TransactionLookup({hash, account, endpoint, readRpc, indexedBlock}) {
   </section>;
 }
 
-function AtlasExplorerAction({hash}) {
+function AtlasExplorerAction({hash, account, endpoint}) {
   const n = useNative();
   const action = useAction();
-  if (!n?.permit('wallet', 'readWallet')) return null;
+  const accountKey = atlasAccountKey(account);
+  if (!canReadWalletAtlas(n, endpoint) || !accountKey || atlasAccountKey(n.wallet.connection.address) !== accountKey) return null;
   if (!n.permit('wallet', 'externalLinks')) return <p>Allow Wallet external links in Security &amp; permissions to open Atlas.</p>;
 
   function openTransaction() {
     return action.run(async () => {
-      if (!n.permit('wallet', 'readWallet') || !n.permit('wallet', 'externalLinks')) {
+      if (!canReadWalletAtlas(n, endpoint) || !n.permit('wallet', 'externalLinks')) {
         throw Error('Wallet external links are unavailable in this Portal context.');
       }
       try {
@@ -153,9 +156,9 @@ function IndexedDetails({row, account, endpoint, readRpc}) {
       timeSource: time?.source || 'Unavailable',
     }}/>
     {hashSupported && <Copy value={row.hash} label="Copy transaction hash"/>}
-    {supportedTransaction && <AtlasExplorerAction hash={row.hash}/>}
+    {supportedTransaction && <AtlasExplorerAction hash={row.hash} account={account} endpoint={endpoint}/>}
     <p>This is the current Atlas record. Finality requires independent chain evidence.</p>
-    {supportedTransaction && <WalletReceiptObservation hash={row.hash} account={account} block={block}/>}
+    {supportedTransaction && <WalletReceiptObservation hash={row.hash} account={account} endpoint={endpoint} block={block}/>}
     {canCheck && (checking
       ? <TransactionLookup hash={row.hash} account={account} endpoint={endpoint} readRpc={readRpc} indexedBlock={block}/>
       : <button onClick={() => setChecking(true)}>Check status on selected RPC</button>)}

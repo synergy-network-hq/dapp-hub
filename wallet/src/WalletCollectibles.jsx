@@ -1,5 +1,5 @@
 import {useState} from 'react';
-import {atlas, Card, Detail, Resource, chainIdNumber, rpc, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {Card, Detail, Resource, chainIdNumber, rpc, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {ATLAS_NFT_LIMIT, collectibleObservations} from './collectible-observations.js';
 import {requireAtlasAccountKey} from './atlas-account.js';
@@ -67,7 +67,7 @@ function CollectibleList({items, receivedAt}) {
   </>;
 }
 
-function useCollectibleObservations({account, endpoint, readRpc = rpc, readAtlas = atlas, revision, requested = true}) {
+function useCollectibleObservations({account, endpoint, readRpc = rpc, readAtlas, revision, requested = true}) {
   return useResource(async signal => {
     if (!requested) return null;
     signal.throwIfAborted();
@@ -83,9 +83,9 @@ function useCollectibleObservations({account, endpoint, readRpc = rpc, readAtlas
   }, JSON.stringify([account, endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey, revision, requested]));
 }
 
-export function WalletCollectiblesPreview({account, endpoint, revision, onBrowse}) {
+export function WalletCollectiblesPreview({account, endpoint, revision, readAtlas, onBrowse}) {
   const [requested, setRequested] = useState(false);
-  const observation = useCollectibleObservations({account, endpoint, revision, requested});
+  const observation = useCollectibleObservations({account, endpoint, revision, readAtlas, requested});
 
   return <Card title="Collectible preview" action={<button onClick={onBrowse}>View full Collectibles</button>}>
     <p>Matching records from up to {ATLAS_NFT_LIMIT} recent STS NFTs across accounts in Atlas. Current ownership and coverage remain unverified.</p>

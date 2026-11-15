@@ -37,9 +37,10 @@ export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing
  const [address, setAddress] = useState('');
  const [lookupAddress, setLookupAddress] = useState(null);
  const [lookupError, setLookupError] = useState('');
- const lookup = useResource(signal => lookupAddress ? readValidator(lookupAddress, signal) : null, lookupAddress ?? '');
- const lookupResult = lookup.data?.address === lookupAddress ? lookup.data : null;
- const source = validatorSource(data);
+ const indexed = Boolean(readValidator);
+ const lookup = useResource(signal => lookupAddress && indexed ? readValidator(lookupAddress, signal) : null, JSON.stringify([lookupAddress,indexed]));
+ const lookupResult = indexed && lookup.data?.address === lookupAddress ? lookup.data : null;
+ const source = validatorSource(indexed ? data : undefined);
  const {items} = source;
  const counts = new Map();
  for (const row of items) {
@@ -87,7 +88,7 @@ export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing
   try {
    const checked = validatorLookupAddress(value);
    setAddress(checked);
-   if (lookupAddress === checked) lookup.reload();
+   if (lookupAddress === checked && indexed) lookup.reload();
    else setLookupAddress(checked);
   } catch (failure) {
    setLookupAddress(null);
@@ -96,13 +97,13 @@ export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing
  }
 
  return <Card title="Watched validators">
-  <p>Monitor-only · Synergy Testnet v3, chain 1266. Public watches remain on this device and describe Atlas observations.</p>
-  <SourceAge updatedAt={updatedAt}/>
-  {data && source.notice && <p role="alert">{source.notice}</p>}
+  <p>Monitor-only · Synergy Testnet v3, chain 1266. Public watches remain on this device.</p>
+  {indexed && <SourceAge updatedAt={updatedAt}/>}
+  {indexed && data && source.notice && <p role="alert">{source.notice}</p>}
   <ErrorMessage error={error}/>
   <button onClick={refresh}>Refresh saved watchlist</button>
   {notice && <p role="status">{notice}</p>}
-  <label>Validator to watch
+  {indexed && <><label>Validator to watch
    <select disabled={!readable || !choices.length} value={selected} onChange={event => setSelected(event.target.value)}>
     <option value="">Choose a returned identity</option>
     {selected && !choices.some(row => identity(row) === selected) && <option value={selected}>{selected} — not returned</option>}
@@ -111,20 +112,20 @@ export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing
   </label>
   <button disabled={!readable || !selected || counts.get(selected) !== 1} onClick={() => {
    if (counts.get(selected) === 1) edit({add: selected});
-  }}>Watch selected validator</button>
+  }}>Watch selected validator</button></>}
 
   <form onSubmit={event => {event.preventDefault(); lookupValidator(address);}}>
-   <label>Import monitor by SYNV address
+   <label>{indexed ? 'Import monitor by SYNV address' : 'SYNV validator address'}
     <input maxLength={128} autoComplete="off" value={address} onChange={event => {
      setAddress(event.target.value);
      setLookupAddress(null);
      setLookupError('');
     }}/>
    </label>
-   <button disabled={!address.trim()}>Look up validator</button>
+   <button disabled={!address.trim()}>{indexed ? 'Look up validator' : 'Review RPC validator address'}</button>
   </form>
   <ErrorMessage error={lookupError}/>
-  {lookupAddress && <Resource value={lookup}>{result => <section>
+  {lookupAddress && indexed && <Resource value={lookup}>{result => <section>
    <h3>{result.name || result.address}</h3>
    <p style={{overflowWrap: 'anywhere'}}>{result.address} · {result.status}</p>
    <SourceAge updatedAt={result.receivedAt} source="Atlas public validator detail"/>
@@ -142,7 +143,7 @@ export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing
    const matches = items.filter(row => identity(row) === id);
    const record = matches.length === 1 ? matches[0] : null;
    const detail = lookupResult?.address === id.trim().toLowerCase() ? lookupResult : null;
-   const status = detail?.status || (!source.available ? 'Current list unavailable.'
+   const status = detail?.status || (!indexed ? 'Atlas observations require the canonical Synergy Testnet RPC.' : !source.available ? 'Current list unavailable.'
     : record ? `Reported status: ${text(record.status)}`
      : matches.length ? 'Current identity is ambiguous.'
       : source.notice ? 'Not present in this incomplete source view.' : 'Not returned by the current list.');

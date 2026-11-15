@@ -1,6 +1,6 @@
 import {RpcReadiness} from './RpcReadiness.jsx';
 import {NetworkComparison} from './NetworkComparison.jsx';
-import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
+import {chainIdNumber,isCanonicalTestnetRpc} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {emptyProvisioningDraft,readProvisioningSnapshot,saveProvisioningDraft} from './provisioning-draft.js';
 import './monitor.css';
@@ -38,6 +38,8 @@ export function NodeNetworkApp(){
  const profile=profiles.find(p=>p.id===profileId)||CANARY_PROFILE;
  const tab=({overview:'Network',operations:'Validator setup',monitoring:'Management',settings:settingsTab})[section];
  const permitted=n.permit('node','readNetwork');
+ const indexAvailable=permitted&&isCanonicalTestnetRpc(profile);
+ const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,permitted]);
  const masterScope=useRef({permitted,generation:0});
  if(masterScope.current.permitted!==permitted)masterScope.current={permitted,generation:masterScope.current.generation+1};
  useEffect(()=>{setMaster(null);setMasterError('');setReviewing(false);return()=>{masterScope.current.generation++;};},[permitted]);
@@ -57,26 +59,34 @@ export function NodeNetworkApp(){
   if(!permitted)throw new Error('Allow NodeNetwork to read public network data in Security & permissions.');
   return readNodeNetwork(rpc,profile,signal);
  },`${profile.id}:${profile.rpc}:${profile.chainId}:${permitted}`);
- const validators=useResource(async signal=>{if(!permitted||Number(profile.chainId)!==1266)throw Error('Public Atlas validator monitoring requires read permission and chain 1266.');if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');const data=await atlas('validators?limit=100',{signal});return {data,updatedAt:Date.now()};},`${profile.id}:${profile.rpc}:${profile.chainId}:${permitted}`);
- const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,permitted]);
- async function lookupValidator(address,signal){
-  if(!permitted||Number(profile.chainId)!==1266)throw Error('Public validator lookup requires read permission and chain 1266.');
-  const path=validatorLookupPath(address);
+ const validators=useResource(async signal=>{
+  if(!indexAvailable)return null;
+  const data=await readAtlasValidators('validators?limit=100',signal);
+  return {data,updatedAt:Date.now()};
+ },monitorScope);
+ async function readAtlasValidators(path,signal){
+  if(!indexAvailable)throw Error('Atlas validator observations require read permission and the canonical Synergy Testnet RPC.');
   signal?.throwIfAborted();
   if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');
   signal?.throwIfAborted();
-  const detail=await atlas(path,{signal});
+  const data=await atlas(path,{signal});
   signal?.throwIfAborted();
+  return data;
+ }
+ async function lookupValidator(address,signal){
+  const path=validatorLookupPath(address);
+  const detail=await readAtlasValidators(path,signal);
   return validatorLookupObservation(detail,address);
  }
  function lookupActiveListing(address, signal) {
   if (!permitted) throw Error('Allow NodeNetwork to read public network data in Security & permissions.');
   return readValidatorActiveListing(rpc, profile, address, signal);
  }
- const refreshPublic=()=>{live.reload();validators.reload();};
- return <NodeNetworkPanelFrame section={section} onSectionChange={setSection} subtitle="Operator workspace · Enrollment policy has not been verified." statusLabel={live.loading?'Checking observation network':live.error?'Observation network error':'Public network observed'} statusTone={live.data?'blue':'gray'} onRefresh={refreshPublic} refreshing={live.loading||validators.loading} nodeLabel={!targetSettings.snapshot?'Target settings need review':!target?'Host selection deferred':target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} statusItems={[{label:'Target root',value:target?.root||'No target selected'},{label:'Observation network',value:profile.name},{label:'Chain ID',value:profile.chainId},{label:'Enrollment policy',value:'Not verified'}]}>
+ const refreshPublic=()=>{live.reload();if(indexAvailable)validators.reload();};
+ const refreshing=live.loading||(indexAvailable&&validators.loading);
+ return <NodeNetworkPanelFrame section={section} onSectionChange={setSection} subtitle="Operator workspace · Enrollment policy has not been verified." statusLabel={live.loading?'Checking observation network':live.error?'Observation network error':'Public network observed'} statusTone={live.data?'blue':'gray'} onRefresh={refreshPublic} refreshing={refreshing} nodeLabel={!targetSettings.snapshot?'Target settings need review':!target?'Host selection deferred':target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} statusItems={[{label:'Target root',value:target?.root||'No target selected'},{label:'Observation network',value:profile.name},{label:'Chain ID',value:profile.chainId},{label:'Enrollment policy',value:'Not verified'}]}>
   {section==='settings'&&<TargetSettings selection={targetSettings} local={local}/>}
-  <div className="native-actions"><label>Observation network<select aria-label="NodeNetwork observation network" value={profileId} onChange={e=>setProfileId(e.target.value)}>{profiles.map(p=><option key={p.id} value={p.id}>{p.name} · {p.chainId}</option>)}</select></label><button disabled={live.loading||validators.loading} onClick={refreshPublic}>Refresh NodeNetwork</button></div>
+  <div className="native-actions"><label>Observation network<select aria-label="NodeNetwork observation network" value={profileId} onChange={e=>setProfileId(e.target.value)}>{profiles.map(p=><option key={p.id} value={p.id}>{p.name} · {p.chainId}</option>)}</select></label><button disabled={refreshing} onClick={refreshPublic}>Refresh NodeNetwork</button></div>
   {section==='settings'&&<div className="native-tabs" role="tablist" aria-label="Node settings sections">{['Updates','Installation isolation'].map(name=><button role="tab" key={name} aria-selected={tab===name} onClick={()=>setSettingsTab(name)}>{name}</button>)}</div>}
   {section==='performance'?<NodeNetworkPanelCard title="Validator performance telemetry">
    <p>Managed CPU, memory, disk and duty timing require an authenticated telemetry interface.</p>
@@ -87,7 +97,7 @@ export function NodeNetworkApp(){
    <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>
   </>:tab==='Network'?<>
    <Card title="Observation sources">
-    <p>Public RPC and Atlas observations below describe the selected network and its index. Check each source's receipt time before using it.</p>
+    <p>Public RPC observations use the selected endpoint. Atlas validator observations use the canonical Synergy Testnet transport.</p>
     {target
      ? <><p>A target is configured. Open Monitoring to inspect its native controller.</p><button onClick={()=>setSection('monitoring')}>Open target monitoring</button></>
      : <><p>Monitor-only · Host selection deferred.</p><button onClick={()=>setSection('settings')}>Review target settings</button></>}
@@ -95,10 +105,11 @@ export function NodeNetworkApp(){
    <RpcReadiness profile={profile} permitted={permitted}/>
    <NetworkComparison profile={profile} profiles={profiles} permitted={permitted} onOpenEndpoints={()=>n.navigate('network/endpoints')}/>
    <div className="node-read-monitor"><Card title="Public validator index">
-    <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
+    {indexAvailable ? <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
+     : <p>{permitted?'Select the canonical Synergy Testnet RPC to view the Atlas validator index.':'Allow NodeNetwork public-network reads in Security & permissions.'}</p>}
    </Card></div>
    {permitted&&Number(profile.chainId)===1266&&<div className="node-read-monitor">
-    <NodeWatchlist key={monitorScope} data={validators.data?.data} updatedAt={validators.data?.updatedAt} readValidator={lookupValidator} readActiveListing={lookupActiveListing}/>
+    <NodeWatchlist key={monitorScope} data={validators.data?.data} updatedAt={validators.data?.updatedAt} readValidator={indexAvailable?lookupValidator:null} readActiveListing={lookupActiveListing}/>
    </div>}
    <p className="native-source">Public RPC observations from {profile.rpc}. These observations do not authenticate a provisioning target or approve enrollment.</p>
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>

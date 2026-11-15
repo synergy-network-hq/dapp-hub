@@ -1,6 +1,6 @@
 import {useCallback, useState} from 'react';
 import {
-  useNative, atlas, rpc, chainIdNumber, openWallet, Card, Resource, useResource,
+  useNative, rpc, chainIdNumber, openWallet, Card, Resource, useResource,
   useAction, ErrorMessage, Detail, Copy,
 } from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
@@ -16,6 +16,7 @@ import {WalletContacts} from './WalletContacts.jsx';
 import {WalletCollectibles} from './WalletCollectibles.jsx';
 import {WalletOverview} from './WalletOverview.jsx';
 import {WalletRecipientDraft} from './WalletRecipientDraft.jsx';
+import {atlasEndpointRequired, canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
 import './wallet.css';
 
 const tabs = ['Assets', 'Collectibles', 'Activity', 'Receive', 'Send', 'Address book', 'Connections'];
@@ -31,50 +32,54 @@ export function WalletApp() {
   const action = useAction();
   const ready = !n.recoverySuspended && n.permit('wallet', 'readWallet') &&
     connection?.chainId === 'synergy:1266' && Number(n.endpoint.chainId) === 1266;
+  const atlasReady = canReadWalletAtlas(n);
+  const readAtlas = (path, options) => readScopedWalletAtlas(n, path, options);
   const currentTab = ready ? tab : 'Connections';
   const scope = JSON.stringify([connection?.walletId, connection?.address, n.endpointId, n.endpoint.rpc, n.endpoint.networkKey, ready]);
-  const observationKey = `${scope}:${revision}`;
+  const atlasScope = JSON.stringify([scope, atlasReady, n.walletConsentSession]);
+  const atlasKey = `${atlasScope}:${revision}`;
   const draftScope = JSON.stringify([scope, n.walletConsentSession]);
   if (recipientDraft && recipientDraft.scope !== draftScope) setRecipientDraft(null);
 
   const tokens = useResource(async signal => {
-    if (!ready) throw Error('Connect a chain 1266 account and allow Wallet reads.');
+    if (!canReadWalletAtlas(n)) return null;
     const options = {endpoint: n.endpoint.rpc, signal};
     if (chainIdNumber(await rpc('synergy_getChainId', [], options)) !== 1266) {
       throw Error('RPC chain identity does not match Wallet chain 1266.');
     }
     signal.throwIfAborted();
-    const inventory = await readAtlasTokenBalances(atlas, connection.address, {signal});
+    const inventory = await readAtlasTokenBalances(readAtlas, connection.address, {signal});
     return {inventory, receivedAt: Date.now()};
-  }, observationKey);
+  }, atlasKey);
 
   const account = useResource(async signal => {
-    if (!ready) throw Error('Wallet reads unavailable.');
+    if (!canReadWalletAtlas(n)) return null;
     if (chainIdNumber(await rpc('synergy_getChainId', [], {endpoint: n.endpoint.rpc, signal})) !== 1266) {
       throw Error('RPC chain identity does not match Wallet chain 1266.');
     }
     signal.throwIfAborted();
-    const value = await readAtlasAddress(atlas, connection.address, {signal});
+    const value = await readAtlasAddress(readAtlas, connection.address, {signal});
     return {...value, portalReceivedAt: Date.now()};
-  }, observationKey);
-  const data = ready && !account.loading && !account.error ? account.data : null;
+  }, atlasKey);
+  const data = atlasReady && !account.loading && !account.error ? account.data : null;
 
   function tabContent() {
     if (currentTab === 'Connections') return <WalletConnections canRead={ready}/>;
     switch (currentTab) {
       case 'Assets':
-        return <>
-          <WalletOverview account={connection.address} endpoint={n.endpoint} revision={revision} observation={account}
+        return atlasReady ? <>
+          <WalletOverview key={atlasScope} account={connection.address} endpoint={n.endpoint} revision={revision} observation={account} readAtlas={readAtlas}
             onActivity={() => setTab('Activity')} onCollectibles={() => setTab('Collectibles')}/>
           <Card title="Live assets"><Resource value={tokens}>{result => <>
             <SourceAge updatedAt={result.receivedAt}/><WalletTokens inventory={result.inventory}/>
           </>}</Resource></Card>
-        </>;
+        </> : <Card title="Live assets"><p>{atlasEndpointRequired}</p></Card>;
       case 'Collectibles':
-        return <WalletCollectibles key={observationKey} account={connection.address} endpoint={n.endpoint}/>;
+        return atlasReady ? <WalletCollectibles key={atlasKey} account={connection.address} endpoint={n.endpoint} readAtlas={readAtlas}/>
+          : <Card title="Collectibles"><p>{atlasEndpointRequired}</p></Card>;
       case 'Activity':
-        return <Card title="Indexed transactions"><WalletHistory key={observationKey} account={connection.address}
-          endpoint={n.endpoint} recent={data} recentAt={data?.portalReceivedAt}/></Card>;
+        return <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
+          endpoint={n.endpoint} readAtlas={readAtlas} recent={data} recentAt={data?.portalReceivedAt}/> : <p>{atlasEndpointRequired}</p>}</Card>;
       case 'Receive':
         return <Receive account={connection.address} endpoint={n.endpoint}/>;
       case 'Address book':
@@ -105,7 +110,7 @@ export function WalletApp() {
       <p>Synergy Wallet · {headerStatus}</p>
       <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
       {currentTab !== 'Connections' && <button onClick={() => n.navigate('wallet-connection')}>Manage connection</button>}
-      <button disabled={!ready || account.loading || tokens.loading} onClick={() => setRevision(value => value + 1)}>
+      <button disabled={!ready || (atlasReady && (account.loading || tokens.loading))} onClick={() => setRevision(value => value + 1)}>
         Refresh Wallet observations
       </button>
     </div>
@@ -119,7 +124,7 @@ export function WalletApp() {
         <Card title="Account">
           <Copy value={connection.address} label="Copy address"/>
           <Detail data={{address: connection.address, chain: connection.chainId}}/>
-          <ErrorMessage error={account.error}/>
+          {atlasReady && <ErrorMessage error={account.error}/>}
         </Card>
         <WalletBalances key={revision} account={connection.address} endpoint={n.endpoint} index={data}
           indexReceivedAt={data?.portalReceivedAt}/>

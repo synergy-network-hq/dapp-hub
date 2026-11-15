@@ -2,6 +2,7 @@ import {useState} from 'react';
 import {ErrorMessage, ModalDialog, useNative} from '@synergy-network/portal-native/dapp-sdk';
 import {HISTORY_PAGE_LIMIT} from './account-history.js';
 import {atlasAccountKey} from './atlas-account.js';
+import {canReadWalletAtlas} from './atlas-scope.js';
 import {comparableTransactionHash} from './transaction-observation.js';
 
 const indexedStatuses = new Set(['pending', 'confirmed', 'success', 'failed', 'indexed', 'dropped', 'reverted']);
@@ -59,12 +60,12 @@ function startDownload(json) {
   }
 }
 
-function ReviewedActivityExport({report, permit}) {
+function ReviewedActivityExport({report, canExport}) {
   const [review, setReview] = useState(null);
   const [error, setError] = useState('');
 
   function confirm() {
-    if (!review || !permit('wallet', 'readWallet')) {
+    if (!review || !canExport()) {
       setReview(null);
       setError('Wallet export access is unavailable in this Portal context.');
       return;
@@ -79,7 +80,7 @@ function ReviewedActivityExport({report, permit}) {
 
   return <>
     <button onClick={() => {
-      if (!permit('wallet', 'readWallet')) return;
+      if (!canExport()) return;
       setError('');
       setReview(report);
     }}>Review visible activity export</button>
@@ -105,9 +106,8 @@ export function WalletActivityExport({page, visible, account, endpoint, filters}
   const n = useNative();
   const currentEndpoint = n?.endpoint;
   const version = activityWalletVersion(n);
-  if (!n?.permit('wallet', 'readWallet') || !n.walletConsentSession || typeof version !== 'string' ||
+  if (!canReadWalletAtlas(n, endpoint) || !n.walletConsentSession || typeof version !== 'string' ||
       version.trim() !== version || !/^\d+\.\d+\.\d+$/.test(version) || n.wallet?.connection?.address !== account ||
-      n.wallet.connection.chainId !== 'synergy:1266' || Number(currentEndpoint?.chainId) !== 1266 ||
       endpoint?.id !== currentEndpoint.id || endpoint?.rpc !== currentEndpoint.rpc ||
       endpoint?.networkKey !== currentEndpoint.networkKey) return null;
 
@@ -115,5 +115,5 @@ export function WalletActivityExport({page, visible, account, endpoint, filters}
   if (!snapshot) return null;
   const report = JSON.stringify(snapshot, null, 2);
   const scope = JSON.stringify([n.walletConsentSession, endpoint.id, endpoint.rpc, endpoint.networkKey, filters, report]);
-  return <ReviewedActivityExport key={scope} report={report} permit={n.permit}/>;
+  return <ReviewedActivityExport key={scope} report={report} canExport={() => canReadWalletAtlas(n, endpoint)}/>;
 }

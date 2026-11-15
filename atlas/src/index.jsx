@@ -1,6 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
 import {useNative, atlas, openExternal, snrg, Card, Resource, useResource, useAction, ErrorMessage, Table, Detail, short} from '@synergy-network/portal-native/dapp-sdk';
 import {atlasDetailUrl, checkedAtlasDetail, describeAtlasSelection} from './detail-model.js';
+import {ATLAS_NETWORK, atlasSummary} from './observations.js';
 
 const tabs = [
   ['blocks', 'Blocks'], ['txs', 'Transactions'], ['network/accounts', 'Accounts'],
@@ -13,7 +14,8 @@ const searchColumns = [{key: 'title', label: 'Result'}, {key: 'type', label: 'Ty
 function listColumns(tab) {
   if (tab === 'blocks') return [
     {key: 'number', label: 'Height'}, {key: 'tx_count', label: 'Transactions', render: row => row.tx_count ?? row.txCount ?? '—'},
-    {key: 'timestamp', label: 'Indexed at'}, {key: 'validator_address', label: 'Producer', render: row => short(row.validator_address ?? row.validatorAddress)},
+    {key: 'indexed_at', label: 'Indexed at', render: row => row.indexed_at ?? row.indexedAt ?? '—'},
+    {key: 'validator_address', label: 'Producer', render: row => short(row.validator_address ?? row.validatorAddress)},
   ];
   if (tab === 'txs') return [
     {key: 'hash', label: 'Hash', render: row => short(row.hash)}, {key: 'block_number', label: 'Block'},
@@ -43,7 +45,6 @@ export function AtlasApp() {
   const request = useRef(null);
   const external = useAction();
   const allowed = !n.recoverySuspended && n.permit('atlas', 'readNetwork');
-  const supportedChain = Number(n.endpoint.chainId) === 1266;
   const scope = JSON.stringify([view, n.endpointId, n.endpoint.rpc, n.endpoint.ws, n.endpoint.chainId,
     n.endpoint.networkKey || n.endpoint.id, n.wallet?.connection?.address, allowed]);
   const currentScope = useRef(scope);
@@ -99,7 +100,6 @@ export function AtlasApp() {
   const list = useResource(async signal => {
     signal.throwIfAborted();
     if (!allowed) throw Error('Atlas network access is revoked in Security.');
-    if (!supportedChain) throw Error('Atlas is indexed for chain 1266. Select Synergy Testnet.');
     const path = view.lookup ? `search?q=${encodeURIComponent(view.lookup)}` : `${view.tab}?page=${view.page}&limit=20`;
     const response = await atlas(path, {signal});
     signal.throwIfAborted();
@@ -107,10 +107,14 @@ export function AtlasApp() {
     if (!Array.isArray(rows)) throw Error('Atlas returned an unsupported list response.');
     return {rows: rows.filter(row => row && typeof row === 'object' && !Array.isArray(row)), total: response.total};
   }, scope);
+  const summary = useResource(async signal => allowed
+    ? atlasSummary(await atlas('network/summary', {signal}))
+    : null, String(allowed));
+  const counts = allowed && !summary.loading && !summary.error ? summary.data : null;
 
   async function select(row) {
     clearSelection();
-    if (!allowed || !supportedChain) return;
+    if (!allowed) return;
     let detail;
     try {
       detail = describeAtlasSelection(row, view.tab, !!view.lookup);
@@ -141,6 +145,7 @@ export function AtlasApp() {
   function refresh() {
     clearSelection();
     setView(current => ({...current, revision: current.revision + 1}));
+    summary.reload();
   }
 
   function openSite(url) {
@@ -152,7 +157,7 @@ export function AtlasApp() {
 
   return <div>
     <div className="native-actions">
-      <p className="native-source">Live Atlas · {n.endpoint.name}</p>
+      <p className="native-source">Atlas · {ATLAS_NETWORK}</p>
       <button onClick={() => openSite('https://atlas.synergy-network.io')}>Open Atlas website</button>
       <button onClick={refresh}>Refresh</button>
     </div>
@@ -168,10 +173,12 @@ export function AtlasApp() {
     )}</div>
     <ErrorMessage error={external.error}/>
     <div className="native-grid">
-      <Card title="Chain height"><strong>{n.snapshot.data?.latestBlock ?? '—'}</strong><p>Synergy Testnet v3 · Chain 1266</p></Card>
-      <Card title="Indexed transactions"><strong>{n.snapshot.data?.totalTransactions ?? '—'}</strong><p>Atlas network index</p></Card>
-      <Card title="Validator nodes"><strong>{n.snapshot.data?.activeValidators ?? '—'}</strong><p>Active of {n.snapshot.data?.totalValidators ?? '—'} total</p></Card>
+      <Card title="Reported height"><strong>{counts?.height ?? '—'}</strong><p>Atlas network summary</p></Card>
+      <Card title="Reported transactions"><strong>{counts?.transactions ?? '—'}</strong><p>Atlas network summary</p></Card>
+      <Card title="Validator nodes"><strong>{counts?.activeValidators ?? '—'}</strong><p>{counts?.totalValidators == null ? 'Reported active validators' : `Active of ${counts.totalValidators} reported`}</p></Card>
     </div>
+    {allowed && summary.loading && <p role="status">Reading Atlas summary…</p>}
+    {allowed && summary.error && <p>Atlas network summary is unavailable.</p>}
     <div className="native-split">
       <Card title={view.lookup ? 'Search results' : tabs.find(([id]) => id === view.tab)?.[1]}>
         <Resource value={{...list, reload: refresh}}>{data => <>

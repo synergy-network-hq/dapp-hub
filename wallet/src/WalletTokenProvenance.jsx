@@ -1,6 +1,7 @@
 import {useState} from 'react';
-import {atlas, Resource, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {Resource, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {atlasAccountKey} from './atlas-account.js';
+import {canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
 import {tokenBalanceSource} from './token-balance-inventory.js';
 import {blockHeight} from './transaction-observation.js';
 
@@ -33,21 +34,19 @@ function contractObservation(value, selected) {
   };
 }
 
-function ContractLookup({selection, permit}) {
+function ContractLookup({selection, native}) {
   const [revision, setRevision] = useState(0);
   const check = () => setRevision(value => value + 1);
   const observation = useResource(async signal => {
     if (!revision) return null;
     signal.throwIfAborted();
-    if (!permit('wallet', 'readWallet')) throw Error('Wallet contract access is unavailable in this Portal context.');
     let value;
     try {
-      value = await atlas(`contracts/${encodeURIComponent(selection.address)}`, {signal});
+      value = await readScopedWalletAtlas(native, `contracts/${encodeURIComponent(selection.address)}`, {signal});
     } catch {
       throw Error('The Atlas contract check could not be completed. Try again.');
     }
     signal.throwIfAborted();
-    if (!permit('wallet', 'readWallet')) throw Error('Wallet contract access is unavailable in this Portal context.');
     return {...contractObservation(value, selection), checkedAt: new Date().toISOString()};
   }, revision);
 
@@ -70,8 +69,7 @@ export function WalletTokenProvenance({item, accountKey}) {
   const n = useNative();
   const selection = selectedContract(item);
   const endpoint = n?.endpoint;
-  if (!selection || !accountKey || !n?.permit('wallet', 'readWallet') ||
-      atlasAccountKey(n.wallet?.connection?.address) !== accountKey || Number(endpoint?.chainId) !== 1266) return null;
+  if (!selection || !accountKey || !canReadWalletAtlas(n) || atlasAccountKey(n.wallet.connection.address) !== accountKey) return null;
   const scope = JSON.stringify([selection, accountKey, endpoint.id, endpoint.rpc, endpoint.networkKey, n.walletConsentSession]);
-  return <ContractLookup key={scope} selection={selection} permit={n.permit}/>;
+  return <ContractLookup key={scope} selection={selection} native={n}/>;
 }

@@ -1,19 +1,19 @@
-import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
-import {useNative,atlas,rpc,useResource,ErrorMessage,short} from '@synergy-network/portal-native/dapp-sdk';
+import {useNative,rpc,chainIdNumber,useResource,ErrorMessage,short} from '@synergy-network/portal-native/dapp-sdk';
 import {amount,text} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {sourceRecords} from './source-records.js';
 import {readAtlasAddress} from './atlas-account.js';
+import {atlasEndpointRequired,canReadWalletAtlas,readScopedWalletAtlas} from './atlas-scope.js';
 export function DappWidget({widgetKey:key}){
- const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=permitted&&connection?.chainId==='synergy:1266'&&Number(n.endpoint.chainId)===1266;
+ const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=canReadWalletAtlas(n);
  const value=useResource(async signal=>{
-  if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');
+  if(!canReadWalletAtlas(n))return null;
   if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');
-  const data=await readAtlasAddress(atlas,connection.address,{signal});return {data,receivedAt:Date.now()};
- },JSON.stringify([connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,n.endpoint.networkKey||n.endpoint.id,ready]));
+  const data=await readAtlasAddress((path,options)=>readScopedWalletAtlas(n,path,options),connection.address,{signal});return {data,receivedAt:Date.now()};
+ },JSON.stringify([connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,n.endpoint.networkKey||n.endpoint.id,n.walletConsentSession,ready]));
  if(!permitted)return <p>Allow Wallet account access in Security.</p>;
  if(!connection)return <p>Connect Synergy Wallet to see your account.</p>;
- if(!ready)return <p>Wallet observations require a connected account and endpoint on chain 1266.</p>;
+ if(!ready)return <p>{atlasEndpointRequired}</p>;
  if(value.loading)return <p role="status">Reading Wallet observations…</p>;
  if(value.error)return <ErrorMessage error={value.error}/>;
  const data=value.data?.data,history=sourceRecords(data?.recentTransactions,'Transaction history');
