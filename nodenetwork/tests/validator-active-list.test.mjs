@@ -46,3 +46,53 @@ test('dispatches only the existing RPC reads after chain validation and honors c
  };
  await assert.rejects(readValidatorActiveListing(interrupted, profile, first, controller.signal), {name:'AbortError'});
 });
+
+const genesis = 'a'.repeat(64);
+const context = {chain_id:1266, network_id:'testnet-fixture', chain_incarnation:'5', genesis_hash:genesis};
+const readiness = {chain:context, ready:true, health:{
+ chain:context, status:'healthy', chain_state_available:true, fail_closed:false, latest_height:0,
+}};
+
+test('checks a configured Genesis pin against matching owner readiness contexts before reading a list', async () => {
+ const methods = [];
+ const pinned = {...profile, genesisHash:genesis};
+ const request = async (method, params, options) => {
+  assert.deepEqual(params, []);
+  assert.equal(options.endpoint, profile.rpc);
+  methods.push(method);
+  if (method === 'synergy_getChainId') return 1266;
+  if (method === 'synergy_getReadiness') return readiness;
+  return [row];
+ };
+ const result = await readValidatorActiveListing(request, pinned, first);
+ assert.equal(result.listed, true);
+ assert.equal(result.reportedGenesis, genesis);
+ assert.deepEqual(methods, ['synergy_getChainId','synergy_getReadiness','synergy_getValidators']);
+ methods.length = 0;
+ await assert.rejects(readValidatorActiveListing(request, {...pinned,genesisHash:'b'.repeat(64)}, first), /Genesis hash does not match/);
+ assert.deepEqual(methods, ['synergy_getChainId','synergy_getReadiness']);
+});
+
+test('stops before listing when a configured pin is malformed, readiness disagrees, or the scope aborts', async () => {
+ const pinned = {...profile, genesisHash:genesis};
+ await assert.rejects(readValidatorActiveListing(() => assert.fail('invalid pin dispatched'), {...pinned,genesisHash:'xyz'}, first), /pin is invalid/);
+ for (const response of [
+  {...readiness, health:{...readiness.health, chain:{...context, chain_incarnation:'6'}}},
+  {...readiness, health:{...readiness.health, chain:{...context, genesis_hash:'b'.repeat(64)}}},
+ ]) {
+  const request = async method => {
+   if (method === 'synergy_getChainId') return 1266;
+   assert.equal(method, 'synergy_getReadiness');
+   return response;
+  };
+  await assert.rejects(readValidatorActiveListing(request, pinned, first), /readiness chain contexts disagree/);
+ }
+ const controller = new AbortController();
+ const request = async method => {
+  if (method === 'synergy_getChainId') return 1266;
+  assert.equal(method, 'synergy_getReadiness');
+  controller.abort();
+  return readiness;
+ };
+ await assert.rejects(readValidatorActiveListing(request, pinned, first, controller.signal), {name:'AbortError'});
+});

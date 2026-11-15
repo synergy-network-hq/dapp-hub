@@ -7,7 +7,7 @@ import './monitor.css';
 import {ValidatorMonitor} from './ValidatorMonitor.jsx';
 import {NodeWatchlist} from './NodeWatchlist.jsx';
 import {validatorLookupObservation, validatorLookupPath} from './validator-lookup.js';
-import {readValidatorActiveListing} from './validator-active-list.js';
+import {readValidatorActiveListing,readValidatorGenesisPin} from './validator-active-list.js';
 import {useEffect,useRef,useState} from 'react';
 import {useNative} from "@synergy-network/portal-native/dapp-sdk";
 import {atlas,rpc} from "@synergy-network/portal-native/dapp-sdk";
@@ -43,7 +43,7 @@ export function NodeNetworkApp(){
  const tab=({overview:'Network',operations:'Validator setup',monitoring:'Management',settings:settingsTab})[section];
  const permitted=n.permit('node','readNetwork');
  const indexAvailable=permitted&&isCanonicalTestnetRpc(profile);
- const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,permitted]);
+ const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,profile.genesisHash,permitted]);
  const masterScope=useRef({permitted,generation:0});
  if(masterScope.current.permitted!==permitted)masterScope.current={permitted,generation:masterScope.current.generation+1};
  useEffect(()=>{setMaster(null);setMasterError('');setReviewing(false);return()=>{masterScope.current.generation++;};},[permitted]);
@@ -71,7 +71,8 @@ export function NodeNetworkApp(){
  async function readAtlasValidators(path,signal){
   if(!indexAvailable)throw Error('Atlas validator observations require read permission and the canonical Synergy Testnet RPC.');
   signal?.throwIfAborted();
-  if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');
+  if(profile.genesisHash!=null)await readValidatorGenesisPin(rpc,profile,signal);
+  else if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');
   signal?.throwIfAborted();
   const data=await atlas(path,{signal});
   signal?.throwIfAborted();

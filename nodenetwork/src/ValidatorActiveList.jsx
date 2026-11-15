@@ -12,6 +12,7 @@ export function ValidatorActiveList({address, readListing}) {
   <button disabled={requested && observation.loading} onClick={() => requested ? observation.reload() : setRequested(true)}>Check RPC active validator list</button>
   {requested && <Resource value={observation}>{value => <>
    <p role="status">{value.listed ? 'This validator appears in the selected RPC list.' : 'This validator was absent from the selected RPC list.'} {value.count} {value.count === 1 ? 'entry' : 'entries'} returned.</p>
+   {value.reportedGenesis && <p>The selected RPC’s readiness report matched the configured Genesis pin.</p>}
    <SourceAge updatedAt={value.receivedAt} source="Selected Testnet RPC active validator list"/>
   </>}</Resource>}
  </section>;
