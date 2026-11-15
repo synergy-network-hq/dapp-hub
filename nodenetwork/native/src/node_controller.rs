@@ -187,6 +187,20 @@ fn upgrade_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
+fn recovery_preflight_reply(reply: &Value) -> Result<Value, &'static str> {
+    if reply["ok"] != true {
+        return Err("The selected controller could not provide recovery preflight evidence.");
+    }
+    let result = &reply["result"];
+    if !reply.as_object().is_some_and(|fields| fields.len() == 3) || reply["version"] != 1
+        || !result.as_object().is_some_and(|fields| fields.len() == 3)
+        || result["qualified"] != false || result["certifiedStateChanged"] != false
+        || result["blocker"] != "Checkpoint import is not exposed until the selected release recovery procedure is qualified" {
+        return Err("The selected controller returned unsupported recovery preflight evidence.");
+    }
+    Ok(json!({"version":1,"ok":true,"result":{"qualified":false,"certifiedStateChanged":false}}))
+}
+
 fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
     use std::net::IpAddr;
     const UNSUPPORTED: &str = "The selected controller returned unsupported VPN status.";
@@ -446,6 +460,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "diagnostics" => crate::node_diagnostics::reply(&value),
             "install_preflight" => install_preflight_reply(&request, &value),
             "upgrade_preflight" => upgrade_preflight_reply(&request, &value),
+            "recovery_preflight" => recovery_preflight_reply(&value),
             "uninstall_preflight" => crate::node_removal_scope::reply(&value),
             "vpn_status" => vpn_status_reply(&value),
             "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
@@ -537,6 +552,30 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             *report.pointer_mut(path).unwrap() = data;
             assert_eq!(health_reply(&report), Err("The selected controller returned unsupported service health evidence."), "{path}");
         }
+    }
+    #[test] fn recovery_preflight_has_fixed_read_scope_and_withholds_unsupported_evidence() {
+        let mut request = Request{version:1,operation:"recovery_preflight".into(),parameters:json!({})};
+        assert_eq!(request.validate(), Ok(false));
+        request.parameters = json!({"path":"/private/fixture"});
+        assert!(request.validate().is_err());
+        let reply = json!({"version":1,"ok":true,"result":{
+            "qualified":false,"certifiedStateChanged":false,
+            "blocker":"Checkpoint import is not exposed until the selected release recovery procedure is qualified"
+        }});
+        let projected = recovery_preflight_reply(&reply).unwrap();
+        assert_eq!(projected["result"], json!({"qualified":false,"certifiedStateChanged":false}));
+        for (field,value) in [
+            ("qualified",json!(true)),
+            ("certifiedStateChanged",json!(true)),
+            ("blocker",json!("private fixture")),
+            ("shell",json!("unexpected")),
+        ] {
+            let mut changed = reply.clone();
+            changed["result"][field] = value;
+            assert!(recovery_preflight_reply(&changed).is_err());
+        }
+        let refusal = json!({"version":1,"ok":false,"error":{"message":"private fixture"}});
+        assert!(!recovery_preflight_reply(&refusal).unwrap_err().contains("private fixture"));
     }
     #[test] fn upgrade_preflight_requires_exact_package_references_and_reply() {
         let request = Request {version:1, operation:"upgrade_preflight".into(), parameters:json!({

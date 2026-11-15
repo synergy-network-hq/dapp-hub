@@ -258,7 +258,7 @@ export async function readSavedServiceObservation(file) {
  };
 }
 
-function captureTime(value) {
+export function captureTime(value) {
  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:Z|\+00:00)$/.exec(value);
  if (!match) throw Error('The observation requires a supported UTC capture time for comparison.');
  const [, second, fraction = ''] = match;

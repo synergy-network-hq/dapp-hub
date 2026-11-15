@@ -16,11 +16,13 @@ import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
 import {identityPreflightObservation,identityPreflightReads} from './identity-preflight.js';
 import {targetHealthObservation} from './target-health.js';
+import {recoveryPreflightObservation} from './recovery-handoff.js';
 
 const typedStatus = {
  health: targetHealthObservation,
  upgrade_preflight: upgradePreflightObservation,
  uninstall_preflight: removalPreflightObservation,
+ recovery_preflight: recoveryPreflightObservation,
  vpn_status: vpnStatusObservation,
  identity_status: response => custodyStatusObservation('identity_status',response),
  formation_status: response => custodyStatusObservation('formation_status',response),
@@ -72,10 +74,11 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const state=capabilities.data;
  const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
  const statusGates=Object.fromEntries(Object.keys(typedStatus).map(operation=>[
-  operation, operation==='uninstall_preflight'?controllerRead(state,operation):installedControllerRead(state,operation),
+  operation, ['uninstall_preflight','recovery_preflight'].includes(operation)?controllerRead(state,operation):installedControllerRead(state,operation),
  ]));
  const statusResult=permitted&&statusGates[result?.operation]?.available?result:null;
  const healthResult=statusResult?.operation==='health'?statusResult:null;
+ const recoveryResult=statusResult?.operation==='recovery_preflight'?statusResult:null;
  const vpnResult=statusResult?.operation==='vpn_status'?statusResult:null;
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  const preparationResult=identityPreflightReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
@@ -164,8 +167,13 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
    {statusAction('health','Read target health')}{button('inventory','Inventory node-owned files')}
    {button('start','Start node')}{button('stop','Stop node')}{button('restart','Restart node')}
-   {button('recovery_preflight','Diagnose recovery readiness')}
+   {statusAction('recovery_preflight','Diagnose recovery readiness')}
    {healthResult&&<TargetHealth report={healthResult}/>}
+   {recoveryResult&&<section aria-label="Recovery preflight evidence">
+    <ControllerReceipt receivedAt={recoveryResult.receivedAt}/>
+    <p>The controller reports that checkpoint import is unqualified for the selected release.</p>
+    <p>The controller reported no change to certified state during this check.</p>
+   </section>}
    <p>Health and diagnostics use the selected target controller. Public RPC observations describe their RPC node. Recovery executes only through a separately qualified procedure; this interface does not offer arbitrary checkpoint imports or shell access.</p>
   </Card>}
   {tab==='Management'&&<VpnStatus

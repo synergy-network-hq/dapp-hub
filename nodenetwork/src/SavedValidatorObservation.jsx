@@ -1,4 +1,7 @@
-import {Card, Detail, ErrorMessage, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {useState} from 'react';
+import {Card, Detail, ErrorMessage, ModalDialog, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {downloadJson} from './download-json.js';
+import {reviewSavedRecovery} from './recovery-handoff.js';
 import {useObservationFile} from './useObservationFile.js';
 import {readValidatorObservationFile} from './validator-operations-observation.js';
 
@@ -55,5 +58,35 @@ function ObservationDetails({result, onOpenDiagnostics}) {
    {savedPreflight.additionalCount > 0 && <p>{savedPreflight.additionalCount} additional {savedPreflight.additionalCount === 1 ? 'entry' : 'entries'} outside the required check list omitted.</p>}
    {onOpenDiagnostics && <button onClick={onOpenDiagnostics}>Open Logs &amp; Diagnostics</button>}
   </details>
+  <RecoveryHandoff result={result}/>
  </section>;
+}
+
+function RecoveryHandoff({result}) {
+ const [review, setReview] = useState(null);
+ const [error, setError] = useState('');
+ const visible = review?.source === result ? review.snapshot : null;
+ return <>
+  <button onClick={() => {
+   setError('');
+   setReview({source:result,snapshot:reviewSavedRecovery(result)});
+  }}>Review recovery handoff</button>
+  {visible && <ModalDialog label="Review saved recovery handoff" onClose={() => setReview(null)}>
+   <h2>Review saved recovery handoff</h2>
+   <p>The handoff prioritizes the saved release comparison, first missing transition and unresolved required checks. Share it with the node operator to review current evidence and the recovery procedure.</p>
+   <pre>{JSON.stringify(visible, null, 2)}</pre>
+   <ErrorMessage error={error}/>
+   <div className="native-actions">
+    <button data-initial-focus onClick={() => setReview(null)}>Cancel</button>
+    <button onClick={() => {
+     try {
+      downloadJson('nodenetwork-recovery-handoff.json', visible);
+      setReview(null);
+     } catch {
+      setError('The device could not save the handoff. The review remains available.');
+     }
+    }}>Save reviewed recovery handoff</button>
+   </div>
+  </ModalDialog>}
+ </>;
 }
