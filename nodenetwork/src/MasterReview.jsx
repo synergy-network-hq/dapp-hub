@@ -11,17 +11,35 @@ const inventoryReasons = {
  unsafe_member: 'The folder contains an unsafe path, link or special file.',
 };
 
-function inventoryStatus(master) {
+const layoutChecks = [
+ ['roles', 'Role catalog and directories', '20 distinct roles and supported implementations', 'Check the role catalog and directories'],
+ ['runtimeAreas', 'Runtime and custody areas', 'All 10 required directories are empty', 'A required directory is missing or contains entries'],
+ ['linuxHeaders', 'Linux x86-64 binary headers', 'All 4 required ELF headers match', 'A required ELF header is missing or differs'],
+];
+
+function LayoutChecks({layout}) {
+ if (!layoutChecks.every(([key]) => typeof layout?.[key] === 'boolean')) {
+  return <p>The native inspection supplied no supported package layout result.</p>;
+ }
+ return <ul aria-label="Master package layout checks">{layoutChecks.map(([key,label,matched,unmatched]) => (
+  <li key={key}>{label} · {layout[key] ? matched : unmatched}</li>
+ ))}</ul>;
+}
+
+function InventoryEvidence({master}) {
  const result = master.inventory;
  if (result?.status === 'matched' && Number.isInteger(result.verifiedFiles)
      && result.verifiedFiles > 0 && result.verifiedFiles <= 4096 && result.verifiedFiles === master.fileCount
      && Number.isSafeInteger(result.verifiedBytes) && result.verifiedBytes >= 0 && result.verifiedBytes <= 256 * 1024 * 1024) {
-  return `Local files matched the manifest at inspection. Checked ${result.verifiedFiles} declared files and ${result.verifiedBytes} bytes.`;
+  return <>
+   <p role="status">Local files matched the manifest at inspection. Checked {result.verifiedFiles} declared files and {result.verifiedBytes} bytes.</p>
+   <LayoutChecks layout={result.layout}/>
+  </>;
  }
  if (result?.status === 'unavailable' && Object.hasOwn(inventoryReasons, result.reason)) {
-  return `Local file verification unavailable. ${inventoryReasons[result.reason]}`;
+  return <p role="status">Local file verification unavailable. {inventoryReasons[result.reason]}</p>;
  }
- return 'The native inspection supplied no supported local file verification result.';
+ return <p role="status">The native inspection supplied no supported local file verification result.</p>;
 }
 
 export function MasterReview({permitted, reviewing, master, error, onInspect}) {
@@ -30,7 +48,7 @@ export function MasterReview({permitted, reviewing, master, error, onInspect}) {
   {permitted && <ErrorMessage error={error}/>}
   {permitted && master && <>
    <Detail data={{release:master.release, architecture:master.architecture, declaredFiles:master.fileCount, manifestSha256:master.manifestSha256}}/>
-   <p role="status">{inventoryStatus(master)}</p>
+   <InventoryEvidence master={master}/>
   </>}
   <p>Verify the manifest digest against the independently approved release. Installation and updates require separate authorization.</p>
  </Card>;

@@ -4,7 +4,7 @@ use rustix::fd::OwnedFd;
 use rustix::fs::{self, AtFlags, Dir, FileType, Mode, OFlags, Stat};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CStr;
 use std::io::Read;
 use std::path::{Component, Path};
@@ -19,6 +19,27 @@ const FILE: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC);
 const MANIFEST_LIMIT: u64 = 1_000_000;
 const MEMBER_LIMIT: usize = 8192;
+const ROLE_CATALOG: &str = "roles/roles.json";
+const ROLE_CATALOG_LIMIT: u64 = 16 * 1024;
+const RUNTIME_AREAS: [&str; 10] = [
+    "keys",
+    "data",
+    "run",
+    "logs",
+    "cache",
+    "tmp",
+    "vpn",
+    "snapshots",
+    "recovery",
+    "evidence",
+];
+const LINUX_BINARIES: [&str; 4] = [
+    "bin/synergy-node",
+    "bin/synergy-keytool",
+    "bin/synergy-genesis",
+    "bin/netbird",
+];
+const ELF_HEADER_SIZE: u64 = 20;
 
 pub(super) fn read_manifest(root: &Path) -> Result<(OwnedFd, Vec<u8>), String> {
     const INVALID_ROOT: &str = "Choose the direct Synergy master directory.";
@@ -73,6 +94,51 @@ struct Review {
     verified_bytes: u64,
     manifest_seen: bool,
     remaining: BTreeMap<String, String>,
+    layout: Layout,
+    gateway_declared: bool,
+}
+
+#[derive(Default)]
+struct Layout {
+    roles: BTreeSet<String>,
+    declared_roles: Option<BTreeSet<String>>,
+    runtime_areas: BTreeSet<String>,
+    runtime_content: bool,
+    linux_headers: usize,
+}
+
+impl Layout {
+    fn report(&self) -> Value {
+        json!({
+            "roles": self.declared_roles.as_ref() == Some(&self.roles),
+            "runtimeAreas": !self.runtime_content && self.runtime_areas.len() == RUNTIME_AREAS.len(),
+            "linuxHeaders": self.linux_headers == LINUX_BINARIES.len(),
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RoleCatalog {
+    roles: Vec<String>,
+    implemented: Vec<String>,
+}
+
+fn declared_roles(bytes: &[u8], gateway_declared: bool) -> Option<BTreeSet<String>> {
+    let catalog: RoleCatalog = serde_json::from_slice(bytes).ok()?;
+    if catalog.roles.len() != 20 {
+        return None;
+    }
+    let roles: BTreeSet<_> = catalog.roles.into_iter().collect();
+    let implemented = catalog.implemented.as_slice();
+    if roles.len() == 20
+        && (implemented == ["validator"]
+            || (implemented == ["validator", "rpc_gateway"]
+                && gateway_declared
+                && roles.contains("rpc_gateway")))
+    {
+        return Some(roles);
+    }
+    None
 }
 
 impl Review {
@@ -105,6 +171,9 @@ impl Review {
             let metadata =
                 fs::statat(folder, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| "unreadable")?;
             let file_type = FileType::from_raw_mode(metadata.st_mode);
+            if RUNTIME_AREAS.contains(&prefix) {
+                self.layout.runtime_content = true;
+            }
             if part.starts_with("._")
                 && file_type == FileType::RegularFile
                 && metadata.st_nlink == 1
@@ -122,6 +191,12 @@ impl Review {
                     let opened = fs::fstat(&child).map_err(|_| "unreadable")?;
                     if opened.st_dev != metadata.st_dev || opened.st_ino != metadata.st_ino {
                         return Err("changed");
+                    }
+                    if prefix == "roles" {
+                        self.layout.roles.insert(part.into());
+                    }
+                    if RUNTIME_AREAS.contains(&path.as_str()) {
+                        self.layout.runtime_areas.insert(path.clone());
                     }
                     self.walk(&child, &path, manifest_sha256)?;
                 }
@@ -142,8 +217,21 @@ impl Review {
                         self.remaining.remove(&path).ok_or("inventory_mismatch")?
                     };
                     let mut file = open_regular(folder, name, &metadata)?.take(size + 1);
+                    let role_catalog = path == ROLE_CATALOG && size <= ROLE_CATALOG_LIMIT;
+                    let linux_binary = LINUX_BINARIES.contains(&path.as_str());
+                    let sample_size = if role_catalog {
+                        size
+                    } else if linux_binary {
+                        size.min(ELF_HEADER_SIZE)
+                    } else {
+                        0
+                    };
+                    let mut sample = vec![0; sample_size as usize];
+                    file.read_exact(&mut sample).map_err(|_| "changed")?;
                     let mut hash = Sha256::new();
-                    let bytes = std::io::copy(&mut file, &mut hash).map_err(|_| "unreadable")?;
+                    hash.update(&sample);
+                    let bytes = sample_size
+                        + std::io::copy(&mut file, &mut hash).map_err(|_| "unreadable")?;
                     if bytes != size {
                         return Err("changed");
                     }
@@ -154,6 +242,15 @@ impl Review {
                         self.manifest_seen = true;
                     } else {
                         self.verified_bytes += bytes;
+                    }
+                    if role_catalog {
+                        self.layout.declared_roles = declared_roles(&sample, self.gateway_declared);
+                    }
+                    if linux_binary
+                        && sample.starts_with(b"\x7fELF\x02\x01\x01")
+                        && sample.get(18..20) == Some(b"\x3e\x00")
+                    {
+                        self.layout.linux_headers += 1;
                     }
                 }
                 _ => return Err("unsafe_member"),
@@ -168,12 +265,15 @@ pub(super) fn review(folder: &OwnedFd, manifest: &Value, manifest_sha256: &str) 
         return json!({"status":"unavailable","reason":"invalid_inventory"});
     };
     let files = remaining.len();
+    let gateway_declared = remaining.contains_key("tools/canary_rpc_relay.py");
     let mut review = Review {
         entries: 0,
         archive_bytes: 1024,
         verified_bytes: 0,
         manifest_seen: false,
         remaining,
+        layout: Layout::default(),
+        gateway_declared,
     };
     let outcome = review.walk(folder, "", manifest_sha256).and_then(|()| {
         if review.manifest_seen && review.remaining.is_empty() {
@@ -184,7 +284,7 @@ pub(super) fn review(folder: &OwnedFd, manifest: &Value, manifest_sha256: &str) 
     });
     match outcome {
         Ok(()) => {
-            json!({"status":"matched","verifiedFiles":files,"verifiedBytes":review.verified_bytes})
+            json!({"status":"matched","verifiedFiles":files,"verifiedBytes":review.verified_bytes,"layout":review.layout.report()})
         }
         Err(reason) => json!({"status":"unavailable","reason":reason}),
     }

@@ -131,6 +131,34 @@ pub fn status() -> Result<Value, String> {
             fixture
         }
         fn root(&self) -> std::path::PathBuf { self.0.join("Synergy") }
+
+        fn declare_file(&self, name: &str, bytes: &[u8]) {
+            let member = self.root().join(name);
+            fs::create_dir_all(member.parent().unwrap()).unwrap();
+            fs::write(member, bytes).unwrap();
+            let manifest_path = self.root().join("package.json");
+            let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            manifest["files"][name] = json!(format!("{:x}", Sha256::digest(bytes)));
+            fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        }
+
+        fn with_owner_layout(&self, implemented: &[&str]) -> Vec<&'static str> {
+            // Names are the pinned owner's NodeRole taxonomy in build_package.py order.
+            let roles = vec!["validator", "sentry", "archive", "consensus_audit", "cross_chain", "witness",
+                "oracle", "uma_coordinator", "synq_execution", "network_analytics", "aegis_cryptography",
+                "data_availability", "ai_compute", "ai_coordination", "ai_data", "ai_assurance", "rpc_gateway",
+                "indexer", "observer_light", "bootseed"];
+            let root = self.root();
+            for role in &roles { fs::create_dir_all(root.join("roles").join(role)).unwrap(); }
+            for area in ["keys", "data", "run", "logs", "cache", "tmp", "vpn", "snapshots", "recovery", "evidence"] {
+                fs::create_dir(root.join(area)).unwrap();
+            }
+            for path in ["bin/synergy-node", "bin/synergy-keytool", "bin/synergy-genesis", "bin/netbird"] {
+                self.declare_file(path, b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0\0\0\x3e\x00");
+            }
+            self.declare_file("roles/roles.json", &serde_json::to_vec(&json!({"roles":roles,"implemented":implemented})).unwrap());
+            roles
+        }
     }
 
     #[cfg(unix)]
@@ -146,12 +174,59 @@ pub fn status() -> Result<Value, String> {
         fs::write(root.join("bin/._synergy-node"), b"AppleDouble sidecar").unwrap();
         let result = review_master(&root).unwrap();
         let size: usize = FIXTURE_MEMBERS.iter().map(|name| name.len()).sum();
-        assert_eq!(result["inventory"], json!({"status":"matched","verifiedFiles":4,"verifiedBytes":size}));
+        assert_eq!(result["inventory"], json!({"status":"matched","verifiedFiles":4,"verifiedBytes":size,
+            "layout":{"roles":false,"runtimeAreas":false,"linuxHeaders":false}}));
         let bytes = fs::read(root.join("package.json")).unwrap();
         let hash = format!("{:x}", Sha256::digest(&bytes));
         assert_eq!(result["manifestSha256"], hash);
         assert_eq!(result["releaseTrustVerified"], false);
         assert_eq!(result["installAuthorized"], false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn master_review_checks_owner_layout_with_manifest_consistent_binary_bytes() {
+        let fixture = MasterFixture::new();
+        let root = fixture.root();
+        fixture.with_owner_layout(&["validator"]);
+        let result = review_master(&root).unwrap();
+        assert_eq!(result["inventory"]["layout"], json!({"roles":true,"runtimeAreas":true,"linuxHeaders":true}));
+        assert_eq!(result["releaseTrustVerified"], false);
+        assert_eq!(result["installAuthorized"], false);
+
+        fixture.declare_file("bin/netbird", b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0\0\0\xb7\x00");
+        fs::remove_dir(root.join("run")).unwrap();
+        let result = review_master(&root).unwrap();
+        assert_eq!(result["inventory"]["status"], "matched");
+        assert_eq!(result["inventory"]["layout"], json!({"roles":true,"runtimeAreas":false,"linuxHeaders":false}));
+
+        fs::write(root.join("bin/netbird"), b"changed outside manifest").unwrap();
+        let result = review_master(&root).unwrap();
+        assert_eq!(result["inventory"]["status"], "unavailable");
+        assert!(result["inventory"].get("layout").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn master_review_checks_role_catalog_gateway_and_runtime_directory_contents() {
+        let fixture = MasterFixture::new();
+        let root = fixture.root();
+        let mut roles = fixture.with_owner_layout(&["validator", "rpc_gateway"]);
+        assert_eq!(review_master(&root).unwrap()["inventory"]["layout"]["roles"], false);
+        fixture.declare_file("tools/canary_rpc_relay.py", b"fixture relay bytes");
+        assert_eq!(review_master(&root).unwrap()["inventory"]["layout"]["roles"], true);
+
+        fs::create_dir(root.join("roles/unexpected")).unwrap();
+        fs::write(root.join("keys/._sidecar"), b"fixture metadata").unwrap();
+        let result = review_master(&root).unwrap();
+        assert_eq!(result["inventory"]["status"], "matched");
+        assert_eq!(result["inventory"]["layout"], json!({"roles":false,"runtimeAreas":false,"linuxHeaders":true}));
+        fs::remove_dir(root.join("roles/unexpected")).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["layout"]["roles"], true);
+
+        roles.push("validator");
+        fixture.declare_file("roles/roles.json", &serde_json::to_vec(&json!({"roles":roles,"implemented":["validator"]})).unwrap());
+        assert_eq!(review_master(&root).unwrap()["inventory"]["layout"]["roles"], false);
     }
 
     #[cfg(unix)]
