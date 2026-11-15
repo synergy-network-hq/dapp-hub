@@ -1,4 +1,4 @@
-import {controllerOperation, installParameters, provisioningChecks} from './nodeNetwork.js';
+import {controllerOperation, installParameters, provisioningChecks, releaseReferenceChecks} from './nodeNetwork.js';
 
 export function installPreflightChecklist({form, target, permitted, capabilities, master, attempt}) {
  const fields = provisioningChecks(form);
@@ -18,10 +18,10 @@ export function installPreflightChecklist({form, target, permitted, capabilities
   detail: 'Optionally inspect the master folder and compare its release and digest with the draft.',
  };
  if (master && permitted) {
-  const references = provisioningChecks({
+  const references = releaseReferenceChecks({
    release_id: master.release,
    manifest_sha256: master.manifestSha256,
-  }).filter(field => field.field === 'release_id' || field.field === 'manifest_sha256');
+  });
   if (references.some(field => !field.valid)) {
    packageReview = {...packageReview, status: 'Unavailable', detail: 'Inspect the approved master folder again.'};
   } else {

@@ -5,6 +5,7 @@ import {controllerOperation,installParameters} from './nodeNetwork.js';
 import {installPreflightChecklist} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {targetControllerObservation} from './target-observation.js';
+import {ControllerUpdate} from './UpdatePackage.jsx';
 
 function ControllerReceipt({receivedAt}) {
  const [now, setNow] = useState(Date.now);
@@ -66,8 +67,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   const gate=controllerOperation(state,operation);
   return <div className="native-controller-action" key={operation}><button disabled={!permitted||busy||!gate.available} onClick={()=>{try{run(operation,parameters());}catch(failure){setError(failure.message);}}}>{label}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
  }
- const field=(key,label)=><label key={key}>{label}<input aria-label={label} value={form[key]} autoComplete="off" onChange={event=>setForm({...form,[key]:event.target.value})}/></label>;
- const release=()=>{const p=installParameters({...form,network_id:form.network_id||'preflight-network',node_name:form.node_name||'preflight-node'});return {release_id:p.release_id,manifest_sha256:p.manifest_sha256};};
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={capabilities.reload}>Inspect selected target</button>}>
    <Resource value={capabilities}>{data=><>
@@ -103,11 +102,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    {button('recovery_preflight','Diagnose recovery readiness')}
    <p>Health and diagnostics use the selected target controller. Public RPC observations describe their RPC node. Recovery executes only through a separately qualified procedure; this interface does not offer arbitrary checkpoint imports or shell access.</p>
   </Card>}
-  {tab==='Updates'&&<Card title="Controlled master update">
-   {field('release_id','Approved release ID')}{field('manifest_sha256','Approved manifest SHA-256')}
-   <p>Stage the approved package inside Synergy before preflight. Host policy verifies release eligibility and compatibility. There is no automatic retry or unqualified rollback.</p>
-   {button('upgrade_preflight','Verify staged update',release)}{button('upgrade','Apply approved update',release)}
-  </Card>}
+  {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={result} run={run}/>}
   {tab==='Installation isolation'&&<Card title="Containment and removal">
    {button('inventory','Inventory node-owned files')}{button('uninstall_preflight','Review uninstall scope')}
    <label>Confirm destructive root<input aria-label="Confirm destructive root" autoComplete="off" value={confirmation} onChange={event=>setConfirmation(event.target.value)} placeholder="/opt/Synergy"/></label>

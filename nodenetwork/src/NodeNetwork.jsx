@@ -15,6 +15,7 @@ import {InstallPreflight} from './InstallPreflight.jsx';
 import {installPreflightChecklist} from './install-preflight.js';
 import {RequestHistory} from './RequestHistory.jsx';
 import {Troubleshooter} from './Troubleshooter.jsx';
+import {UpdatePackage} from './UpdatePackage.jsx';
 import {TargetSettings, useTargetSelection} from './TargetSettings.jsx';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
 import {CANARY_PROFILE,readNodeNetwork,provisioningChecks} from './nodeNetwork.js';
@@ -75,7 +76,7 @@ export function NodeNetworkApp(){
    <Card title="Node architecture master"><button disabled={!permitted||reviewing} onClick={reviewMaster}>{reviewing?'Inspecting…':'Inspect Synergy master folder'}</button><ErrorMessage error={masterError}/>{permitted&&master&&<Detail data={{release:master.release,architecture:master.architecture,declaredFiles:master.fileCount,manifestSha256:master.manifestSha256}}/>}<p>Compare the manifest digest with the approved release before using it. This preview does not authorize installation.</p></Card>
    <Card title="Local runtime compatibility"><Resource value={local}>{data=>data?<Detail data={data}/>:<p>No host inspection was returned.</p>}</Resource></Card>
 
-  </div>:tab==='Management'?null:tab==='Updates'?<Card title="Managed validator updates"><p>NodeNetwork must apply one authenticated, qualified master release through the shared lifecycle. Per-validator architecture edits are prohibited.</p><p>The selected target controller authenticates update eligibility and a one-time operator grant before applying a staged package.</p></Card>:<div className="native-grid">
+  </div>:tab==='Management'?null:tab==='Updates'?<UpdatePackage form={form} setForm={setForm}/>:<div className="native-grid">
    <Card title="Single-root contract"><Detail data={{installationRoot:'/opt/Synergy',software:'/opt/Synergy/bin',configuration:'/opt/Synergy/config',custody:'/opt/Synergy/keys/apqe',network:'/opt/Synergy/network',vpnState:'/opt/Synergy/vpn',blockchainState:'/opt/Synergy/data',recovery:'/opt/Synergy/recovery',updateStaging:'/opt/Synergy/tmp',temporaryFiles:'/opt/Synergy/tmp',runtime:'/opt/Synergy/run',serviceDefinitions:'/opt/Synergy/systemd',logs:'/opt/Synergy/logs'}}/><p>Every node-owned file and directory must stay inside this root on both local and remote targets. External release, custody, VPN, checkpoint, staging or diagnostic files fail installation qualification. Any operating-system registration must reference definitions inside this root and be included in the isolation audit.</p></Card>
    <Card title="Audit status"><p>A host isolation audit is required before installation and after every update. Inspect the target inventory and conformance results below; a configured target is not automatically marked compliant.</p><p>Removing NodeNetwork from Portal does not uninstall a validator or delete chain state, keys or signing journals.</p></Card>
   </div>}

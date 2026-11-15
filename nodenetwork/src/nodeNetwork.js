@@ -51,17 +51,33 @@ export function controllerOperation(target,operation){
  const entry=matches[0];
  return entry.available===true?{available:true,blocker:null}:{available:false,blocker:typeof entry.blocker==='string'&&entry.blocker.length>0&&entry.blocker.length<=512&&!/[\u0000-\u001f\u007f]/.test(entry.blocker)?entry.blocker:unavailable.blocker};
 }
+const releaseFields=[
+ ['release_id','Release ID',value=>typeof value==='string'&&/^[a-zA-Z0-9._-]{1,128}$/.test(value),'Enter the approved release ID using letters, digits, dots, underscores or hyphens.'],
+ ['manifest_sha256','Manifest SHA-256',value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value),'Enter the exact 64-character lowercase manifest SHA-256.'],
+];
+const checkFields=(fields,form)=>fields.map(([field,label,accept,message])=>({field,label,valid:accept(form?.[field]),message}));
+export const releaseReferenceChecks=form=>checkFields(releaseFields,form);
+
 export function provisioningChecks(form){
- const checks=[
-  ['release_id','Release ID',value=>typeof value==='string'&&/^[a-zA-Z0-9._-]{1,128}$/.test(value),'Enter the approved release ID using letters, digits, dots, underscores or hyphens.'],
-  ['manifest_sha256','Manifest SHA-256',value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value),'Enter the exact64-character lowercase manifest SHA-256.'],
+ return checkFields([
+  ...releaseFields,
   ['network_id','Network incarnation',value=>typeof value==='string'&&/^[a-z0-9][a-z0-9_-]{1,127}$/.test(value),'Enter the exact approved network incarnation.'],
   ['chain_id','Chain ID',value=>typeof value==='string'&&/^[1-9][0-9]{0,15}$/.test(value)&&Number.isSafeInteger(Number(value)),'Enter a positive safe integer chain ID in decimal digits without leading zeros.'],
   ['node_name','Node name',value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(value),'Enter a node name using up to64 letters, digits, underscores or hyphens.'],
- ];
- return checks.map(([field,label,accept,message])=>({field,label,valid:accept(form?.[field]),message}));
+ ],form);
 }
 export function installParameters(form){
  const failed=provisioningChecks(form).find(check=>!check.valid);if(failed)throw Error(failed.message);
  return {release_id:form.release_id,manifest_sha256:form.manifest_sha256,network_id:form.network_id,chain_id:Number(form.chain_id),node_name:form.node_name};
+}
+
+export function upgradeParameters(form){
+ const failed=releaseReferenceChecks(form).find(check=>!check.valid);
+ if(failed)throw Error(failed.message);
+ return {release_id:form.release_id,manifest_sha256:form.manifest_sha256};
+}
+
+export function sameUpgradeParameters(first,second){
+ return Boolean(first&&second&&releaseReferenceChecks(first).every(check=>check.valid)
+  &&first.release_id===second.release_id&&first.manifest_sha256===second.manifest_sha256);
 }
