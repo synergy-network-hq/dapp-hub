@@ -1,11 +1,12 @@
 import {Card, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {vpnPrerequisiteStatus} from './vpn-status.js';
 
 const columns = [{key: 'check', label: 'Check'}, {key: 'status', label: 'Reported state'}];
 
 export function VpnStatus({action, observation, receipt, onOpenDiagnostics}) {
  return <Card title="Validator VPN status" action={action}>
   {!action && <p>Host selection is deferred. A supported enrolled controller can report validator VPN status.</p>}
-  <p>Service registration, enrollment, server binding and current connectivity are separate observations.</p>
+  <p>Validator start and restart require registered VPN service, recorded enrollment, a verified server binding and a connected validator peer. Resolve any earlier enrollment attempt before proceeding.</p>
   {receipt}
   {observation && <>
    <Table rows={[
@@ -16,7 +17,7 @@ export function VpnStatus({action, observation, receipt, onOpenDiagnostics}) {
     {check: 'VPN connectivity', status: observation.connected ? 'Connected' : 'Unconfirmed'},
     {check: 'Prior enrollment attempt', status: observation.reconciliation_required ? 'Reconciliation required' : 'No reconciliation requirement reported'},
    ]} columns={columns}/>
-   {observation.reconciliation_required && <p>Ask the VPN operator to reconcile the prior attempt before pursuing enrollment.</p>}
+   <p role="status">{vpnPrerequisiteStatus(observation)}</p>
   </>}
   {onOpenDiagnostics && <button onClick={onOpenDiagnostics}>Open Logs &amp; Diagnostics</button>}
  </Card>;

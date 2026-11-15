@@ -176,7 +176,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    </section>}
    <p>Health and diagnostics use the selected target controller. Public RPC observations describe their RPC node. Recovery executes only through a separately qualified procedure; this interface does not offer arbitrary checkpoint imports or shell access.</p>
   </Card>}
-  {tab==='Management'&&<VpnStatus
+  {['Management','Validator setup'].includes(tab)&&<VpnStatus
    action={statusAction('vpn_status','Read VPN status')}
    observation={vpnResult?.result}
    receipt={vpnResult&&<ControllerReceipt receivedAt={vpnResult.receivedAt}/>}

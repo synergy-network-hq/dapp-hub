@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {installedControllerRead,targetControllerObservation} from '../src/target-observation.js';
-import {vpnStatusObservation} from '../src/vpn-status.js';
+import {vpnPrerequisiteStatus,vpnStatusObservation} from '../src/vpn-status.js';
 
 const operation = {operation:'vpn_status',kind:'read',available:true};
 const controller = {root:'/opt/Synergy',controllerVersion:1,installed:true,operations:[operation]};
@@ -27,7 +27,21 @@ test('keeps reported connection, enrollment and binding independent and removes 
   service_registered:true,enrollment_staged:false,enrollment_recorded:true,reconciliation_required:false,server_bound:false,connected:true,
  });
  assert.equal(vpnStatusObservation({...status,enrollment_recorded:false,reconciliation_required:true,connected:false,overlay_address:null}).reconciliation_required,true);
- for (const value of [null, {...status,schema:'nodenetwork-vpn-status-v2'}, {...status,server_bound:undefined}, {...status,connected:1}]) {
+ for (const value of [null, {...status,schema:'nodenetwork-vpn-status-v2'}, {...status,server_bound:undefined}, {...status,connected:1},
+  {...status,reconciliation_required:true}, {...status,service_registered:false},
+  {...status,enrollment_recorded:false}, {...status,enrollment_recorded:false,connected:false,server_bound:true}]) {
   assert.throws(()=>vpnStatusObservation(value),/unsupported VPN status/);
  }
+});
+
+test('derives the owner prerequisite and the first safe review step from each supported status', () => {
+ const unrecorded = {...status,enrollment_recorded:false,connected:false,overlay_address:null};
+ const review = value => vpnPrerequisiteStatus(vpnStatusObservation(value));
+ assert.match(review({...unrecorded,service_registered:false,reconciliation_required:true}), /reconcile the prior attempt/);
+ assert.match(review({...unrecorded,service_registered:false}), /registration of the contained VPN service/);
+ assert.match(review(unrecorded), /stage an approved one-use enrollment input/);
+ assert.match(review({...unrecorded,enrollment_staged:true}), /exact one-use host grant/);
+ assert.match(review(status), /verify the recorded validator peer/);
+ assert.match(review({...status,server_bound:true,connected:false}), /investigate connectivity for the bound validator peer/);
+ assert.match(review({...status,server_bound:true}), /VPN prerequisites for validator start and restart are met/);
 });

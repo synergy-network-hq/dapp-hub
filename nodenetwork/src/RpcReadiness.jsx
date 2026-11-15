@@ -3,6 +3,7 @@ import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {RpcSyncHistory} from './RpcSyncHistory.jsx';
 import {rpcReadinessWithSync} from './rpc-sync-observation.js';
+import {confirmReportedGenesis, genesisDigest} from './genesis-pin.js';
 
 function PublicSyncSummary({sync, error}) {
  return <section aria-label="RPC synchronization observation">
@@ -25,14 +26,20 @@ function PublicSyncSummary({sync, error}) {
 }
 
 export function RpcReadiness({profile,permitted}){
- const scope = JSON.stringify([profile.id, profile.rpc, profile.chainId, permitted]);
+ const scope = JSON.stringify([profile.id, profile.rpc, profile.chainId, profile.genesisHash ?? null, permitted]);
  return <RpcReadinessReport key={scope} profile={profile} permitted={permitted}/>;
 }
 
 function RpcReadinessReport({profile, permitted}) {
  const observation = useResource(signal => {
   if (!permitted) throw Error('Allow public NodeNetwork reads in Security & permissions.');
-  return readProtocolObservation(rpc, 'synergy_getReadiness', profile, signal, rpcReadinessWithSync);
+  const pin = genesisDigest(profile.genesisHash);
+  if (profile.genesisHash != null && !pin) throw Error('The configured RPC Genesis pin is invalid.');
+  return readProtocolObservation(rpc, 'synergy_getReadiness', profile, signal, (value, expected) => {
+   const report = rpcReadinessWithSync(value, expected);
+   if (pin) confirmReportedGenesis(report.chain.genesis, pin);
+   return report;
+  });
  }, 'readiness-report');
  return <Card title="Public RPC readiness report">
   <p>This describes the selected RPC server only. It does not select, authenticate or qualify a managed host, VPN, signer, validator activation or participation.</p>

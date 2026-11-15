@@ -1,10 +1,9 @@
-import {useLayoutEffect, useRef, useState} from 'react';
+import {useState} from 'react';
 import {Card, Detail, Resource, chainIdNumber, rpc, rpcNftInventoryObservation, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {ATLAS_NFT_LIMIT, RPC_OWNER_NFT_LIMIT, collectibleObservations, ownerCollectibleObservation} from './collectible-observations.js';
 import {requireAtlasAccountKey} from './atlas-account.js';
-import {isProtectedWalletAddress} from './wallet-address.js';
-import {readProtectedWalletReadiness} from './wallet-owner-readiness.js';
+import {useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
 
 const classLabels = {nf1: 'NF1 standard NFT', nf2: 'NF2 controlled NFT'};
 const collectionStatusLabels = {verified: 'Atlas marks this collection verified', active: 'Atlas reports an active collection'};
@@ -109,7 +108,7 @@ export function WalletCollectibles({account, endpoint, readRpc, readAtlas}) {
 
   return <Card title="Collectibles">
     <p>Atlas lists up to {ATLAS_NFT_LIMIT} recent STS NFT records across all accounts. Wallet shows records reporting the selected account as owner.</p>
-    <p>Coverage, current ownership and provenance are unverified. Multi-asset holdings and remote media are unavailable.</p>
+    <p>Coverage, current ownership and provenance are unverified. Remote media is unavailable.</p>
     <Resource value={{data, loading, error}}>{observation =>
       <CollectibleList items={observation.items} receivedAt={observation.receivedAt}/>
     }</Resource>
@@ -118,41 +117,17 @@ export function WalletCollectibles({account, endpoint, readRpc, readAtlas}) {
 }
 
 export function WalletOwnerCollectibles({account, endpoint, canRead}) {
-  const [request, setRequest] = useState(0);
-  const mounted = useRef(false);
-  const supportedAccount = isProtectedWalletAddress(account);
-  useLayoutEffect(() => {
-    mounted.current = true;
-    return () => {mounted.current = false;};
-  }, []);
-
-  const observation = useResource(async signal => {
-    if (!request) return null;
-    function checkScope() {
-      signal.throwIfAborted();
-      if (!mounted.current || !canRead()) throw Error('The Wallet collectible context changed.');
-    }
-
-    const readiness = await readProtectedWalletReadiness(account, endpoint, signal, checkScope);
-    checkScope();
-    let response;
-    try {
-      response = await rpcNftInventoryObservation({endpoint: endpoint.rpc, signal, owner: account, limit: RPC_OWNER_NFT_LIMIT});
-    } catch {
-      checkScope();
-      throw Error('The owner NFT snapshot is unavailable from the selected RPC.');
-    }
-    checkScope();
-    return ownerCollectibleObservation(response, account, readiness);
-  }, request);
+  const {observation, requested, check, supportedAccount} = useWalletOwnerSnapshot({account, endpoint, canRead,
+    read: rpcNftInventoryObservation, parse: ownerCollectibleObservation, limit: RPC_OWNER_NFT_LIMIT,
+    unavailable: 'The owner NFT snapshot is unavailable from the selected RPC.'});
 
   return <Card title="Selected RPC collectibles">
     {supportedAccount ? <>
       <p>Check up to {RPC_OWNER_NFT_LIMIT} NFT records from the endpoint’s reported STS snapshot. This check sends your public Wallet address to the selected RPC.</p>
-      <button disabled={!!request && observation.loading} onClick={() => setRequest(value => value + 1)}>
-        {request ? 'Check owner NFT snapshot again' : 'Check owner NFT snapshot'}
+      <button disabled={requested && observation.loading} onClick={check}>
+        {requested ? 'Check owner NFT snapshot again' : 'Check owner NFT snapshot'}
       </button>
-      {!!request && <Resource value={{...observation, reload: undefined}}>{value => <>
+      {requested && <Resource value={{...observation, reload: undefined}}>{value => <>
         <Detail data={{reportedSnapshotHeight: value.snapshotHeight, reportedSnapshotHash: value.snapshotHash}}/>
         {value.items.length === RPC_OWNER_NFT_LIMIT && <p>The response reached the limit of {RPC_OWNER_NFT_LIMIT} records. Additional records may be available.</p>}
         <CollectibleList items={value.items} receivedAt={value.receivedAt} indexed={false}/>

@@ -24,7 +24,8 @@ export function RpcSyncHistory({profile, observation, refreshing}) {
  const [saveError, setSaveError] = useState('');
  const source = useResource(() => syncHistorySource(profile), 'public-sync-history-source');
  const reportedChain = observation?.chain;
- const samples = saved.history && source.data ? selectSyncHistory(saved.history, source.data, reportedChain ?? lastChain) : [];
+ const samples = saved.history && source.data
+  ? selectSyncHistory(saved.history, source.data, reportedChain ?? lastChain, profile.genesisHash) : [];
  const latest = samples[0];
  const supported = observation?.sync?.mode === 'reported';
  const canSave = Boolean(saved.history && source.data && supported && !refreshing && (!latest || latest.receivedAt < observation.receivedAt));

@@ -29,7 +29,7 @@ export function isProtectedWalletAddress(address) {
 }
 
 function stsObjectPrefix(address) {
-  if (typeof address !== 'string' || address.length !== 44 || address !== address.toLowerCase()) return null;
+  if (typeof address !== 'string' || (address.length !== 43 && address.length !== 44) || address !== address.toLowerCase()) return null;
   try {
     const {prefix, words} = bech32m.decode(address);
     return words.length === 32 ? prefix : null;
@@ -45,6 +45,10 @@ export function isStsNftObjectId(address, nftClass) {
 
 export function isStsFungibleObjectId(address) {
   return ['synb1', 'synb2', 'synb3'].includes(stsObjectPrefix(address));
+}
+
+export function isStsMultiAssetCollectionId(address) {
+  return stsObjectPrefix(address) === 'synj';
 }
 
 // A contact format classifier for local storage and display. This does not verify ownership or transfer eligibility.

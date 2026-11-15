@@ -1,10 +1,12 @@
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {blockHeight, comparableTransactionHash} from './transaction-observation.js';
-import {isStsNftObjectId} from './wallet-address.js';
+import {isStsMultiAssetCollectionId, isStsNftObjectId} from './wallet-address.js';
+import {exactRpcAmount, maxU128} from './token-balance-inventory.js';
 
 // Atlas's public token registry projects at most 250 recent STS NFT instances.
 export const ATLAS_NFT_LIMIT = 250;
 export const RPC_OWNER_NFT_LIMIT = 50;
+export const RPC_MULTI_ASSET_LIMIT = 50;
 const REGISTRY_LIMIT = 10_000;
 const snapshotSources = new Set(['finalized_chain1266_execution_state', 'finalized_sts_snapshot']);
 const statuses = new Set(['active', 'burned', 'revoked', 'frozen', 'used']);
@@ -86,24 +88,9 @@ export function collectibleObservations(value, account) {
 
 // Testnet-v3 RPC STS owner reply at 05610db7 and the public chain 1266 snapshot projection.
 export function ownerCollectibleObservation(response, account, readiness) {
-  const {value, chainContext} = response;
-  const chain = readiness.chain;
-  if (chainContext?.chainId !== chain.chainId || String(chainContext.incarnation) !== chain.incarnation ||
-      chainContext.genesis !== chain.genesis.toLowerCase()) {
-    throw Error('The NFT response does not match the selected RPC readiness identity.');
-  }
-  if (value?.owner !== account) throw Error('The selected RPC did not return the exact Wallet owner.');
-
-  const snapshotHeight = blockHeight(value.replay?.latest_height);
-  const snapshotHash = metadataHash(value.replay?.snapshot_block_hash);
-  if (value.success !== true || !snapshotSources.has(value.source) || value.replay?.source !== value.source ||
-      value.replay?.complete !== true || snapshotHeight === null || !snapshotHash ||
-      !Array.isArray(value.items) || value.count !== value.items.length || value.items.length > RPC_OWNER_NFT_LIMIT) {
-    throw Error('The selected RPC did not return a supported NFT snapshot.');
-  }
-
+  const snapshot = ownerCollectibleSnapshot(response, account, readiness, RPC_OWNER_NFT_LIMIT, 'NFT');
   const seen = new Set();
-  const items = value.items.map(item => {
+  const items = snapshot.items.map(item => {
     const tokenClass = nftClass(item?.class);
     if (item?.asset_kind !== 'nft' || item.owner !== account ||
         item.nft_address !== item.nft_id || item.collection_id === item.nft_id ||
@@ -122,5 +109,45 @@ export function ownerCollectibleObservation(response, account, readiness) {
       metadataHash: metadataHash(item.metadata_hash),
     };
   });
-  return {items, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+  return {...snapshot, items};
+}
+
+function ownerCollectibleSnapshot(response, account, readiness, limit, asset) {
+  const {value, chainContext} = response;
+  const chain = readiness.chain;
+  if (chainContext?.chainId !== chain.chainId || String(chainContext.incarnation) !== chain.incarnation ||
+      chainContext.genesis !== chain.genesis.toLowerCase()) {
+    throw Error(`The ${asset} response does not match the selected RPC readiness identity.`);
+  }
+  if (value?.owner !== account) throw Error('The selected RPC did not return the exact Wallet owner.');
+
+  const snapshotHeight = blockHeight(value.replay?.latest_height);
+  const snapshotHash = metadataHash(value.replay?.snapshot_block_hash);
+  if (value.success !== true || !snapshotSources.has(value.source) || value.replay?.source !== value.source ||
+      value.replay?.complete !== true || snapshotHeight === null || !snapshotHash ||
+      !Array.isArray(value.items) || value.count !== value.items.length || value.items.length > limit) {
+    throw Error(`The selected RPC did not return a supported ${asset} snapshot.`);
+  }
+  return {items: value.items, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+}
+
+export function ownerMultiAssetObservation(response, account, readiness) {
+  const snapshot = ownerCollectibleSnapshot(response, account, readiness, RPC_MULTI_ASSET_LIMIT, 'multi-asset');
+  if (response.value.collection_ref !== null) {
+    throw Error('The selected RPC returned a different multi-asset collection scope.');
+  }
+  const seen = new Set();
+  const items = snapshot.items.map(item => {
+    const itemId = exactRpcAmount(item?.item_id, 18446744073709551615n);
+    const amount = exactRpcAmount(item?.amount, maxU128);
+    if (item?.asset_kind !== 'multi_asset_balance' || item.owner !== account ||
+        !isStsMultiAssetCollectionId(item.collection_id) || itemId === null || itemId === '0' || amount === null) {
+      throw Error('The selected RPC returned an invalid multi-asset balance.');
+    }
+    const key = JSON.stringify([item.collection_id, itemId]);
+    if (seen.has(key)) throw Error('The selected RPC returned duplicate multi-asset balances.');
+    seen.add(key);
+    return {key, collectionId: item.collection_id, itemId, amount, ownerAddress: item.owner};
+  });
+  return {...snapshot, items};
 }

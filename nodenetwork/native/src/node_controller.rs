@@ -234,7 +234,11 @@ fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
     } else if !overlay.is_null() {
         return Err(UNSUPPORTED);
     }
-    Ok(json!({"version":1,"ok":true,"result":result}))
+    // Validate the owner's overlay field locally and keep it outside the renderer reply.
+    let mut public: serde_json::Map<String, Value> = FIELDS.into_iter()
+        .map(|field| (field.into(), result[field].clone())).collect();
+    public.insert("schema".into(), json!("nodenetwork-vpn-status-v1"));
+    Ok(json!({"version":1,"ok":true,"result":public}))
 }
 
 fn lowercase_digest(value: &Value) -> bool {
@@ -639,7 +643,10 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "overlay_address":"100.80.10.4/16"
         }});
         let projected = vpn_status_reply(&reply).unwrap();
-        assert_eq!(projected["result"],reply["result"]);
+        assert_eq!(projected["result"],json!({
+            "schema":"nodenetwork-vpn-status-v1","service_registered":true,"enrollment_staged":false,
+            "enrollment_recorded":true,"reconciliation_required":false,"server_bound":false,"connected":true
+        }));
         assert!(projected.get("internal").is_none());
         reply["result"]["overlay_address"] = json!("100.80.10.4/64");
         assert!(vpn_status_reply(&reply).is_err());

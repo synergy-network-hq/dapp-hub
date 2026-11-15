@@ -1,4 +1,5 @@
 import {unsignedObservation} from '@synergy-network/dapp-data-view/protocol-observations';
+import {genesisDigest} from './genesis-pin.js';
 
 export const syncHistoryKey = 'synergy-nodenetwork:rpc-sync-history:v1';
 export const syncHistoryLimit = 24;
@@ -58,8 +59,10 @@ export function readSyncHistory(storage) {
  }
 }
 
-export function selectSyncHistory(history, source, reportedChain) {
- const samples = history.samples.filter(sample => sample.source === source);
+export function selectSyncHistory(history, source, reportedChain, configuredPin) {
+ const pin = genesisDigest(configuredPin);
+ if (configuredPin != null && !pin) return [];
+ const samples = history.samples.filter(sample => sample.source === source && (!pin || genesisDigest(sample.chain.genesis) === pin));
  const chain = reportedChain ?? samples[0]?.chain;
  return chain ? samples.filter(sample => sameChain(sample.chain, chain)) : [];
 }

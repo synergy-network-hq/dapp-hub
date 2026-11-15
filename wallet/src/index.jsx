@@ -16,6 +16,7 @@ import {readAtlasAddress} from './atlas-account.js';
 import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
 import {WalletCollectibles, WalletOwnerCollectibles} from './WalletCollectibles.jsx';
+import {WalletMultiAssetInventory} from './WalletMultiAssetInventory.jsx';
 import {WalletOverview} from './WalletOverview.jsx';
 import {WalletOneTimeDraft, WalletRecipientDraft} from './WalletRecipientDraft.jsx';
 import {atlasEndpointRequired, canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
@@ -98,6 +99,7 @@ export function WalletApp() {
           {atlasReady ? <WalletCollectibles key={atlasKey} account={connection.address} endpoint={n.endpoint} readAtlas={readAtlas}/>
             : <Card title="Collectibles"><p>{atlasEndpointRequired}</p></Card>}
           <WalletOwnerCollectibles key={`owner-nfts:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+          <WalletMultiAssetInventory key={`owner-multi-assets:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
         </>;
       case 'Activity':
         return <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
