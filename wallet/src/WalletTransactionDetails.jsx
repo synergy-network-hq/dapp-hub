@@ -3,13 +3,65 @@ import {Copy, Detail, Resource, chainIdNumber, useResource} from '@synergy-netwo
 import {amount, text} from '@synergy-network/dapp-data-view';
 import {indexedTransactionTime, transactionDirection} from './WalletActivity.jsx';
 import {sourceRecords} from './source-records.js';
-import {comparableTransactionHash, compareIndexedBlock, transactionObservation} from './transaction-observation.js';
+import {blockLookupHeight, comparableTransactionHash, compareIndexedBlock, reportedBlockMembership,
+  transactionObservation} from './transaction-observation.js';
 
 const observations = {
   notFound: 'Selected RPC returned no transaction',
   pending: 'Pending in the selected RPC pool',
   inBlock: 'Reported in a block by the selected RPC',
 };
+
+const blockMessages = {
+  listed: 'Transaction listed in the selected RPC block.',
+  notListed: 'The selected RPC block did not list this transaction.',
+  unavailable: 'The selected RPC did not return the reported block.',
+  unsupported: 'This block response does not provide a supported transaction hash list.',
+  ambiguous: 'The selected RPC block listed the transaction more than once.',
+};
+
+function BlockLookup({height, hash, endpoint, readRpc}) {
+  const [revision, setRevision] = useState(0);
+  const refresh = () => setRevision(previous => previous + 1);
+  const result = useResource(async signal => {
+    signal.throwIfAborted();
+    const options = {endpoint: endpoint.rpc, signal};
+    let identity;
+    try {
+      identity = await readRpc('synergy_getChainId', [], options);
+    } catch {
+      throw Error('The selected RPC chain check failed. Try again.');
+    }
+    if (chainIdNumber(identity) !== 1266) throw Error('The selected RPC reported a different chain ID.');
+    signal.throwIfAborted();
+    let value;
+    try {
+      value = await readRpc('synergy_getBlockByNumber', [height], options);
+    } catch {
+      throw Error('The selected RPC block check failed. Try again.');
+    }
+    signal.throwIfAborted();
+    return {...reportedBlockMembership(value, height, hash), checkedAt: new Date().toISOString()};
+  }, JSON.stringify([height, hash, endpoint.id, endpoint.rpc, endpoint.networkKey, revision]));
+  return <section aria-label="Selected RPC block observation">
+    <h5>Reported block check</h5>
+    <Resource value={{...result, reload: refresh}}>{value => <>
+      <p role="status">{blockMessages[value.state]}</p>
+      {value.hash && <p>RPC block hash: {value.hash}</p>}
+      <p>Block checked: <time dateTime={value.checkedAt}>{value.checkedAt}</time></p>
+      <button onClick={refresh}>Check block again</button>
+    </>}</Resource>
+  </section>;
+}
+
+function ReportedBlock({block, hash, endpoint, readRpc}) {
+  const [checking, setChecking] = useState(false);
+  const height = blockLookupHeight(block);
+  if (height === null) return <p>The reported block height cannot be sent as an exact RPC integer.</p>;
+  return checking
+    ? <BlockLookup {...{height, hash, endpoint, readRpc}}/>
+    : <button onClick={() => setChecking(true)}>Check reported block on RPC</button>;
+}
 
 function TransactionLookup({hash, account, endpoint, readRpc, indexedBlock}) {
   const [revision, setRevision] = useState(0);
@@ -44,6 +96,7 @@ function TransactionLookup({hash, account, endpoint, readRpc, indexedBlock}) {
         {difference && <p>{difference}</p>}
         <p>Last checked: <time dateTime={checkedAt}>{checkedAt}</time></p>
         <button onClick={refresh}>Check RPC again</button>
+        {value.state === 'inBlock' && <ReportedBlock key={revision} block={value.block} {...{hash, endpoint, readRpc}}/>}
       </>;
     }}</Resource>
     <p>The RPC observation can change. Finality and reorganization status remain unavailable.</p>

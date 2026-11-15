@@ -38,10 +38,11 @@ const validState = record => {
  if (record.state === 'uncertain') return record.response_ok === null;
  return record.state === 'response_received' && typeof record.response_ok === 'boolean';
 };
+const historyLimit = 256;
 
 export function parseRequestHistory(value) {
  if (
-  value?.schema !== 'nodenetwork-local-requests-v1' || value.limit !== 256
+  value?.schema !== 'nodenetwork-local-requests-v1' || value.limit !== historyLimit
   || value.remoteJobRecovery !== false || value.automaticReplay !== false
   || !Array.isArray(value.records) || value.records.length > value.limit
   || value.records.some(record =>
@@ -52,4 +53,27 @@ export function parseRequestHistory(value) {
   || new Set(value.records.map(record => record.id)).size !== value.records.length
  ) throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
  return value;
+}
+
+export function reviewRequestSelection(value, ids, reviewedAt = Date.now()) {
+ const {records} = parseRequestHistory(value);
+ if (!Array.isArray(ids) || !ids.length || ids.length > historyLimit || ids.some(id => !pin(id))
+  || new Set(ids).size !== ids.length || !timestamp(reviewedAt)) {
+  throw Error('Select supported local journal records before reviewing an export.');
+ }
+ const wanted = new Set(ids);
+ const selected = records.filter(record => wanted.has(record.id));
+ if (selected.length !== ids.length) throw Error('The selected records changed. Refresh local history and select them again.');
+ return {
+  schema: 'nodenetwork-local-request-summary-v1',
+  reviewedAt: new Date(reviewedAt).toISOString(),
+  records: selected.map(record => ({
+   localRequestId: record.id,
+   operation: record.operation,
+   state: record.state,
+   controllerReportedOk: record.response_ok,
+   dispatchRecordedAt: new Date(record.recorded_at_ms).toISOString(),
+   outcomeRecordedAt: record.observed_at_ms === null ? null : new Date(record.observed_at_ms).toISOString(),
+  })),
+ };
 }

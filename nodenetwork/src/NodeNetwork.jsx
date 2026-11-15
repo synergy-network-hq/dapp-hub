@@ -101,7 +101,7 @@ export function NodeNetworkApp(){
    <OffboardingChecklist onOpenHistory={()=>setSection('logs')}/>
   </div>}
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>No target controller will be contacted until you explicitly save a target in Settings. Public network observations do not select or authenticate a host.</p><button onClick={()=>setSection('settings')}>Review target settings</button></Card>}
-  {(tab==='Management'||section==='logs')&&<RequestHistory key={String(permitted)} permitted={permitted}/>}
+  {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted}/>}
   {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true}/>}
  </NodeNetworkPanelFrame>;
 }

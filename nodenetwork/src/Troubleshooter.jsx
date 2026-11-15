@@ -1,5 +1,6 @@
 import {useState} from 'react';
 import {Card, ErrorMessage, ModalDialog, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {downloadJson} from './download-json.js';
 import {reviewTroubleshooting, symptoms, troubleshoot} from './troubleshooter.js';
 
 const columns = [
@@ -9,21 +10,6 @@ const columns = [
  {key: 'receivedAt', label: 'Received'},
  {key: 'next', label: 'Next step'},
 ];
-
-function saveReport(report) {
- const contents = JSON.stringify(report, null, 2);
- const url = URL.createObjectURL(new Blob([contents], {type: 'application/json'}));
- const link = document.createElement('a');
- link.href = url;
- link.download = 'nodenetwork-diagnostics.json';
- try {
-  document.body.append(link);
-  link.click();
- } finally {
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
- }
-}
 
 export function Troubleshooter({profile, permitted, local, live, hasTarget, targetSettingsReadable, onOpenMonitoring, onOpenSettings}) {
  const [symptom, setSymptom] = useState('rpc');
@@ -60,7 +46,7 @@ export function Troubleshooter({profile, permitted, local, live, hasTarget, targ
    <button data-initial-focus onClick={() => setReview(null)}>Cancel</button>
    <button onClick={() => {
     try {
-     saveReport(review);
+     downloadJson('nodenetwork-diagnostics.json', review);
      setReview(null);
     } catch {
      setError('The device could not save the summary. Try again or review this text with the operator.');

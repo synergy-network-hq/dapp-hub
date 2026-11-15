@@ -55,3 +55,36 @@ export function compareIndexedBlock(value, observation) {
     ? 'Atlas reports a block, while the selected RPC reports this transaction pending.'
     : 'Atlas reports a block, while the selected RPC returned no transaction.';
 }
+
+export function blockLookupHeight(height) {
+  const exact = blockHeight(height);
+  return exact !== null && BigInt(exact) <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(exact) : null;
+}
+
+export function reportedBlockMembership(value, height, transactionHash) {
+  const selected = comparableTransactionHash(transactionHash);
+  const expectedHeight = blockHeight(height);
+  if (!selected || expectedHeight === null) throw Error('The selected transaction or block identity is unsupported.');
+  if (value === null) return {state: 'unavailable', hash: null};
+
+  const hash = value?.hash;
+  if (blockHeight(value?.block_index) !== expectedHeight || typeof hash !== 'string' ||
+      hash.length !== 64 || !/^[a-f0-9]{64}$/i.test(hash)) {
+    throw Error('RPC did not return the reported block identity.');
+  }
+
+  // Typed and coordinated finality projections do not carry the legacy
+  // explorer hashes needed by this lookup. An unrecognizable projection
+  // cannot establish that the selected transaction is missing.
+  if (Object.hasOwn(value, 'transaction_format')) return {state: 'unsupported', hash};
+  const rows = value.transactions;
+  if (!Array.isArray(rows) || rows.length > 10_000 || blockHeight(value.tx_count) !== String(rows.length)) {
+    return {state: 'unsupported', hash};
+  }
+  const hashes = rows.map(row => comparableTransactionHash(row?.hash));
+  if (hashes.some(row => row === null || row.kind === undefined)) return {state: 'unsupported', hash};
+  const count = hashes.filter(row => row.digest === selected.digest &&
+    (selected.kind === undefined || selected.kind === row.kind)).length;
+  if (count > 1) return {state: 'ambiguous', hash};
+  return {state: count === 1 ? 'listed' : 'notListed', hash};
+}

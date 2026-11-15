@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {filterRequests, parseRequestHistory, requestStatusLabel} from '../src/request-history.js';
+import {filterRequests, parseRequestHistory, requestStatusLabel, reviewRequestSelection} from '../src/request-history.js';
 
 const targetA = 'a'.repeat(64);
 const targetB = 'b'.repeat(64);
@@ -60,4 +60,28 @@ test('unsupported envelopes never yield actionable or empty history', () => {
  ]) {
   assert.throws(() => parseRequestHistory(value), /History is unavailable/);
  }
+});
+
+test('selected export snapshots retain local correlation while excluding target and request fingerprints', () => {
+ const scoped = {...envelope, records: [{...accepted, rawResponse: 'fixture excluded'}, refused, unknown, uncertain]};
+ const summary = reviewRequestSelection(scoped, [accepted.id, unknown.id], 2000);
+ assert.equal(summary.schema, 'nodenetwork-local-request-summary-v1');
+ assert.equal(summary.reviewedAt, '1970-01-01T00:00:02.000Z');
+ assert.deepEqual(summary.records.map(observation => observation.localRequestId), [accepted.id, unknown.id]);
+ assert.deepEqual(summary.records.map(observation => observation.controllerReportedOk), [true, null]);
+ assert.equal(summary.records[1].outcomeRecordedAt, null);
+ const text = JSON.stringify(summary);
+ assert.ok(!text.includes(targetA));
+ assert.ok(!text.includes(targetB));
+ assert.ok(!text.includes(accepted.request_digest));
+ assert.doesNotMatch(text, /target_digest|request_digest|rawResponse|fixture excluded/);
+ scoped.records[0].response_ok = false;
+ assert.equal(summary.records[0].controllerReportedOk, true);
+});
+
+test('rejects empty, malformed or stale selections before building an export', () => {
+ for (const ids of [[], ['bad'], [accepted.id, accepted.id], ['9'.repeat(64)]]) {
+  assert.throws(() => reviewRequestSelection(envelope, ids));
+ }
+ assert.throws(() => reviewRequestSelection({...envelope, automaticReplay: true}, [accepted.id]));
 });
