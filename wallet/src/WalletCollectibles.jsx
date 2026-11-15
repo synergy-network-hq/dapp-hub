@@ -1,11 +1,10 @@
 import {useLayoutEffect, useRef, useState} from 'react';
 import {Card, Detail, Resource, chainIdNumber, rpc, rpcNftInventoryObservation, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
-import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {ATLAS_NFT_LIMIT, RPC_OWNER_NFT_LIMIT, collectibleObservations, ownerCollectibleObservation} from './collectible-observations.js';
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {isProtectedWalletAddress} from './wallet-address.js';
-import {checkConfiguredReceiptGenesis as checkConfiguredGenesis, rpcReceiptReadiness as testnetReadiness} from './rpc-receipt-observation.js';
+import {readProtectedWalletReadiness} from './wallet-owner-readiness.js';
 
 const classLabels = {nf1: 'NF1 standard NFT', nf2: 'NF2 controlled NFT'};
 const collectionStatusLabels = {verified: 'Atlas marks this collection verified', active: 'Atlas reports an active collection'};
@@ -134,18 +133,7 @@ export function WalletOwnerCollectibles({account, endpoint, canRead}) {
       if (!mounted.current || !canRead()) throw Error('The Wallet collectible context changed.');
     }
 
-    checkScope();
-    if (!supportedAccount || Number(endpoint.chainId) !== 1266) throw Error('A protected Wallet account on chain 1266 is required.');
-    const readiness = await readProtocolObservation(async (method, params, options) => {
-      checkScope();
-      const value = await rpc(method, params, options);
-      checkScope();
-      return value;
-    }, 'synergy_getReadiness', endpoint, signal, testnetReadiness);
-    checkConfiguredGenesis(readiness.chain, endpoint.genesisHash);
-    const incarnation = Number(readiness.chain.incarnation);
-    if (!Number.isSafeInteger(incarnation) || incarnation <= 0) throw Error('The selected RPC did not report a supported Testnet incarnation.');
-
+    const readiness = await readProtectedWalletReadiness(account, endpoint, signal, checkScope);
     checkScope();
     let response;
     try {

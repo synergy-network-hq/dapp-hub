@@ -10,6 +10,7 @@ import {WalletConnections} from './WalletConnections.jsx';
 import {WalletHistory} from './WalletHistory.jsx';
 import {WalletBalances} from './WalletBalances.jsx';
 import {WalletTokens} from './WalletTokens.jsx';
+import {WalletOwnerTokens} from './WalletOwnerTokens.jsx';
 import {readAtlasTokenBalances} from './token-balance-inventory.js';
 import {readAtlasAddress} from './atlas-account.js';
 import {Receive} from './WalletReceive.jsx';
@@ -82,13 +83,16 @@ export function WalletApp() {
     if (currentTab === 'Connections') return <WalletConnections canRead={ready} indexedIdentity={atlasReady ? account : null}/>;
     switch (currentTab) {
       case 'Assets':
-        return atlasReady ? <>
-          <WalletOverview key={atlasScope} account={connection.address} endpoint={n.endpoint} revision={revision} observation={account} readAtlas={readAtlas}
-            onActivity={() => setTab('Activity')} onCollectibles={() => setTab('Collectibles')}/>
-          <Card title="Live assets"><Resource value={tokens}>{result => <>
-            <SourceAge updatedAt={result.receivedAt}/><WalletTokens inventory={result.inventory}/>
-          </>}</Resource></Card>
-        </> : <Card title="Live assets"><p>{atlasEndpointRequired}</p></Card>;
+        return <>
+          {atlasReady ? <>
+            <WalletOverview key={atlasScope} account={connection.address} endpoint={n.endpoint} revision={revision} observation={account} readAtlas={readAtlas}
+              onActivity={() => setTab('Activity')} onCollectibles={() => setTab('Collectibles')}/>
+            <Card title="Live assets"><Resource value={tokens}>{result => <>
+              <SourceAge updatedAt={result.receivedAt}/><WalletTokens inventory={result.inventory}/>
+            </>}</Resource></Card>
+          </> : <Card title="Live assets"><p>{atlasEndpointRequired}</p></Card>}
+          <WalletOwnerTokens key={`owner-tokens:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+        </>;
       case 'Collectibles':
         return <>
           {atlasReady ? <WalletCollectibles key={atlasKey} account={connection.address} endpoint={n.endpoint} readAtlas={readAtlas}/>

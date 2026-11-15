@@ -28,15 +28,23 @@ export function isProtectedWalletAddress(address) {
   return body === expected;
 }
 
-export function isStsNftObjectId(address, nftClass) {
-  const expectedPrefix = nftClass === 'nf1' ? 'synn1' : nftClass === 'nf2' ? 'synn2' : null;
-  if (!expectedPrefix || typeof address !== 'string' || address.length !== 44 || address !== address.toLowerCase()) return false;
+function stsObjectPrefix(address) {
+  if (typeof address !== 'string' || address.length !== 44 || address !== address.toLowerCase()) return null;
   try {
     const {prefix, words} = bech32m.decode(address);
-    return prefix === expectedPrefix && words.length === 32;
+    return words.length === 32 ? prefix : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function isStsNftObjectId(address, nftClass) {
+  const expectedPrefix = nftClass === 'nf1' ? 'synn1' : nftClass === 'nf2' ? 'synn2' : null;
+  return expectedPrefix !== null && stsObjectPrefix(address) === expectedPrefix;
+}
+
+export function isStsFungibleObjectId(address) {
+  return ['synb1', 'synb2', 'synb3'].includes(stsObjectPrefix(address));
 }
 
 // A contact format classifier for local storage and display. This does not verify ownership or transfer eligibility.

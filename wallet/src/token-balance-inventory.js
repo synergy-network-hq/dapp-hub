@@ -1,5 +1,7 @@
 import {text} from '@synergy-network/dapp-data-view';
 import {requireAtlasAccountKey} from './atlas-account.js';
+import {blockHeight} from './transaction-observation.js';
+import {isStsFungibleObjectId} from './wallet-address.js';
 
 const atlasSource = 'atlas_token_balances';
 const unavailable = 'Token balance response is unavailable or unsupported. Inventory coverage is unknown.';
@@ -9,6 +11,66 @@ export const tokenBalanceSources = {
   synq: 'Atlas SynQ deployment receipt',
   other: 'Other Atlas response format',
 };
+
+export const rpcTokenBalanceSources = {
+  rpcNative: 'Selected RPC native SNRG ledger',
+  rpcSts: 'Selected RPC STS snapshot',
+};
+export const RPC_TOKEN_INVENTORY_LIMIT = 50;
+const rpcSnapshotSources = new Set(['finalized_chain1266_execution_state', 'finalized_sts_snapshot']);
+const maxU128 = 340282366920938463463374607431768211455n;
+
+function exactRpcAmount(value, max) {
+  const digits = Number.isSafeInteger(value) && value >= 0 ? String(value) : value;
+  return typeof digits === 'string' && digits.trim() === digits && /^(0|[1-9][0-9]{0,38})$/.test(digits) &&
+    BigInt(digits) <= max ? digits : null;
+}
+
+// The chain-1266 owner RPC returns the native ledger row and an exact-owner STS execution snapshot.
+export function rpcTokenBalanceInventory(response, account, readiness) {
+  const {value, chainContext} = response;
+  const chain = readiness.chain;
+  if (chainContext?.chainId !== chain.chainId || String(chainContext.incarnation) !== chain.incarnation ||
+      chainContext.genesis !== chain.genesis.toLowerCase()) {
+    throw Error('The token response does not match the selected RPC readiness identity.');
+  }
+  if (value?.owner !== account) throw Error('The selected RPC did not return the exact Wallet owner.');
+
+  const replay = value.replay;
+  const snapshotHeight = blockHeight(replay?.latest_height);
+  const snapshotHash = replay?.snapshot_block_hash;
+  if (value.success !== true || !rpcSnapshotSources.has(replay?.source) ||
+      value.source !== `native_snrg_ledger_and_${replay.source}` || replay.complete !== true ||
+      snapshotHeight === null || typeof snapshotHash !== 'string' || snapshotHash.length !== 64 ||
+      !/^[0-9a-f]{64}$/.test(snapshotHash) || !Array.isArray(value.items) || value.count !== value.items.length ||
+      value.items.length < 1 || value.items.length > RPC_TOKEN_INVENTORY_LIMIT) {
+    throw Error('The selected RPC did not return a supported token inventory snapshot.');
+  }
+
+  const [native, ...sts] = value.items;
+  const nativeAmount = exactRpcAmount(native?.balance_nwei, 18446744073709551615n);
+  if (native?.asset_kind !== 'native' || native.owner !== account || native.symbol !== 'SNRG' ||
+      native.token_id !== null || native.token_address !== null || nativeAmount === null ||
+      nativeAmount !== exactRpcAmount(native.balance, 18446744073709551615n)) {
+    throw Error('The selected RPC returned an unsupported native SNRG row.');
+  }
+
+  const seen = new Set();
+  const items = sts.map(row => {
+    const balance = exactRpcAmount(row?.balance, maxU128);
+    if (row?.asset_kind !== 'sts' || row.owner !== account || !isStsFungibleObjectId(row.token_id) ||
+        row.token_address !== row.token_id || seen.has(row.token_id) || typeof row.symbol !== 'string' ||
+        row.symbol.trim() !== row.symbol || !/^[A-Z][A-Z0-9]{1,11}$/.test(row.symbol) || row.symbol.includes('SNRG') ||
+        !Number.isInteger(row.decimals) || row.decimals < 0 || row.decimals > 9 || typeof row.frozen !== 'boolean' || balance === null) {
+      throw Error('The selected RPC returned an invalid or ambiguous STS balance row.');
+    }
+    seen.add(row.token_id);
+    return {source: 'rpc_sts_token_balances', symbol: row.symbol, tokenId: row.token_id,
+      tokenAddress: row.token_address, tokenStandard: 'Native STS fungible', raw: balance, decimals: row.decimals, frozen: row.frozen};
+  });
+  items.unshift({source: 'rpc_native_token_balance', symbol: 'SNRG', raw: nativeAmount, decimals: 9, tokenStandard: 'Native SNRG'});
+  return {kind: 'rpc', items, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+}
 
 export async function readAtlasTokenBalances(request, account, {signal} = {}) {
   signal?.throwIfAborted();
@@ -38,7 +100,8 @@ export function tokenBalanceInventory(value, accountKey) {
   return {items, accountReported};
 }
 
-export function tokenBalanceSource(item) {
+export function tokenBalanceSource(item, kind) {
+  if (kind === 'rpc') return item.source === 'rpc_native_token_balance' ? 'rpcNative' : 'rpcSts';
   if (item.source === 'atlas_sts_token_balances') return 'sts';
   if (item.source === 'atlas_synq_deploy_receipt') return 'synq';
   return 'other';
@@ -60,15 +123,15 @@ function tokenUnits(raw, decimals) {
   return fraction ? whole + '.' + fraction : whole;
 }
 
-export function reportedTokenQuantity(item) {
-  const source = tokenBalanceSource(item);
+export function reportedTokenQuantity(item, kind) {
+  const source = tokenBalanceSource(item, kind);
   if (source !== 'other') {
     const raw = atomicString(item.raw);
     const decimals = reportedTokenDecimals(item.decimals);
     return {
       value: raw !== null && decimals !== null ? tokenUnits(raw, decimals) : 'Unavailable',
       raw,
-      units: source === 'sts' ? 'Indexed token units' : 'Initial token units reported at deployment',
+      units: source === 'sts' ? 'Indexed token units' : source === 'synq' ? 'Initial token units reported at deployment' : 'RPC-reported token units',
     };
   }
 
