@@ -14,6 +14,7 @@ import {NodeController} from './NodeController.jsx';
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {installPreflightChecklist} from './install-preflight.js';
 import {RequestHistory} from './RequestHistory.jsx';
+import {Troubleshooter} from './Troubleshooter.jsx';
 import {TargetSettings, useTargetSelection} from './TargetSettings.jsx';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
 import {CANARY_PROFILE,readNodeNetwork,provisioningChecks} from './nodeNetwork.js';
@@ -27,7 +28,7 @@ export function NodeNetworkApp(){
  const profiles=[CANARY_PROFILE,...n.endpoints.filter(p=>p.id!==CANARY_PROFILE.id)];
  const [profileId,setProfileId]=useState(CANARY_PROFILE.id);
  const profile=profiles.find(p=>p.id===profileId)||CANARY_PROFILE;
- const tab=({overview:'Network',operations:'Validator setup',monitoring:'Management',logs:'Management',settings:settingsTab})[section];
+ const tab=({overview:'Network',operations:'Validator setup',monitoring:'Management',settings:settingsTab})[section];
  const permitted=n.permit('node','readNetwork');
  const masterScope=useRef({permitted,generation:0});
  if(masterScope.current.permitted!==permitted)masterScope.current={permitted,generation:masterScope.current.generation+1};
@@ -54,7 +55,10 @@ export function NodeNetworkApp(){
   {section==='settings'&&<TargetSettings selection={targetSettings} local={local}/>}
   <div className="native-actions"><label>Observation network<select aria-label="NodeNetwork observation network" value={profileId} onChange={e=>setProfileId(e.target.value)}>{profiles.map(p=><option key={p.id} value={p.id}>{p.name} · {p.chainId}</option>)}</select></label><button disabled={live.loading||validators.loading} onClick={refreshPublic}>Refresh NodeNetwork</button></div>
   {section==='settings'&&<div className="native-tabs" role="tablist" aria-label="Node settings sections">{['Updates','Installation isolation'].map(name=><button role="tab" key={name} aria-selected={tab===name} onClick={()=>setSettingsTab(name)}>{name}</button>)}</div>}
-  {section==='performance'?<NodeNetworkPanelCard title="Validator performance telemetry"><p>The qualified target controller does not yet expose CPU, memory, disk, network throughput or APQE timing samples. Performance history requires an authenticated, bounded telemetry interface; no synthetic values are displayed.</p></NodeNetworkPanelCard>:section==='logs'?<NodeNetworkPanelCard title="Validator log access"><p>The qualified controller does not yet provide bounded, redacted log access. Inventory and health diagnostics are available below; arbitrary shell execution and filesystem access are excluded.</p></NodeNetworkPanelCard>:tab==='Network'?<>
+  {section==='performance'?<NodeNetworkPanelCard title="Validator performance telemetry"><p>The qualified target controller does not yet expose CPU, memory, disk, network throughput or APQE timing samples. Performance history requires an authenticated, bounded telemetry interface; no synthetic values are displayed.</p></NodeNetworkPanelCard>:section==='logs'?<>
+   <NodeNetworkPanelCard title="Validator log access"><p>Bounded, redacted log access needs a qualified controller integration. For an enrolled target, open Monitoring to inspect health or inventory.</p></NodeNetworkPanelCard>
+   <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>
+  </>:tab==='Network'?<>
    <RpcReadiness profile={profile} permitted={permitted}/><div className="node-read-monitor"><Card title="Public validator index"><Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/><NodeWatchlist data={value.data} updatedAt={value.updatedAt}/></>}</Resource></Card></div>
    <p className="native-source">Public RPC observations from {profile.rpc}. These observations do not authenticate a provisioning target or approve enrollment.</p>
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>
@@ -70,7 +74,7 @@ export function NodeNetworkApp(){
    <Card title="Audit status"><p>A host isolation audit is required before installation and after every update. Inspect the target inventory and conformance results below; a configured target is not automatically marked compliant.</p><p>Removing NodeNetwork from Portal does not uninstall a validator or delete chain state, keys or signing journals.</p></Card>
   </div>}
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>No target controller will be contacted until you explicitly save a target in Settings. Public network observations do not select or authenticate a host.</p><button onClick={()=>setSection('settings')}>Review target settings</button></Card>}
-  {tab==='Management'&&<RequestHistory permitted={permitted}/>}
+  {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted}/>}
   {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true}/>}
  </NodeNetworkPanelFrame>;
 }
