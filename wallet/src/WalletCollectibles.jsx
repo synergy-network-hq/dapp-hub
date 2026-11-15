@@ -4,11 +4,16 @@ import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {ATLAS_NFT_LIMIT, collectibleObservations} from './collectible-observations.js';
 import {requireAtlasAccountKey} from './atlas-account.js';
 
+const classLabels = {nf1: 'NF1 standard NFT', nf2: 'NF2 controlled NFT'};
+const collectionStatusLabels = {verified: 'Atlas marks this collection verified', active: 'Atlas reports an active collection'};
+
 function CollectibleList({items, receivedAt}) {
   const [collection, setCollection] = useState('');
+  const [status, setStatus] = useState('');
   const [selection, setSelection] = useState(null);
   const collections = new Map(items.map(item => [item.collectionId, item.collection]));
-  const visible = items.filter(item => !collection || item.collectionId === collection);
+  const statuses = [...new Set(items.map(item => item.status))].sort();
+  const visible = items.filter(item => (!collection || item.collectionId === collection) && (!status || item.status === status));
   const selected = visible.find(item => item.key === selection);
   return <>
     <SourceAge source="Atlas public token registry" updatedAt={receivedAt}/>
@@ -20,6 +25,13 @@ function CollectibleList({items, receivedAt}) {
         <option value="">All returned collections</option>
         {[...collections].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
       </select></label>
+      <label>Filter by indexed status<select value={status} onChange={event => {
+        setStatus(event.target.value);
+        setSelection(null);
+      }}>
+        <option value="">All returned statuses</option>
+        {statuses.map(value => <option key={value}>{value}</option>)}
+      </select></label>
       <div className="native-grid" aria-label="Indexed collectible records">
         {visible.map(item => <article key={item.key} className="native-card">
           <p>Media unavailable</p>
@@ -30,6 +42,7 @@ function CollectibleList({items, receivedAt}) {
           </button>
         </article>)}
       </div>
+      {!visible.length && <p>No returned collectibles match these filters.</p>}
       {selected && <aside aria-label="Selected collectible">
         <h3>{selected.name}</h3>
         <Detail data={{
@@ -40,8 +53,13 @@ function CollectibleList({items, receivedAt}) {
           indexedOwner: selected.ownerAddress,
           indexedStatus: selected.status,
           indexedQuantity: selected.quantity,
+          reportedTokenClass: classLabels[selected.tokenClass] ?? 'Unavailable',
+          reportedCollectionStatus: collectionStatusLabels[selected.collectionStatus] ?? 'Unavailable',
+          indexedCreationBlock: selected.creationBlock ?? 'Unavailable',
+          indexedCreationTransaction: selected.creationHash ?? 'Unavailable',
           provenance: 'Unverified',
-          metadata: selected.metadataReported ? 'Reference reported by Atlas' : 'Unavailable',
+          metadata: selected.metadataStatus,
+          reportedMetadataHash: selected.metadataHash ?? 'Unavailable',
         }}/>
         <p>Media unavailable. Wallet does not load the metadata reference.</p>
       </aside>}

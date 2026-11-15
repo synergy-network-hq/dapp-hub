@@ -103,8 +103,7 @@ function validThreshold(observed, required) {
  return threshold > 0n && numeric(observed) <= threshold * 2n;
 }
 
-// Mirror the owner's structural consistency checks. Live liveness and health
-// evaluation require the owner runtime and are outside the saved-file reader.
+// Mirror the owner's structural consistency checks before deriving a finding.
 function consistent({chain, posy, protected_pipeline: pipeline}) {
  const normal = pipeline.source !== 'GENESIS_BOOTSTRAP';
  if (numeric(chain.finalized_height) > numeric(chain.head_height) || numeric(posy.finalized_height) > numeric(posy.current_height)
@@ -118,6 +117,76 @@ function consistent({chain, posy, protected_pipeline: pipeline}) {
  return !normal || (validThreshold(pipeline.availability_count, pipeline.availability_required)
   && validThreshold(pipeline.cutoff_marker_count, pipeline.cutoff_markers_required)
   && validThreshold(pipeline.reveal_share_count, pipeline.reveal_shares_required));
+}
+
+const below = (observed, required) => numeric(observed) < numeric(required);
+const count = (observed, required) => `${numberSource(observed)} of ${numberSource(required)} required`;
+const missing = (from, to, evidence) => ({from, to, evidence});
+
+// Order follows the pinned owner's diagnose_first_missing_transition. The
+// reasons use fixed labels, validated enum values and exact integer counts.
+function firstMissingTransition({service, peers, posy, protected_pipeline: pipeline}) {
+ if (service.state !== 'ACTIVE') {
+  return missing('SERVICE.START_REQUESTED', 'SERVICE.ACTIVE', `Saved service state is ${service.state}.`);
+ }
+ if (!peers.p2p_listener_ready) {
+  return missing('P2P.CONFIGURED', 'P2P.LISTENING', 'The saved observation reports that the P2P listener was unready.');
+ }
+ if (below(peers.authenticated_validator_peer_count, peers.peer_quorum_threshold)) {
+  return missing('P2P.LISTENING', 'P2P.VALIDATOR_QUORUM',
+   `Authenticated validator peers reached ${count(peers.authenticated_validator_peer_count, peers.peer_quorum_threshold)}.`);
+ }
+
+ const normal = pipeline.source !== 'GENESIS_BOOTSTRAP';
+ if (normal) {
+  if (below(pipeline.availability_count, pipeline.availability_required)) {
+   return missing('PROTECTED_PIPELINE.COLLECTING', 'PROTECTED_PIPELINE.AVAILABILITY_QUORUM',
+    `Availability evidence reached ${count(pipeline.availability_count, pipeline.availability_required)}.`);
+  }
+  if (below(pipeline.cutoff_marker_count, pipeline.cutoff_markers_required)) {
+   return missing('PROTECTED_PIPELINE.AVAILABILITY_QUORUM', 'PROTECTED_PIPELINE.CUTOFF_READY',
+    `Cutoff markers reached ${count(pipeline.cutoff_marker_count, pipeline.cutoff_markers_required)}.`);
+  }
+  if (!pipeline.cut_ready) {
+   return missing('PROTECTED_PIPELINE.CUTOFF_READY', 'PROTECTED_PIPELINE.CUT_READY', 'The saved CutProof was unready.');
+  }
+  if (!pipeline.order_ready) {
+   return missing('PROTECTED_PIPELINE.CUT_READY', 'PROTECTED_PIPELINE.ORDER_READY', 'The saved protected ordering was unready.');
+  }
+ }
+ if (pipeline.parent_commitment == null) {
+  return missing('PROTECTED_PIPELINE.ORDER_READY', 'PROTECTED_PIPELINE.COMMITTED_IN_PARENT',
+   'The saved observation lacks the required protected-batch commitment in the parent.');
+ }
+ if (!posy.proposal_seen) {
+  return missing('POSY.HEIGHT_READY', 'POSY.PROPOSAL', 'The saved observation reports no proposal from the expected proposer.');
+ }
+ if (below(posy.validation_votes, posy.validation_votes_required) || posy.vc_status !== 'FORMED') {
+  return missing('POSY.PROPOSAL', 'POSY.VC',
+   `Validation votes reached ${count(posy.validation_votes, posy.validation_votes_required)}. Saved VC status is ${posy.vc_status}.`);
+ }
+ if (normal) {
+  if (!pipeline.reveal_authorized) {
+   return missing('PROTECTED_PIPELINE.COMMITTED_IN_PARENT', 'PROTECTED_PIPELINE.REVEAL_AUTHORIZED',
+    'The saved PoSy VC did not authorize reveal of the committed protected batch.');
+  }
+  if (below(pipeline.reveal_share_count, pipeline.reveal_shares_required) || !pipeline.execution_ready) {
+   return missing('PROTECTED_PIPELINE.REVEAL_AUTHORIZED', 'PROTECTED_PIPELINE.EXECUTION_READY',
+    `Reveal shares reached ${count(pipeline.reveal_share_count, pipeline.reveal_shares_required)}. Saved execution readiness is ${pipeline.execution_ready ? 'ready' : 'unready'}.`);
+  }
+ } else if (!pipeline.execution_ready) {
+  return missing('PROTECTED_PIPELINE.GENESIS_BOOTSTRAP', 'PROTECTED_PIPELINE.EXECUTION_READY',
+   'The saved Genesis-bound empty protected batch was unready for execution.');
+ }
+ if (below(posy.finality_votes, posy.finality_votes_required) || posy.qc_status !== 'FORMED') {
+  return missing('POSY.VC', 'POSY.QC',
+   `Finality votes reached ${count(posy.finality_votes, posy.finality_votes_required)}. Saved QC status is ${posy.qc_status}.`);
+ }
+ if (below(posy.finalized_height, posy.current_height)) {
+  return missing('POSY.QC', 'POSY.FINALIZED',
+   `The saved PoSy height is ${numberSource(posy.current_height)} and the finalized height is ${numberSource(posy.finalized_height)}.`);
+ }
+ return null;
 }
 
 const displayText = value => nonempty(value) && value.length <= 256 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/.test(value) ? value : 'Unavailable';
@@ -153,6 +222,7 @@ export function parseValidatorObservation(raw) {
   qcStatus: posy.qc_status,
   protectedSource: pipeline.source,
   protectedPhase: pipeline.phase,
+  missingTransition: firstMissingTransition(value),
  };
 }
 

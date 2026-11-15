@@ -55,7 +55,7 @@ function ObservationReview() {
 }
 
 function ObservationDetails({result}) {
- const {releaseMismatches, ...savedStatus} = result;
+ const {releaseMismatches, missingTransition, ...savedStatus} = result;
  return <section aria-label="Saved observation evidence">
   <h3>Reported status at capture</h3>
   <Detail data={savedStatus}/>
@@ -65,5 +65,11 @@ function ObservationDetails({result}) {
     <p>The reported release differs from the reference included in the file.</p>
     <ul>{releaseMismatches.map(field => <li key={field}>{field.replaceAll('_', ' ')}</li>)}</ul>
    </> : <p>The reported release matches the reference included in the file.</p>}
+  <h3>First missing transition at capture</h3>
+  {missingTransition ? <>
+   <p><code>{missingTransition.from}</code> → <code>{missingTransition.to}</code></p>
+   <p>{missingTransition.evidence}</p>
+  </> : <p>The saved fields satisfy the checks in the transition sequence.</p>}
+  <p>The finding is derived from this file. Review a newer observation to compare progress.</p>
  </section>;
 }
