@@ -22,6 +22,7 @@ import {RequestHistory} from './RequestHistory.jsx';
 import {SavedValidatorObservation} from './SavedValidatorObservation.jsx';
 import {Troubleshooter} from './Troubleshooter.jsx';
 import {TargetDiagnostics} from './TargetDiagnostics.jsx';
+import {SavedValidatorLogs} from './SavedValidatorLogs.jsx';
 import {UpdatePackage} from './UpdatePackage.jsx';
 import {MaintenanceComparison} from './MaintenanceComparison.jsx';
 import {VpnStatus} from './VpnStatus.jsx';
@@ -100,6 +101,7 @@ export function NodeNetworkApp(){
    <button onClick={()=>setSection('overview')}>Open public validator observations</button>
   </NodeNetworkPanelCard>:section==='logs'?<>
    <TargetDiagnostics key={JSON.stringify([target,permitted])} target={target} permitted={permitted}/>
+   <SavedValidatorLogs permitted={permitted}/>
    <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>
   </>:tab==='Network'?<>
    <Card title="Observation sources">

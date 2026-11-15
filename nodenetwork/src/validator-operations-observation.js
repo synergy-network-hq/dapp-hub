@@ -10,7 +10,7 @@ const uint32Max = 4294967295n;
 
 // Validate JSON syntax first. Preserve numeric tokens for Rust u64 fields without
 // rounding through Number. Reject ambiguous duplicate keys, including escapes.
-function parseExactNumbers(raw) {
+export function parseExactNumbers(raw) {
  JSON.parse(raw);
  const objectKeys = [];
  const tokens = /("(?:[^"\\]|\\[\s\S])*")([ \t\r\n]*:)?|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]]/g;
@@ -46,6 +46,9 @@ const uint = limit => value => {
 };
 const u32 = uint(uint32Max);
 const u64 = uint(uint64Max);
+export function exactObservationU64(value) {
+ return u64(value) ? numberSource(value) : null;
+}
 const percent = value => {
  const source = numberSource(value);
  const numeric = Number(source);
