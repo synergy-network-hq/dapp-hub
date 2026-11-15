@@ -62,3 +62,24 @@ export function rpcReceiptObservation(value, selection, readiness) {
   return {status: value.status, blockHash: value.blockHash, height: selection.height,
     chain: expectedChain, tip: readiness.chainStateAvailable ? readiness.height : null};
 }
+
+// The chain-1266 single-authority release projects exact-height records through entry_to_explorer_json.
+export function rpcReceiptBlockReportsFinality(value, receipt) {
+  if (value?.transaction_format !== 'synergy_native_v3') return false;
+
+  const chain = value.chain;
+  const expected = receipt.chain;
+  if (chain?.chain_id !== expected.chainId || value.chain_id !== expected.chainId || chain.network_id !== expected.network ||
+      !isHash(chain.genesis_hash) || chain.genesis_hash.toLowerCase() !== expected.genesis.toLowerCase() ||
+      blockHeight(chain.chain_incarnation) !== expected.incarnation || blockHeight(value.chain_incarnation) !== expected.incarnation) {
+    throw Error('The receipt block and selected RPC readiness report different or unsupported chain identities.');
+  }
+  if (blockHeight(value.height) !== receipt.height || !isHash(value.block_id) ||
+      value.block_id.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+    throw Error('The selected RPC returned conflicting receipt block identifiers.');
+  }
+
+  return value.release_id === 'synergy-testnet-v3-chain-1266' && value.finalized === true &&
+    value.finality_status === 'finalized' && value.finality_proof_type === 'authority_signature' &&
+    value.source === 'canonical_finality_store' && value.finality_source === 'canonical_finality_store';
+}

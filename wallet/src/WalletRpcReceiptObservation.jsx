@@ -3,7 +3,8 @@ import {Detail, Resource, useNative, useResource} from '@synergy-network/portal-
 import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {atlasAccountKey} from './atlas-account.js';
 import {canReadWalletAtlas} from './atlas-scope.js';
-import {checkConfiguredReceiptGenesis, rpcReceiptObservation, rpcReceiptReadiness, rpcReceiptSelection} from './rpc-receipt-observation.js';
+import {checkConfiguredReceiptGenesis, rpcReceiptObservation, rpcReceiptReadiness, rpcReceiptSelection,
+  rpcReceiptBlockReportsFinality} from './rpc-receipt-observation.js';
 import {blockLookupHeight, reportedBlockMembership} from './transaction-observation.js';
 import {WalletAtlasReceiptBlock} from './WalletAtlasReceiptBlock.jsx';
 
@@ -55,7 +56,9 @@ function ReceiptBlockLookup({receipt, hash, endpoint, readRpc, canRead}) {
     } catch {
       throw Error('The selected RPC receipt block check could not be completed. Try again.');
     }
-    return {...reportedBlockMembership(value, height, hash, receipt.blockHash), checkedAt: new Date().toISOString()};
+    const membership = reportedBlockMembership(value, height, hash, receipt.blockHash);
+    const reportsFinality = membership.state !== 'differentHash' && rpcReceiptBlockReportsFinality(value, receipt);
+    return {...membership, reportsFinality, checkedAt: new Date().toISOString()};
   }, revision);
 
   if (height === null) return <p>The receipt block height cannot be sent as an exact RPC integer.</p>;
@@ -65,6 +68,7 @@ function ReceiptBlockLookup({receipt, hash, endpoint, readRpc, canRead}) {
     <Resource value={{...observation, reload: check}}>{value => <>
       <p role="status">{blockMessages[value.state]}</p>
       {value.hash && <p>Checked block hash: {value.hash}</p>}
+      {value.reportsFinality && <p role="status">The selected RPC reports the matching receipt block as finalized with an authority signature.</p>}
       <p>Receipt block checked <time dateTime={value.checkedAt}>{value.checkedAt}</time></p>
       <button onClick={check}>Check receipt block again</button>
     </>}</Resource>
