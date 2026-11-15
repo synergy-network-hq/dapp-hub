@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import {Card, chainIdNumber, Detail, Resource, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {isProtectedWalletAddress} from './wallet-address.js';
+import {checkConfiguredReceiptGenesis as checkConfiguredGenesis} from './rpc-receipt-observation.js';
 
 export function Receive({account, endpoint, consentSession, canUse = () => true, readRpc, generateQr = QRCode.toDataURL}) {
   const chainId = Number(endpoint?.chainId);
@@ -10,7 +11,8 @@ export function Receive({account, endpoint, consentSession, canUse = () => true,
   const hasNetwork = !!networkName && Number.isSafeInteger(chainId) && chainId > 0;
   const supportedNetwork = hasNetwork && chainId === 1266;
   const canReceive = supportedNetwork && isProtectedWalletAddress(account) && canUse();
-  const key = JSON.stringify([account, endpoint?.id, endpoint?.networkKey, endpoint?.rpc, networkName, chainId, consentSession, canReceive]);
+  const key = JSON.stringify([account, endpoint?.id, endpoint?.networkKey, endpoint?.rpc, networkName, chainId,
+    endpoint?.genesisHash, consentSession, canReceive]);
   const scope = useRef({key});
   if (scope.current.key !== key) scope.current = {key};
   const current = scope.current;
@@ -57,6 +59,11 @@ export function Receive({account, endpoint, consentSession, canUse = () => true,
     }
     if (readiness.chain.network !== 'synergy-testnet-v3') {
       return {kind: 'mismatch', message: 'The selected RPC reported a network different from Synergy Testnet v3.'};
+    }
+    try {
+      checkConfiguredGenesis(readiness.chain, endpoint.genesisHash);
+    } catch (failure) {
+      return {kind: 'mismatch', message: failure.message};
     }
     return {kind: 'matched', chain: readiness.chain, checkedAt: new Date().toISOString()};
   }, activeCheck);
