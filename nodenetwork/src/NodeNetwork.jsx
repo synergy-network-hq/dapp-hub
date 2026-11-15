@@ -124,7 +124,7 @@ export function NodeNetworkApp(){
    <InstallationDraftReview form={form}/>
    {!target&&<InstallPreflight checklist={installPreflightChecklist({form,permitted,master})}
     action={<button disabled={!permitted} onClick={()=>setSection('monitoring')}>Review saved preflight evidence</button>}/>}
-   {!target&&<IdentityPreflight/>}
+   {!target&&<IdentityPreflight permitted={permitted}/>}
    <Card title="Node architecture master"><button disabled={!permitted||reviewing} onClick={reviewMaster}>{reviewing?'Inspecting…':'Inspect Synergy master folder'}</button><ErrorMessage error={masterError}/>{permitted&&master&&<Detail data={{release:master.release,architecture:master.architecture,declaredFiles:master.fileCount,manifestSha256:master.manifestSha256}}/>}<p>Compare the manifest digest with the approved release before using it. This preview does not authorize installation.</p></Card>
    <Card title="Local runtime compatibility"><Resource value={local}>{data=>data?<Detail data={data}/>:<p>No host inspection was returned.</p>}</Resource></Card>
 

@@ -23,6 +23,7 @@ const typedStatus = {
  identity_preflight: response => identityPreflightObservation('identity_preflight',response),
  formation_preflight: response => identityPreflightObservation('formation_preflight',response),
  genesis_binding_preflight: response => identityPreflightObservation('genesis_binding_preflight',response),
+ genesis_stage_preflight: response => identityPreflightObservation('genesis_stage_preflight',response),
 };
 
 const healthColumns = [
@@ -149,7 +150,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <InstallPreflight checklist={preflight} action={
     <button disabled={busy||!preflight.canRun} onClick={()=>run('install_preflight',installParameters(form))}>Run installation preflight</button>
    }/>
-   <IdentityPreflight
+   <IdentityPreflight permitted={permitted}
     actions={<div className="native-actions">{identityPreflightReads.map(({operation,label})=>statusAction(operation,label))}</div>}
     observation={preparationResult?.result}
     receipt={preparationResult&&<ControllerReceipt receivedAt={preparationResult.receivedAt}/>}/>

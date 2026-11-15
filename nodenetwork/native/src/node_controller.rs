@@ -49,7 +49,7 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight"|"genesis_binding_preflight" => false,
+            "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight"|"genesis_binding_preflight"|"genesis_stage_preflight" => false,
             "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
@@ -288,6 +288,26 @@ fn genesis_binding_reply(reply: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
+fn genesis_stage_policy_reply(reply: &Value) -> Result<Value, &'static str> {
+    const UNSUPPORTED: &str = "The selected controller returned unsupported Genesis staging policy evidence.";
+    if reply["ok"] != true {
+        return Err(match reply["error"]["code"].as_str() {
+            Some("authorization_required") => "The controller could not confirm approved Genesis input pins. Review the policy with the node operator.",
+            Some("reconciliation_required") => "The controller could not reconcile the existing state. Preserve the custody and staged inputs for operator review.",
+            _ => "The controller could not confirm the Genesis staging policy. Review the prepared custody and staging state with the node operator.",
+        });
+    }
+    let result = &reply["result"];
+    if !reply.as_object().is_some_and(|fields| fields.len() == 3) || reply["version"] != 1
+        || !result.as_object().is_some_and(|fields| fields.len() == 5)
+        || result["schema"] != "nodenetwork-genesis-stage-policy-v1" || !validator_address(&result["address"])
+        || ["genesis_sha256", "authority_sha256", "authority_root_sha256"]
+            .iter().any(|key| !lowercase_digest(&result[*key])) {
+        return Err(UNSUPPORTED);
+    }
+    Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
 fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
     const UNSUPPORTED: &str = "The selected controller returned unsupported pending custody evidence.";
     if reply["ok"] != true {
@@ -411,6 +431,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "vpn_status" => vpn_status_reply(&value),
             "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
             "genesis_binding_preflight" => genesis_binding_reply(&value),
+            "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
             _ => Ok(value),
         }
@@ -687,6 +708,40 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         let guidance = genesis_binding_reply(&refused).unwrap_err();
         assert!(guidance.contains("Preserve the existing custody"));
         assert!(!guidance.contains("fixture secret"));
+    }
+    fn genesis_stage_policy_fixture() -> Value {
+        json!({"version":1,"ok":true,"result":{
+            "schema":"nodenetwork-genesis-stage-policy-v1","address":"synv1".to_string()+&"a".repeat(36),
+            "genesis_sha256":"a".repeat(64),"authority_sha256":"b".repeat(64),"authority_root_sha256":"c".repeat(64)
+        }})
+    }
+    #[test] fn genesis_stage_policy_admits_only_the_empty_preflight() {
+        let mut request = Request {version:1, operation:"genesis_stage_preflight".into(), parameters:json!({})};
+        assert_eq!(request.validate(), Ok(false));
+        request.parameters = json!({"artifacts":{}});
+        assert!(request.validate().is_err());
+        request.operation = "genesis_stage".into();
+        assert!(request.validate().is_err());
+    }
+    #[test] fn genesis_stage_policy_accepts_only_the_owner_pins_and_sanitizes_refusals() {
+        let expected = genesis_stage_policy_fixture();
+        assert_eq!(genesis_stage_policy_reply(&expected), Ok(expected.clone()));
+        for (key, invalid) in [
+            ("schema", json!("nodenetwork-genesis-stage-v1")),
+            ("address", json!("synv1exampleinvalid\n")),
+            ("genesis_sha256", json!("A".repeat(64))),
+            ("authority_sha256", json!("b".repeat(63))),
+            ("authority_root_sha256", Value::Null),
+            ("artifacts", json!({"private":"fixture"})),
+            ("membership_verified", json!(true)),
+        ] {
+            let mut value = expected.clone();
+            value["result"][key] = invalid;
+            assert!(genesis_stage_policy_reply(&value).is_err(), "{key}");
+        }
+        let refusal = json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"fixture secret"}});
+        assert_eq!(genesis_stage_policy_reply(&refusal),
+            Err("The controller could not confirm approved Genesis input pins. Review the policy with the node operator."));
     }
     #[test]
     #[ignore = "Requires an explicitly enrolled disposable Linux VM and its authenticated SSH host pin"]
