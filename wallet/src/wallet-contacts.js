@@ -31,3 +31,25 @@ export function removeContact(storage,reviewed){
  if(!matchesReviewedContact(current.find(item=>item.id===reviewed?.id),reviewed))throw new Error('The contact changed or was removed. Close this review, refresh the address book and review it again.');
  return persistContacts(storage,current.filter(item=>item.id!==reviewed.id));
 }
+
+export async function coordinateContactChange(change,{signal,canWrite}){
+ const apply=()=>{
+  signal.throwIfAborted();
+  if(!canWrite())throw Error('The Wallet contact context changed. Review the current address book before trying again.');
+  return change();
+ };
+ const locks=globalThis.navigator?.locks;
+ if(typeof locks?.request!=='function')return apply();
+
+ let entered=false;
+ try{
+  return await locks.request(CONTACT_KEY,{mode:'exclusive',ifAvailable:true},lock=>{
+   entered=true;
+   if(!lock)throw Error('Another Wallet window is writing the address book. Try this change again.');
+   return apply();
+  });
+ }catch(error){
+  if(entered)throw error;
+  throw Error('The address book could not coordinate this change. Try again.');
+ }
+}

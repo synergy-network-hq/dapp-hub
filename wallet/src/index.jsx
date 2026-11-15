@@ -84,7 +84,7 @@ export function WalletApp() {
         return <Receive account={connection.address} endpoint={n.endpoint} consentSession={n.walletConsentSession}
           readRpc={rpc} canUse={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')}/>;
       case 'Address book':
-        return <><WalletContacts key={scope} onDraftRecipient={contact => {
+        return <><WalletContacts key={draftScope} canWrite={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')} onDraftRecipient={contact => {
           if (!n.permit('wallet', 'readWallet')) return false;
           setRecipientDraft({scope: draftScope, contact});
           return true;

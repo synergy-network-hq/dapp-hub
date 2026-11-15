@@ -1,14 +1,44 @@
-import {useEffect, useId, useRef, useState} from 'react';
+import {useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
 import {Card, ErrorMessage, ModalDialog, useAction} from '@synergy-network/portal-native/dapp-sdk';
 import {canSaveContactAddress,contactAddressProfile} from './wallet-address.js';
-import {CONTACT_KEY, matchesReviewedContact, readContacts, removeContact, saveContact} from './wallet-contacts.js';
+import {CONTACT_KEY, coordinateContactChange, matchesReviewedContact, readContacts, removeContact, saveContact} from './wallet-contacts.js';
 
 const emptyContact = {name: '', address: ''};
+
+function useContactChange(onClose) {
+  const active = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useLayoutEffect(() => () => active.current?.abort(), []);
+
+  async function apply(change) {
+    if (active.current) return;
+    const controller = new AbortController();
+    active.current = controller;
+    setBusy(true);
+    setError('');
+    try {
+      await change(controller.signal);
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(failure.message);
+    } finally {
+      active.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+
+  function close() {
+    active.current?.abort();
+    onClose();
+  }
+
+  return {apply, busy, error, clearError: () => setError(''), close};
+}
 
 function ContactEditor({original, blocked, onClose, onSave}) {
   const [draft, setDraft] = useState(original ?? emptyContact);
   const [errors, setErrors] = useState({});
-  const [saveError, setSaveError] = useState('');
+  const changeAction = useContactChange(onClose);
   const formId = useId();
   const nameField = useRef(null);
   const addressField = useRef(null);
@@ -17,12 +47,12 @@ function ContactEditor({original, blocked, onClose, onSave}) {
   function change(field, value) {
     setDraft(current => ({...current, [field]: value}));
     setErrors(current => ({...current, [field]: null}));
-    setSaveError('');
+    changeAction.clearError();
   }
 
   function submit(event) {
     event.preventDefault();
-    if (blocked) return;
+    if (blocked || changeAction.busy) return;
     const nextErrors = {};
     if (!draft.name.trim()) nextErrors.name = 'Enter a contact name.';
     const address = draft.address.trim();
@@ -32,57 +62,49 @@ function ContactEditor({original, blocked, onClose, onSave}) {
         : 'Enter a current Synergy address with its exact checksum.';
     }
     setErrors(nextErrors);
-    setSaveError('');
+    changeAction.clearError();
     if (nextErrors.name || nextErrors.address) {
       (nextErrors.name ? nameField : addressField).current?.focus();
       return;
     }
-    try {
-      onSave({...draft, original});
-    } catch (error) {
-      setSaveError(error.message);
-    }
+    void changeAction.apply(signal => onSave({...draft, original}, signal));
   }
 
-  return <ModalDialog label={title} className="wallet-contact-drawer" onClose={onClose}>
+  return <ModalDialog label={title} className="wallet-contact-drawer" onClose={changeAction.close}>
     <h2>{title}</h2>
     <form noValidate onSubmit={submit}>
-      <label>Contact name<input data-initial-focus ref={nameField} required maxLength={80}
+      <label>Contact name<input data-initial-focus ref={nameField} required maxLength={80} disabled={changeAction.busy}
         aria-invalid={!!errors.name} aria-describedby={errors.name ? formId + '-name-error' : undefined}
         value={draft.name} onChange={event => change('name', event.target.value)}/></label>
       {errors.name && <span className="integration-field-error" id={formId + '-name-error'} role="alert">{errors.name}</span>}
-      <label>Contact address<input ref={addressField} autoCapitalize="none" spellCheck={false} required maxLength={100}
+      <label>Contact address<input ref={addressField} autoCapitalize="none" spellCheck={false} required maxLength={100} disabled={changeAction.busy}
         aria-invalid={!!errors.address} aria-describedby={errors.address ? formId + '-address-error' : undefined}
         value={draft.address} onChange={event => change('address', event.target.value)}/></label>
       {original && contactAddressProfile(original.address) === 'legacy' &&
         <p>You can keep the saved legacy address when editing this contact.</p>}
       {errors.address && <span className="integration-field-error" id={formId + '-address-error'} role="alert">{errors.address}</span>}
-      <ErrorMessage error={blocked || saveError}/>
+      <ErrorMessage error={blocked || changeAction.error}/>
       <div className="native-actions">
-        <button disabled={!!blocked}>{original ? 'Save contact changes' : 'Add contact'}</button>
-        <button type="button" onClick={onClose}>{original ? 'Cancel editing' : 'Cancel adding contact'}</button>
+        <button disabled={!!blocked || changeAction.busy}>{changeAction.busy ? 'Saving contact…' : original ? 'Save contact changes' : 'Add contact'}</button>
+        <button type="button" onClick={changeAction.close}>{original ? 'Cancel editing' : 'Cancel adding contact'}</button>
       </div>
     </form>
   </ModalDialog>;
 }
 
 function ContactRemoval({contact, blocked, onClose, onRemove}) {
-  const [removeError, setRemoveError] = useState('');
+  const changeAction = useContactChange(onClose);
   function confirm() {
-    try {
-      onRemove(contact);
-    } catch (error) {
-      setRemoveError(error.message);
-    }
+    if (!blocked) void changeAction.apply(signal => onRemove(contact, signal));
   }
-  return <ModalDialog label="Remove Wallet contact" className="integration-dialog" onClose={onClose}>
+  return <ModalDialog label="Remove Wallet contact" className="integration-dialog" onClose={changeAction.close}>
     <h2>Remove {contact.name}?</h2>
     <p className="account-address">{contact.address}</p>
     <p>This removes the contact from this device’s Wallet address book.</p>
-    <ErrorMessage error={blocked || removeError}/>
+    <ErrorMessage error={blocked || changeAction.error}/>
     <div className="native-actions">
-      <button disabled={!!blocked} onClick={confirm}>Confirm remove contact</button>
-      <button data-initial-focus onClick={onClose}>Cancel removal</button>
+      <button disabled={!!blocked || changeAction.busy} onClick={confirm}>{changeAction.busy ? 'Removing contact…' : 'Confirm remove contact'}</button>
+      <button data-initial-focus onClick={changeAction.close}>Cancel removal</button>
     </div>
   </ModalDialog>;
 }
@@ -130,7 +152,7 @@ function openAddressBook() {
   }
 }
 
-export function WalletContacts({onDraftRecipient} = {}) {
+export function WalletContacts({onDraftRecipient, canWrite = () => true} = {}) {
   const [state, setState] = useState(openAddressBook);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
@@ -175,27 +197,30 @@ export function WalletContacts({onDraftRecipient} = {}) {
     }
   }, [dialog]);
 
-  function save(draft) {
+  async function commitChange(change, signal) {
     try {
-      applyItems(saveContact(localStorage, draft));
-      setDialog(null);
-      setStatus('Contact saved.');
+      await coordinateContactChange(change, {signal, canWrite});
     } catch (error) {
-      refresh();
+      if (!signal.aborted && canWrite()) refresh();
       throw error;
     }
   }
 
-  function remove(contact) {
-    try {
+  function save(draft, signal) {
+    return commitChange(() => {
+      applyItems(saveContact(localStorage, draft));
+      setDialog(null);
+      setStatus('Contact saved.');
+    }, signal);
+  }
+
+  function remove(contact, signal) {
+    return commitChange(() => {
       applyItems(removeContact(localStorage, contact));
       removed.current = true;
       setDialog(null);
       setStatus('Contact removed.');
-    } catch (error) {
-      refresh();
-      throw error;
-    }
+    }, signal);
   }
 
   const query = search.trim().toLowerCase();
