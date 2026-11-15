@@ -49,7 +49,7 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status" => false,
+            "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status" => false,
             "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
@@ -337,6 +337,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
         match request.operation.as_str() {
             "health" => health_reply(&value),
+            "diagnostics" => crate::node_diagnostics::reply(&value),
             "install_preflight" => install_preflight_reply(&request, &value),
             "vpn_status" => vpn_status_reply(&value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),

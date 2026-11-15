@@ -13,4 +13,4 @@ export async function nodeNetworkController(target,operation,parameters={}){if(!
 // Survives controller component remounts; does not replace native grants or locks.
 let changePending=false;
 async function withNodeChange(task){if(changePending)throw Error('A NodeNetwork change is still pending. Wait for its result and inspect the target before repeating an uncertain operation.');changePending=true;try{return await task();}finally{changePending=false;}}
-const readOperations=new Set(['target','inventory','health','install_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','identity_status','formation_status']);
+const readOperations=new Set(['target','inventory','health','diagnostics','install_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','identity_status','formation_status']);
