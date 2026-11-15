@@ -1,6 +1,7 @@
 import {useState} from 'react';
 import {chainIdNumber, Resource, rpc, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {amount} from '@synergy-network/dapp-data-view';
+import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {observedSnrgNwei} from './snrg-balance.js';
 
 export function WalletDraftBalanceComparison({account, endpoint, draftNwei, canCompare}) {
@@ -24,6 +25,22 @@ export function WalletDraftBalanceComparison({account, endpoint, draftNwei, canC
     }
     checkScope();
     if (chain !== 1266) throw Error('The selected RPC reported a different chain ID.');
+
+    const configuredGenesis = endpoint.genesisHash;
+    if (configuredGenesis != null) {
+      let genesis;
+      try {
+        const readiness = await rpc('synergy_getReadiness', [], options);
+        genesis = rpcReadinessObservation(readiness, chain).chain.genesis;
+      } catch {
+        throw Error('The selected RPC genesis check could not be completed. Try again.');
+      }
+      checkScope();
+      if (typeof configuredGenesis !== 'string' || configuredGenesis.length !== 64 ||
+          !/^[a-f0-9]{64}$/i.test(configuredGenesis) || genesis.toLowerCase() !== configuredGenesis.toLowerCase()) {
+        throw Error('The selected RPC reported a different genesis hash from the configured endpoint.');
+      }
+    }
 
     let reported;
     try {

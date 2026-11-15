@@ -15,7 +15,7 @@ import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
 import {WalletCollectibles} from './WalletCollectibles.jsx';
 import {WalletOverview} from './WalletOverview.jsx';
-import {WalletRecipientDraft} from './WalletRecipientDraft.jsx';
+import {WalletOneTimeDraft, WalletRecipientDraft} from './WalletRecipientDraft.jsx';
 import {atlasEndpointRequired, canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
 import './wallet.css';
 
@@ -38,7 +38,8 @@ export function WalletApp() {
   const scope = JSON.stringify([connection?.walletId, connection?.address, n.endpointId, n.endpoint.rpc, n.endpoint.networkKey, ready]);
   const atlasScope = JSON.stringify([scope, atlasReady, n.walletConsentSession]);
   const atlasKey = `${atlasScope}:${revision}`;
-  const draftScope = JSON.stringify([scope, n.walletConsentSession]);
+  const draftScope = JSON.stringify([scope, n.endpoint.chainId, n.endpoint.genesisHash, n.walletConsentSession]);
+  const canReviewDraft = () => !n.recoverySuspended && n.permit('wallet', 'readWallet');
   if (recipientDraft && recipientDraft.scope !== draftScope) setRecipientDraft(null);
 
   const tokens = useResource(async signal => {
@@ -95,9 +96,10 @@ export function WalletApp() {
       default:
         return <Card title="Send requires a supported transaction contract">
           <p>Transfers remain unavailable until the network’s authoritative ETDAG transaction preparation and mobile signing contracts are integrated. No nonce, fees, signature algorithm or transaction envelope is guessed.</p>
-          {recipientDraft?.scope === draftScope && <WalletRecipientDraft contact={recipientDraft.contact} account={connection.address} endpoint={n.endpoint}
+          {recipientDraft?.scope === draftScope ? <WalletRecipientDraft contact={recipientDraft.contact} account={connection.address} endpoint={n.endpoint}
             onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}
-            canReview={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')}/>}
+            canReview={canReviewDraft}/> : <WalletOneTimeDraft key={draftScope} account={connection.address} endpoint={n.endpoint}
+            canReview={canReviewDraft}/>}
           <WalletFeeMarket endpoint={n.endpoint}/>
           <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
         </Card>;

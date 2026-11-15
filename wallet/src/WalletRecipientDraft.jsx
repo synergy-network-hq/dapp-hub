@@ -14,56 +14,76 @@ function contactStillSaved(contact) {
 }
 
 function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
+  const [address, setAddress] = useState('');
   const [input, setInput] = useState('');
   const [review, setReview] = useState(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(null);
   const errorId = useId();
-  const reviewCount = useRef(0);
+  const draftRevision = useRef(0);
+
+  function clearReview() {
+    draftRevision.current++;
+    setReview(null);
+    setError(null);
+  }
 
   function reviewDraft(event) {
     event.preventDefault();
-    setReview(null);
-    setError('');
+    clearReview();
     if (!canReview()) {
-      setError('Wallet draft access is unavailable in this Portal context.');
+      setError({message: 'Wallet draft access is unavailable in this Portal context.'});
       return;
     }
-    if (!canSaveContactAddress(contact.address) || !contactStillSaved(contact)) {
+    const recipient = contact?.address ?? address.trim();
+    const validRecipient = canSaveContactAddress(recipient);
+    if (contact && (!validRecipient || !contactStillSaved(contact))) {
       onInvalidate(contact);
       return;
     }
+    if (!validRecipient) {
+      setError({field: 'recipient', message: 'Enter a current Synergy recipient address with its exact checksum.'});
+      return;
+    }
     try {
-      setReview({nwei: parseSnrgDraftAmount(input), revision: ++reviewCount.current});
+      setReview({recipient, nwei: parseSnrgDraftAmount(input), revision: draftRevision.current});
     } catch (failure) {
-      setError(failure.message);
+      setError({field: 'amount', message: failure.message});
     }
   }
 
   return <>
     <form noValidate onSubmit={reviewDraft}>
+      {!contact && <label>Recipient address<input value={address} autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={100}
+        aria-invalid={error?.field === 'recipient'} aria-describedby={error?.field === 'recipient' ? errorId : undefined}
+        onChange={event => { setAddress(event.target.value); clearReview(); }}/></label>}
       <label>Amount (SNRG)<input value={input} autoComplete="off" inputMode="decimal" maxLength={64}
-        aria-invalid={!!error} aria-describedby={error ? errorId : undefined}
-        onChange={event => {
-          setInput(event.target.value);
-          setReview(null);
-          setError('');
-        }}/></label>
-      {error && <p role="alert" id={errorId}>{error}</p>}
+        aria-invalid={error?.field === 'amount'} aria-describedby={error?.field === 'amount' ? errorId : undefined}
+        onChange={event => { setInput(event.target.value); clearReview(); }}/></label>
+      {error && <p role="alert" id={errorId}>{error.message}</p>}
       <button type="submit">Review local draft</button>
     </form>
     {review && <section aria-label="Reviewed local SNRG draft">
       <h4>Local draft review</h4>
       <dl className="native-details">
-        <div><dt>Recipient</dt><dd>{contact.address}</dd></div>
+        <div><dt>Recipient</dt><dd>{review.recipient}</dd></div>
         <div><dt>Selected network</dt><dd>{endpoint.name} · Chain {endpoint.chainId}</dd></div>
         <div><dt>Draft amount</dt><dd>{amount(review.nwei)} SNRG</dd></div>
         <div><dt>Exact atomic amount</dt><dd>{review.nwei} nWei</dd></div>
       </dl>
+      {!contact && contactAddressProfile(review.recipient) === 'burn' && <p>Canonical burn address</p>}
       <p>Input checks are local. Fees, spendable balance and simulation remain unverified.</p>
       <WalletDraftBalanceComparison key={review.revision} account={account} endpoint={endpoint} draftNwei={review.nwei}
-        canCompare={() => canReview() && contactStillSaved(contact)}/>
+        canCompare={() => draftRevision.current === review.revision && canReview() && (!contact || contactStillSaved(contact))}/>
     </section>}
   </>;
+}
+
+export function WalletOneTimeDraft({account, endpoint, canReview}) {
+  return <section aria-label="One-time SNRG draft">
+    <h3>One-time recipient</h3>
+    <p>The recipient stays in this draft.</p>
+    <AmountDraft {...{account, endpoint, canReview}}/>
+  </section>;
 }
 
 export function WalletRecipientDraft({contact, account, endpoint, onClear, onInvalidate, canReview}) {
