@@ -1,5 +1,5 @@
 import {useLayoutEffect, useRef, useState} from 'react';
-import {rpc, Resource, useResource, Detail} from '@synergy-network/portal-native/dapp-sdk';
+import {rpc, rpcGasPriceObservation, Resource, useResource, Detail} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {readProtocolObservation, feeMarketObservation, unsignedObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {checkConfiguredReceiptGenesis as checkConfiguredGenesis, rpcReceiptReadiness as testnetReadiness} from './rpc-receipt-observation.js';
@@ -41,15 +41,21 @@ export function WalletFeeMarket({endpoint, canRead}) {
     checkConfiguredGenesis(readiness.chain, endpoint.genesisHash);
     checkScope(signal);
 
-    let value;
+    let response;
     try {
-      value = await readSelectedRpc('synergy_gasPrice', [], {endpoint: endpoint.rpc, signal});
+      response = await rpcGasPriceObservation({endpoint: endpoint.rpc, signal});
     } catch {
       checkScope(signal);
       throw Error('The legacy gas price is unavailable from the selected RPC.');
     }
-    const gasPriceNwei = unsignedObservation(value);
-    return {gasPriceNwei, receivedAt: Date.now(), chain: readiness.chain};
+    checkScope(signal);
+    const {value, chainContext} = response;
+    const checked = readiness.chain;
+    if (chainContext?.chainId !== checked.chainId || String(chainContext.incarnation) !== checked.incarnation ||
+        chainContext.genesis !== checked.genesis.toLowerCase()) {
+      throw Error('The legacy gas-price response does not match the selected RPC readiness identity.');
+    }
+    return {gasPriceNwei: unsignedObservation(value), receivedAt: Date.now(), chain: {...chainContext, network: checked.network}};
   }, legacyRevision);
 
   return <>
@@ -72,9 +78,9 @@ export function WalletFeeMarket({endpoint, canRead}) {
       {!!legacyRevision && <Resource value={{...legacy, reload: undefined}}>{value => <>
         <p>Reported legacy gas price <strong>{value.gasPriceNwei} nWei per gas</strong> (SNRG).</p>
         <SourceAge source="Selected RPC legacy gas price" updatedAt={value.receivedAt}/>
-        <Detail data={{readinessNetwork: value.chain.network, readinessIncarnation: value.chain.incarnation,
-          readinessGenesis: value.chain.genesis}}/>
-        <p>The selected endpoint reports chain context separately. A total fee requires a transaction-specific gas estimate.</p>
+        <Detail data={{readinessNetwork: value.chain.network, reportedChain: value.chain.chainId,
+          reportedIncarnation: value.chain.incarnation, reportedGenesis: value.chain.genesis}}/>
+        <p>The selected endpoint reported matching chain identities in both reads. A total fee requires a transaction-specific gas estimate.</p>
       </>}</Resource>}
     </section>
   </>;
