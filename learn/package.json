@@ -7,7 +7,8 @@
     ".": "./src/index.jsx"
   },
   "scripts": {
-    "build": "vite build --config ../build.vite.mjs"
+    "build": "vite build --config ../build.vite.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "peerDependencies": {
     "react": ">=18",

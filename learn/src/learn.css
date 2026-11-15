@@ -1,4 +1,15 @@
 /* Saved Learn palette, scoped to reader. */
+.learn-migrated .learn-snapshot-input {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0;
+}
+.learn-migrated .learn-snapshot-source code {
+    overflow-wrap: anywhere;
+}
+.learn-migrated [aria-pressed="true"] {
+    border-color: var(--snrg-border-cyan);
+}
 .learn-migrated{
     /* === QUAD PRIMARY COLORS === */
     /* The four core brand colors */
