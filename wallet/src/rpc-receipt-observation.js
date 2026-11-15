@@ -30,6 +30,13 @@ export function rpcReceiptReadiness(value, expected) {
   return readiness;
 }
 
+export function checkConfiguredReceiptGenesis(chain, configuredGenesis) {
+  if (configuredGenesis == null) return;
+  if (!isHash(configuredGenesis) || chain.genesis.toLowerCase() !== configuredGenesis.toLowerCase()) {
+    throw Error('The selected RPC reported a different genesis hash from the configured endpoint.');
+  }
+}
+
 export function rpcReceiptObservation(value, selection, readiness) {
   if (value === null) return null;
 
@@ -53,5 +60,5 @@ export function rpcReceiptObservation(value, selection, readiness) {
   if (value.status !== '0x0' && value.status !== '0x1') throw Error('The RPC returned an unsupported receipt status.');
 
   return {status: value.status, blockHash: value.blockHash, height: selection.height,
-    tip: readiness.chainStateAvailable ? readiness.height : null};
+    chain: expectedChain, tip: readiness.chainStateAvailable ? readiness.height : null};
 }

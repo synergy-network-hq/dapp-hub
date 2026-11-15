@@ -107,7 +107,7 @@ export function blockLookupHeight(height) {
   return exact !== null && BigInt(exact) <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(exact) : null;
 }
 
-export function reportedBlockMembership(value, height, transactionHash) {
+export function reportedBlockMembership(value, height, transactionHash, expectedBlockHash = null) {
   const selected = comparableTransactionHash(transactionHash);
   const expectedHeight = blockHeight(height);
   if (!selected || expectedHeight === null) throw Error('The selected transaction or block identity is unsupported.');
@@ -117,6 +117,9 @@ export function reportedBlockMembership(value, height, transactionHash) {
   if (blockHeight(value?.block_index) !== expectedHeight || typeof hash !== 'string' ||
       hash.length !== 64 || !/^[a-f0-9]{64}$/i.test(hash)) {
     throw Error('RPC did not return the reported block identity.');
+  }
+  if (expectedBlockHash !== null && hash.toLowerCase() !== expectedBlockHash.toLowerCase()) {
+    return {state: 'differentHash', hash};
   }
 
   // Typed and coordinated finality projections do not carry the legacy
