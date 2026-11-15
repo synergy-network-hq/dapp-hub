@@ -32,13 +32,18 @@ fn read_public(root: &Path, relative: &str) -> Result<Value, String> {
         .map_err(|_| "Invalid public installation metadata".into())
 }
 
-/// A review of the master manifest, never release authorization or execution.
+/// A read-only inventory and byte consistency check against the selected manifest.
 pub fn review_master(root: &Path) -> Result<Value, String> {
-    if root.file_name().and_then(|name| name.to_str()) != Some("Synergy")
-        || root.ancestors().any(|p| !fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
-    {
+    if root.file_name().and_then(|name| name.to_str()) != Some("Synergy") || !root.is_absolute() {
         return Err("Choose the direct Synergy master directory.".into());
     }
+    #[cfg(unix)]
+    let (folder, bytes) = super::node_master_review::read_manifest(root)?;
+    #[cfg(not(unix))]
+    if root.ancestors().any(|p| !fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())) {
+        return Err("Choose the direct Synergy master directory.".into());
+    }
+    #[cfg(not(unix))]
     let bytes = read_public_bytes(root, "package.json")?;
     let manifest: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid master manifest")?;
     if manifest["format"] != "synergy-universal-linux-v1" || manifest["architecture"] != "x86_64" {
@@ -52,8 +57,13 @@ pub fn review_master(root: &Path) -> Result<Value, String> {
     let release = manifest["release_id"].as_str().filter(|id|
         (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
         .ok_or("Invalid master release identifier")?;
+    let manifest_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    #[cfg(unix)]
+    let inventory = super::node_master_review::review(&folder, &manifest, &manifest_sha256);
+    #[cfg(not(unix))]
+    let inventory = json!({"status":"unavailable","reason":"platform"});
     Ok(json!({"release":release,"architecture":"Linux x86_64","fileCount":files.len(),
-        "manifestSha256":format!("{:x}", Sha256::digest(&bytes)),
+        "manifestSha256":manifest_sha256,"inventory":inventory,
         "releaseTrustVerified":false,"installAuthorized":false}))
 }
 
@@ -91,6 +101,103 @@ pub fn status() -> Result<Value, String> {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[cfg(unix)]
+    const FIXTURE_MEMBERS: [&str; 4] = ["bin/synergy-node", "tools/synergy_linux.py", "tools/lifecycle.py", "lib/apqe/build-report.json"];
+
+    #[cfg(unix)]
+    struct MasterFixture(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl MasterFixture {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().canonicalize().unwrap()
+                .join(format!("nodenetwork-master-{}-{stamp}-{sequence}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            let fixture = Self(path);
+            let root = fixture.root();
+            let mut files = serde_json::Map::new();
+            for name in FIXTURE_MEMBERS {
+                let member = root.join(name);
+                fs::create_dir_all(member.parent().unwrap()).unwrap();
+                fs::write(member, name).unwrap();
+                files.insert(name.into(), json!(format!("{:x}", Sha256::digest(name.as_bytes()))));
+            }
+            let manifest = json!({"release_id":"local-test","format":"synergy-universal-linux-v1","architecture":"x86_64","files":files});
+            fs::write(root.join("package.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+            fixture
+        }
+        fn root(&self) -> std::path::PathBuf { self.0.join("Synergy") }
+    }
+
+    #[cfg(unix)]
+    impl Drop for MasterFixture {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn master_review_matches_bounded_bytes_without_promotion_to_approval() {
+        let fixture = MasterFixture::new();
+        let root = fixture.root();
+        fs::write(root.join("bin/._synergy-node"), b"AppleDouble sidecar").unwrap();
+        let result = review_master(&root).unwrap();
+        let size: usize = FIXTURE_MEMBERS.iter().map(|name| name.len()).sum();
+        assert_eq!(result["inventory"], json!({"status":"matched","verifiedFiles":4,"verifiedBytes":size}));
+        let bytes = fs::read(root.join("package.json")).unwrap();
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        assert_eq!(result["manifestSha256"], hash);
+        assert_eq!(result["releaseTrustVerified"], false);
+        assert_eq!(result["installAuthorized"], false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn master_review_refuses_modified_missing_and_undeclared_files() {
+        let fixture = MasterFixture::new();
+        let root = fixture.root();
+        let original = FIXTURE_MEMBERS[0];
+        let file = root.join(original);
+        fs::write(&file, vec![b'x'; original.len()]).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["reason"], "digest_mismatch");
+        fs::remove_file(&file).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["reason"], "inventory_mismatch");
+        fs::write(&file, original).unwrap();
+        let unexpected = root.join("undeclared");
+        fs::write(&unexpected, b"extra").unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["reason"], "inventory_mismatch");
+        fs::remove_file(unexpected).unwrap();
+        fs::OpenOptions::new().write(true).open(file).unwrap().set_len(super::super::node_bootstrap::MAX_ARCHIVE + 1).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["reason"], "limits");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn master_review_rejects_direct_indirection_and_invalid_manifest_entries() {
+        let fixture = MasterFixture::new();
+        let root = fixture.root();
+        let member = root.join(FIXTURE_MEMBERS[0]);
+        let link_target = fixture.0.join("outside");
+        fs::rename(&member, &link_target).unwrap();
+        std::os::unix::fs::symlink(&link_target, &member).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["reason"], "unsafe_member");
+        fs::remove_file(&member).unwrap();
+        fs::hard_link(&link_target, &member).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["reason"], "unsafe_member");
+        fs::remove_file(link_target).unwrap();
+        let alias = fixture.0.join("alias");
+        std::os::unix::fs::symlink(&fixture.0, &alias).unwrap();
+        assert!(review_master(&alias.join("Synergy")).is_err());
+        let manifest_path = root.join("package.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["files"][FIXTURE_MEMBERS[0]] = json!("not-a-sha256");
+        fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["reason"], "invalid_inventory");
+    }
+
     #[test] fn refuses_traversal_before_opening_any_public_file() {
         assert_eq!(read_public(Path::new("/opt/Synergy"), "../keys/unlock").unwrap_err(), "Invalid public installation path");
         assert!(read_public(Path::new("/opt/Synergy"), "/root/file").is_err());

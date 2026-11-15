@@ -2,6 +2,8 @@
 pub mod node_network;
 pub mod node_controller;
 mod node_diagnostics;
+#[cfg(unix)]
+mod node_master_review;
 mod node_removal_scope;
 pub mod node_bootstrap;
 pub mod commands;

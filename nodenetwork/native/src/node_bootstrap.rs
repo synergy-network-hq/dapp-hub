@@ -4,7 +4,7 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{collections::BTreeMap,fs,path::{Path,Component},process::Stdio,time::Duration};
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
-const MAX_ARCHIVE:u64=256*1024*1024;
+pub(super) const MAX_ARCHIVE:u64=256*1024*1024;
 const BOOTSTRAP:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/bootstrap.py"));
 
 const R5_RELEASE:&str="synergy-linux-389c509e47e55219";
@@ -17,9 +17,19 @@ fn authenticate_release(release:&str,pin:&str)->Result<(),String>{
 
 pub struct Prepared {members:Vec<Member>,pub release:String,pub manifest_sha256:String,pub public_key:String}
 struct Member {name:String,size:u64,directory:bool,digest:Option<String>,file:Option<fs::File>}
-fn safe_member(name:&str)->bool {
+pub(super) fn safe_member(name:&str)->bool {
     !name.is_empty() && name.len()<=100 && name.is_ascii() && !name.contains('\\')
         && Path::new(name).components().all(|c| matches!(c,Component::Normal(_)))
+}
+pub(super) fn declared_files(manifest: &Value) -> Result<BTreeMap<String, String>, String> {
+    let files: BTreeMap<String, String> = serde_json::from_value(manifest["files"].clone())
+        .map_err(|_| "Invalid master file inventory.")?;
+    if files.is_empty() || files.len() > 4096 || files.iter().any(|(name, pin)| {
+        !safe_member(name) || pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }) {
+        return Err("Invalid master inventory paths or digests.".into());
+    }
+    Ok(files)
 }
 fn read_bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{
     use std::io::Read;
@@ -64,8 +74,7 @@ pub fn prepare(root:&Path,key:&Path,parameters:&Value)->Result<Prepared,String>{
     let manifest:Value=serde_json::from_slice(&raw).map_err(|_|"Invalid master manifest.")?;
     if parameters["manifest_sha256"]!=pin||parameters["release_id"]!=manifest["release_id"]||manifest["format"]!="synergy-universal-linux-v1"||manifest["architecture"]!="x86_64"{return Err("Selected package does not match the reviewed release and manifest pin.".into());}
     authenticate_release(manifest["release_id"].as_str().ok_or("Invalid release identifier.")?,&pin)?;
-    let files:BTreeMap<String,String>=serde_json::from_value(manifest["files"].clone()).map_err(|_|"Invalid master file inventory.")?;
-    if files.is_empty()||files.len()>4096||files.iter().any(|(name,pin)|!safe_member(name)||pin.len()!=64||!pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Invalid master inventory paths or digests.".into());}
+    let files = declared_files(&manifest)?;
     let mut members=Vec::new();let mut total=1024;walk(root,root,&mut members,&files,&mut total)?;
     if members.iter().filter(|m|!m.directory&&m.name!="package.json").count()!=files.len(){return Err("Master inventory is incomplete.".into());}
     members.sort_by_key(|member|if member.name=="package.json"{0}else{1});

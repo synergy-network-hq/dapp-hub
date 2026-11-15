@@ -15,6 +15,7 @@ import {nodeNetworkHostStatus,nodeNetworkReviewMaster} from "./native-services.j
 import {Card,Detail,ErrorMessage,Resource,useResource} from "@synergy-network/portal-native/dapp-sdk";
 import {NodeController} from './NodeController.jsx';
 import {InstallPreflight} from './InstallPreflight.jsx';
+import {MasterReview} from './MasterReview.jsx';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
 import {InstallationDraftReview} from './InstallationDraftReview.jsx';
 import {installPreflightChecklist} from './install-preflight.js';
@@ -128,11 +129,12 @@ export function NodeNetworkApp(){
    {!target&&<InstallPreflight checklist={installPreflightChecklist({form,permitted,master})}
     action={<button disabled={!permitted} onClick={()=>setSection('monitoring')}>Review saved preflight evidence</button>}/>}
    {!target&&<IdentityPreflight permitted={permitted}/>}
-   <Card title="Node architecture master"><button disabled={!permitted||reviewing} onClick={reviewMaster}>{reviewing?'Inspecting…':'Inspect Synergy master folder'}</button><ErrorMessage error={masterError}/>{permitted&&master&&<Detail data={{release:master.release,architecture:master.architecture,declaredFiles:master.fileCount,manifestSha256:master.manifestSha256}}/>}<p>Compare the manifest digest with the approved release before using it. This preview does not authorize installation.</p></Card>
+   <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
    <Card title="Local runtime compatibility"><Resource value={local}>{data=>data?<Detail data={data}/>:<p>No host inspection was returned.</p>}</Resource></Card>
 
   </div>:tab==='Management'?null:tab==='Updates'?<>
    <UpdatePackage form={form} setForm={setForm}/>
+   <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
    <MaintenanceComparison permitted={permitted}/>
   </>:<div className="native-grid">
    <Card title="Single-root contract"><Detail data={{installationRoot:'/opt/Synergy',software:'/opt/Synergy/bin',configuration:'/opt/Synergy/config',custody:'/opt/Synergy/keys/apqe',network:'/opt/Synergy/network',vpnState:'/opt/Synergy/vpn',blockchainState:'/opt/Synergy/data',recovery:'/opt/Synergy/recovery',updateStaging:'/opt/Synergy/tmp',temporaryFiles:'/opt/Synergy/tmp',runtime:'/opt/Synergy/run',serviceDefinitions:'/opt/Synergy/systemd',logs:'/opt/Synergy/logs'}}/><p>Every node-owned file and directory must stay inside this root on both local and remote targets. External release, custody, VPN, checkpoint, staging or diagnostic files fail installation qualification. Any operating-system registration must reference definitions inside this root and be included in the isolation audit.</p></Card>
