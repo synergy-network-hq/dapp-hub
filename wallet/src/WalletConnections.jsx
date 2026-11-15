@@ -1,5 +1,7 @@
-import {useNative, Card, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {useNative, Card, Resource, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {WalletRelayStatus} from './WalletRelayStatus.jsx';
+import {atlasAccountSynIds} from './atlas-account-synids.js';
 
 const grants = {
   readWallet: 'Read public account data',
@@ -23,7 +25,24 @@ function idleTimeout(minutes) {
   return Number.isSafeInteger(minutes) && minutes > 0 ? String(minutes) + ' minutes' : 'Unavailable';
 }
 
-export function WalletConnections({canRead}) {
+function AtlasIdentity({observation, account}) {
+  const value = {...observation, reload: undefined,
+    error: observation.error ? 'The Atlas SynID observation is unavailable.' : null};
+  return <section aria-label="Atlas account SynIDs">
+    <h3>Atlas-reported SynIDs</h3>
+    <Resource value={value}>{data => {
+      const names = atlasAccountSynIds(data, account);
+      return <>
+        {names === null ? <p>Atlas returned an unsupported SynID observation.</p> : names.length ?
+          <ul>{names.map(name => <li key={name}>{name}</li>)}</ul> : <p>Atlas returned no SynID records for this account.</p>}
+        <SourceAge source="Atlas account read" updatedAt={data.portalReceivedAt}/>
+      </>;
+    }}</Resource>
+    <p>Phone approval and account ownership require separate evidence.</p>
+  </section>;
+}
+
+export function WalletConnections({canRead, indexedIdentity}) {
   const n = useNative();
   const connection = canRead && !n.recoverySuspended && n.permit('wallet', 'readWallet')
     ? n.wallet.connection : null;
@@ -57,6 +76,7 @@ export function WalletConnections({canRead}) {
         </>}
       </dl>
       {!connection && <p>Wallet account access is unavailable in this Portal context.</p>}
+      {connection && indexedIdentity && <AtlasIdentity observation={indexedIdentity} account={connection.address}/>}
       {connection && <WalletRelayStatus connection={connection}/>}
       <div className="native-actions">
         <button onClick={() => n.navigate('wallet-connection')}>Manage connection in Portal</button>

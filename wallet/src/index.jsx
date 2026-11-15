@@ -4,6 +4,7 @@ import {
   useAction, ErrorMessage, Detail, Copy,
 } from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
+import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {WalletFeeMarket} from './WalletFeeMarket.jsx';
 import {WalletConnections} from './WalletConnections.jsx';
 import {WalletHistory} from './WalletHistory.jsx';
@@ -17,6 +18,7 @@ import {WalletCollectibles} from './WalletCollectibles.jsx';
 import {WalletOverview} from './WalletOverview.jsx';
 import {WalletOneTimeDraft, WalletRecipientDraft} from './WalletRecipientDraft.jsx';
 import {atlasEndpointRequired, canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
+import {checkConfiguredReceiptGenesis as checkConfiguredGenesis} from './rpc-receipt-observation.js';
 import './wallet.css';
 
 const tabs = ['Assets', 'Collectibles', 'Activity', 'Receive', 'Send', 'Address book', 'Connections'];
@@ -36,7 +38,7 @@ export function WalletApp() {
   const readAtlas = (path, options) => readScopedWalletAtlas(n, path, options);
   const currentTab = ready ? tab : 'Connections';
   const scope = JSON.stringify([connection?.walletId, connection?.address, n.endpointId, n.endpoint.rpc, n.endpoint.networkKey, ready]);
-  const atlasScope = JSON.stringify([scope, atlasReady, n.walletConsentSession]);
+  const atlasScope = JSON.stringify([scope, atlasReady, n.endpoint.genesisHash, n.walletConsentSession]);
   const atlasKey = `${atlasScope}:${revision}`;
   const draftScope = JSON.stringify([scope, n.endpoint.chainId, n.endpoint.genesisHash, n.walletConsentSession]);
   const canReviewDraft = () => !n.recoverySuspended && n.permit('wallet', 'readWallet');
@@ -55,17 +57,29 @@ export function WalletApp() {
 
   const account = useResource(async signal => {
     if (!canReadWalletAtlas(n)) return null;
-    if (chainIdNumber(await rpc('synergy_getChainId', [], {endpoint: n.endpoint.rpc, signal})) !== 1266) {
+    const options = {endpoint: n.endpoint.rpc, signal};
+    const chain = chainIdNumber(await rpc('synergy_getChainId', [], options));
+    if (chain !== 1266) {
       throw Error('RPC chain identity does not match Wallet chain 1266.');
     }
     signal.throwIfAborted();
+    if (n.endpoint.genesisHash != null) {
+      let readiness;
+      try {
+        readiness = rpcReadinessObservation(await rpc('synergy_getReadiness', [], options), chain);
+      } catch {
+        throw Error('The selected RPC account genesis check could not be completed. Try again.');
+      }
+      signal.throwIfAborted();
+      checkConfiguredGenesis(readiness.chain, n.endpoint.genesisHash);
+    }
     const value = await readAtlasAddress(readAtlas, connection.address, {signal});
     return {...value, portalReceivedAt: Date.now()};
   }, atlasKey);
   const data = atlasReady && !account.loading && !account.error ? account.data : null;
 
   function tabContent() {
-    if (currentTab === 'Connections') return <WalletConnections canRead={ready}/>;
+    if (currentTab === 'Connections') return <WalletConnections canRead={ready} indexedIdentity={atlasReady ? account : null}/>;
     switch (currentTab) {
       case 'Assets':
         return atlasReady ? <>
