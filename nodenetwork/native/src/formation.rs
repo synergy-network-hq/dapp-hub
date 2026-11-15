@@ -506,11 +506,45 @@ pub(crate) fn stage_artifacts(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+#[test]
+fn existing_network_stage_rejects_changed_scope_and_membership_claims() {
+    let hash = "a".repeat(64);
+    let policy = serde_json::json!({
+        "schema":"nodenetwork-existing-genesis-stage-policy-v1",
+        "network_id":"chosen-network","chain_id":"99999","membership_granted":false,
+        "genesis_sha256":hash,"authority_sha256":hash,"authority_root_sha256":hash
+    });
+    assert!(stage_policy(&policy,"network:99999:chosen-network").is_ok());
+    assert!(stage_policy(&policy,"network:1266:chosen-network").is_err());
+    assert!(stage_policy(&policy,"network:99999:other-network").is_err());
+    let mut receipt=policy.clone();
+    receipt["schema"]="nodenetwork-existing-genesis-stage-v1".into();
+    receipt["staged"]=true.into();
+    receipt["genesis_authority_verified"]=true.into();
+    receipt["membership_verified"]=false.into();
+    receipt["request_sha256"]=hash.clone().into();
+    assert!(stage_receipt(&receipt,&policy,&hash).is_ok());
+    receipt["membership_verified"]=true.into();
+    assert!(stage_receipt(&receipt,&policy,&hash).is_err());
+}
+
 pub(crate) fn stage_policy(value: &Value, expected_address: &str) -> Result<(), String> {
-    if !address(expected_address)
-        || value["address"].as_str() != Some(expected_address)
-        || value["schema"] != "nodenetwork-genesis-stage-policy-v1"
-        || STAGE_FILES
+    let scope_matches = if let Some((chain_id, network_id)) = expected_address
+        .strip_prefix("network:").and_then(|scope| scope.split_once(':'))
+    {
+        value["schema"] == "nodenetwork-existing-genesis-stage-policy-v1"
+            && value["address"].is_null()
+            && value["membership_granted"] == false
+            && network(network_id) && chain(chain_id).is_some()
+            && value["network_id"].as_str() == Some(network_id)
+            && value["chain_id"].as_str() == Some(chain_id)
+    } else {
+        value["schema"] == "nodenetwork-genesis-stage-policy-v1"
+            && address(expected_address)
+            && value["address"].as_str() == Some(expected_address)
+    };
+    if !scope_matches || STAGE_FILES
             .iter()
             .any(|(_, field, _)| pin(&value[field]).is_none())
     {
@@ -586,11 +620,20 @@ pub(crate) fn stage_receipt(
     policy: &Value,
     request_sha256: &str,
 ) -> Result<(), String> {
-    if value["schema"] != "nodenetwork-genesis-stage-v1"
-        || value["staged"] != true
+    let scope_matches = if policy["schema"] == "nodenetwork-existing-genesis-stage-policy-v1" {
+        value["schema"] == "nodenetwork-existing-genesis-stage-v1"
+            && value["membership_verified"] == false
+            && value["membership_granted"] == false
+            && value["address"].is_null()
+            && value["network_id"] == policy["network_id"]
+            && value["chain_id"] == policy["chain_id"]
+    } else {
+        value["schema"] == "nodenetwork-genesis-stage-v1"
+            && value["membership_verified"] == true
+            && value["address"] == policy["address"]
+    };
+    if !scope_matches || value["staged"] != true
         || value["genesis_authority_verified"] != true
-        || value["membership_verified"] != true
-        || value["address"] != policy["address"]
         || value["request_sha256"].as_str() != Some(request_sha256)
         || STAGE_FILES
             .iter()
@@ -605,10 +648,16 @@ pub(crate) fn stage_recovery(value: &Value) -> Result<Option<&str>, String> {
     if value["stage_request_sha256"].is_null() {
         return Ok(None);
     }
-    if value["schema"] != "nodenetwork-genesis-binding-v1"
-        || value["genesis_authority_verified"] != true
-        || value["membership_verified"] != true
-        || !value["address"].as_str().is_some_and(address)
+    let context_matches = match value["schema"].as_str() {
+        Some("nodenetwork-genesis-binding-v1") =>
+            value["membership_verified"] == true && value["address"].as_str().is_some_and(address),
+        Some("nodenetwork-existing-identity-network-v1") =>
+            value["membership_granted"] == false && value["address"].is_null()
+                && value["network_id"].as_str().is_some_and(network)
+                && value["chain_id"].as_str().and_then(chain).is_some(),
+        _ => false,
+    };
+    if !context_matches || value["genesis_authority_verified"] != true
         || pin(&value["genesis_sha256"]).is_none()
     {
         return Err("Verified stage recovery evidence is invalid.".into());

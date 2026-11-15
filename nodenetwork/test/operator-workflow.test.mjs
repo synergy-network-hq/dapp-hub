@@ -12,11 +12,12 @@ const review=(operation,parameters={})=>({target:JSON.stringify(target),scope:ap
 
 test('identity generation sends only the digest reviewed on this target',()=>{
  const state=targetState(true,'identity_generate','identity_preflight');
- const selection={genesis_authority_verified:true,network_id:'test-identity',chain_id:'999999',genesis_sha256:'7'.repeat(64)};
+ const selection={genesis_authority_verified:true,network_id:form.network_id,chain_id:form.chain_id,genesis_sha256:'7'.repeat(64)};
  const checked=identityView(selection,false);
  assert.equal(gate('identity_generate',{state}).available,false);
  assert.equal(gate('identity_generate',{state,identityReview:{...checked,target:'other host'}}).available,false);
  assert.deepEqual(gate('identity_generate',{state,identityReview:{...checked,target:JSON.stringify(target)}}).parameters,{genesis_sha256:selection.genesis_sha256});
+ assert.equal(gate('identity_generate',{state,identityReview:{...checked,network_id:'other-network',target:JSON.stringify(target)}}).available,false);
  const result={...selection,address:'synv11lrh6jcxaejkj4zv994j7qwn2rk6u3ar4emn',possession_verified:true,membership_granted:false};
  assert.deepEqual(identityView({...result,unlock:'must not render'},true),result);
  assert.throws(()=>identityView({...result,membership_granted:true},true));
@@ -103,4 +104,12 @@ test('diagnostics preserve unavailable measurements and exact chain IDs without 
  assert.equal(diagnosticsView({...input,log:{available:false}}).log,null);
  assert.throws(()=>diagnosticsView({...input,observed_at_ms:Infinity}));
  assert.throws(()=>diagnosticsView({...input,schema:'unqualified'}));
+});
+
+test('existing-network staging requires an installed target and explicit chain',()=>{
+ const state=targetState(true,'genesis_stage');
+ assert.equal(gate('genesis_stage_existing',{state}).available,true);
+ assert.equal(gate('genesis_stage_existing',{state,form:{...form,chain_id:''}}).available,false);
+ assert.equal(gate('genesis_stage_existing',{state,formationRecord:{pending:true}}).available,false);
+ assert.equal(gate('genesis_stage',{state}).available,false);
 });

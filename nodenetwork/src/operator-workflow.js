@@ -44,10 +44,10 @@ export function workflowGate({target,state,permitted,operation,form,review,confi
  const unavailable=blocker=>({available:false,blocker});
  if(!permitted)return unavailable('Allow NodeNetwork inspection in Security & permissions.');
  if(!state)return unavailable('Inspect the selected target first.');
- const capability=controllerOperation(state,operation);
+ const capability=controllerOperation(state,operation==='genesis_stage_existing'?'genesis_stage':operation);
  if(!capability.available)return capability;
  if((operation==='install'||operation==='install_preflight')&&state.installed)return unavailable('A node is already installed. Use Updates for a qualified replacement.');
- if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
+ if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
  if(operation==='vpn_enroll'){
   if(!vpnStatus)return unavailable('Read VPN status before enrolling.');
   if(vpnStatus.reconciliation_required)return unavailable('Reconcile the prior enrollment with the VPN control plane before retrying.');
@@ -61,13 +61,18 @@ export function workflowGate({target,state,permitted,operation,form,review,confi
    (form?.chain_id&&formationReview.chain_id!==form.chain_id)
  ))return unavailable('Read formation status and review the exact formation for this target and network.');
  if(['formation_export','genesis_stage','genesis_binding_preflight'].includes(operation)&&!formationRecord?.pending)return unavailable('Recover the verified prepared identity on this target first.');
+ if(operation==='genesis_stage_existing'){
+  if(formationRecord?.pending)return unavailable('Prepared formation custody already exists on this target.');
+  if(provisioningChecks(form).slice(2,4).some(check=>!check.valid))return unavailable('Select the existing network and chain before staging its signed Genesis.');
+ }
  if(operation==='genesis_bind'&&(!formationRecord?.pending||bindingReview?.target!==JSON.stringify(target)||bindingReview?.bound!==false||bindingReview.address!==formationRecord.address))return unavailable('Verify the independently signed Genesis and review its exact identity binding before continuing.');
  if(operation==='commission'&&(!bindingReview?.bound||!vpnStatus?.connected||!vpnStatus?.server_bound))return unavailable('Verify the bound Genesis and read the connected, server-bound VPN status before commissioning.');
  let parameters={};
  if(operation==='formation_prepare')parameters={formation_sha256:formationReview.formation_sha256};
  if(operation==='genesis_bind')parameters={genesis_sha256:bindingReview.genesis_sha256};
  if(operation==='identity_generate'){
-  if(identityReview?.target!==JSON.stringify(target)||!identityReview?.genesis_sha256)return unavailable('Verify and review the target’s signed Genesis before generating custody.');
+  if(identityReview?.target!==JSON.stringify(target)||!identityReview?.genesis_sha256||
+     (form?.network_id&&form.network_id!==identityReview.network_id)||(form?.chain_id&&form.chain_id!==identityReview.chain_id))return unavailable('Verify and review the target’s signed Genesis before generating custody.');
   parameters={genesis_sha256:identityReview.genesis_sha256};
  }
  try{

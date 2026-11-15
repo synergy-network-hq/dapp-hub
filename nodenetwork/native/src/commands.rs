@@ -50,7 +50,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if let Some((mutation,request_digest))=formation::reconcile_evidence(&operation,&result["result"])?{
    request_journal::reconcile_verified(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable.")?,&target_identity,mutation,request_digest)?;
   }
-  if operation=="genesis_binding_preflight" {
+  if matches!(operation.as_str(),"genesis_binding_preflight"|"identity_preflight") {
    if let Some(request_digest)=formation::stage_recovery(&result["result"])?{
     request_journal::reconcile_verified(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable.")?,&target_identity,"genesis_stage",request_digest)?;
    }
@@ -146,7 +146,8 @@ pub async fn portal_nodenetwork_stage_signed_genesis(window:tauri::WebviewWindow
  let request=node_controller::Request{version:1,operation:"genesis_stage".into(),parameters:serde_json::json!({"artifacts":artifacts})};
  request.validate()?;
  let approval=request.approval_id();
- let message=format!("Target: {}\nPrepared validator: {}\n\nGenesis SHA-256: {}\nAuthority SHA-256: {}\nAuthority root SHA-256: {}\n\nExact request approval ID: {}\n\nOnly these three public files will be sent. The controller requires its own matching authorization and will verify the signed network and prepared identity before publishing them. This does not bind custody, prove stake, or start the validator.",target.label(),expected_address,policy["genesis_sha256"],policy["authority_sha256"],policy["authority_root_sha256"],approval);
+ let subject=if policy["schema"]=="nodenetwork-existing-genesis-stage-policy-v1"{format!("Existing network: {} (chain {})",policy["network_id"],policy["chain_id"])}else{format!("Prepared validator: {expected_address}")};
+ let message=format!("Target: {}\n{}\n\nGenesis SHA-256: {}\nAuthority SHA-256: {}\nAuthority root SHA-256: {}\n\nExact request approval ID: {}\n\nOnly these three public files will be sent. The controller requires its own matching authorization and will verify the signed network before publishing them. This does not bind custody, prove stake, or start the validator.",target.label(),subject,policy["genesis_sha256"],policy["authority_sha256"],policy["authority_root_sha256"],approval);
  let confirmed=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Authorize exact signed Genesis staging").buttons(MessageDialogButtons::OkCancelCustom("Stage these public files once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Signed Genesis staging confirmation did not finish.")?;
  if !confirmed{return Ok(None);}
  let dispatch=request_journal::Dispatch::begin(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; nothing was staged.")?,&target.journal_identity(),"genesis_stage",&request.canonical())?;

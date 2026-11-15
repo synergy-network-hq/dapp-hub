@@ -1,13 +1,13 @@
 import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis} from './native-services.js';
 import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
-import {formationView,formationStatusView,genesisBindingView,genesisStageView,publicExportView} from './formation-workflow.js';
+import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {installParameters} from './nodeNetwork.js';
 import {acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,vpnView,workflowGate} from './operator-workflow.js';
 
-const MUTATIONS=new Set(['bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
+const MUTATIONS=new Set(['bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
 const PREFLIGHTS=new Set(['install_preflight','upgrade_preflight','uninstall_preflight']);
-const LABELS={target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
+const LABELS={target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
@@ -40,10 +40,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   if(operation==='genesis_stage'||operation==='genesis_binding_preflight'||operation==='genesis_bind')setBindingReview(null);
   if(operation==='target'||MUTATIONS.has(operation))setState(null);
   try{
-   const raw=operation==='bootstrap'?await nodeNetworkBootstrap(target,operator,parameters):operation==='genesis_stage'?await stageNodeNetworkSignedGenesis(target,formationRecord.address):await nodeNetworkController(target,operation,parameters);
+   const raw=operation==='bootstrap'?await nodeNetworkBootstrap(target,operator,parameters):operation==='genesis_stage_existing'?await stageNodeNetworkSignedGenesis(target,`network:${form.chain_id}:${form.network_id}`):operation==='genesis_stage'?await stageNodeNetworkSignedGenesis(target,formationRecord.address):await nodeNetworkController(target,operation,parameters);
    if(!active.current)return;
    if(operation==='bootstrap'&&raw===null){setError('Native review cancelled. No completed operation was reported.');return;}
-   if(operation==='genesis_stage'&&raw===null)return;
+   if((operation==='genesis_stage'||operation==='genesis_stage_existing')&&raw===null)return;
    if(operation==='target')setState(checkedTarget(raw,target));
    if(PREFLIGHTS.has(operation)){
     if(!acceptedReview(operation,parameters,raw,target))throw Error('The target did not return an affirmative result for this preflight. No matching review was recorded.');
@@ -56,9 +56,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     operation==='formation_preflight'?formationView(raw):
     operation==='formation_prepare'?formationView(raw,true):
     operation==='formation_status'?formationStatusView(raw):
-    operation==='genesis_stage'?genesisStageView(raw,formationRecord):
+    operation==='genesis_stage_existing'?existingGenesisStageView(raw,form):operation==='genesis_stage'?genesisStageView(raw,formationRecord):
     operation==='genesis_binding_preflight'||operation==='genesis_bind'?genesisBindingView(raw,formationRecord,parameters.genesis_sha256??null):raw;
-   if(operation==='identity_preflight')setIdentityReview({target:targetKey,genesis_sha256:response.genesis_sha256});
+   if(operation==='identity_preflight')setIdentityReview({target:targetKey,...response});
    if(operation==='formation_preflight')setFormationReview({target:targetKey,...response});
    if(operation==='formation_prepare'||operation==='formation_status'){
     if(operation==='formation_prepare'&&response.formation_sha256!==parameters.formation_sha256)throw Error('The prepared identity did not match the reviewed formation.');
@@ -105,6 +105,11 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <Card title="3. Stage and install validator software">
     <p>Inspect the target after each change. Software installation does not commission a validator or start consensus.</p>
     {setup.map(action)}
+   </Card>
+   <Card title="Join an existing network">
+    <p>Verify the network’s signed Genesis, then generate a fresh identity on this host. Custody preparation does not enroll the VPN or authorize consensus.</p>
+    {['genesis_stage_existing','identity_status','identity_preflight','identity_generate'].map(action)}
+    {identityReview&&<Detail data={{network:identityReview.network_id,chainId:identityReview.chain_id,verifiedGenesisSha256:identityReview.genesis_sha256}}/>}
    </Card>
    <Card title="Stage A · Prepare a validator before Genesis">
     <p>Read the authenticated host first. Preparation generates independent APQE keys on the selected host and keeps private material there. It does not sign Genesis or grant validator membership.</p>
