@@ -29,7 +29,7 @@ function initialWatchlist() {
  catch (error) {return {ids: [], error: String(error?.message || error), readable: false};}
 }
 
-export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing}) {
+export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing, readValidatorBlock}) {
  const [watchlist, setWatchlist] = useState(initialWatchlist);
  const {ids, error, readable} = watchlist;
  const [selected, setSelected] = useState('');
@@ -133,7 +133,7 @@ export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing
     onClick={() => {
      if (lookupResult?.hasProfile && !lookup.loading) edit({add: lookupResult.address});
     }}>Watch looked-up validator</button>
-   <ValidatorBlockReview key={`${result.address}:${result.receivedAt}`} observation={result}/>
+   <ValidatorBlockReview key={`${result.address}:${result.receivedAt}`} observation={result} readRpcBlock={readValidatorBlock}/>
    <ValidatorRewardSettlements key={`${result.address}:${result.receivedAt}:rewards`} settlements={result.indexedRewards ?? null}/>
   </section>}</Resource>}
   {lookupAddress && readActiveListing && <ValidatorActiveList key={lookupAddress} address={lookupAddress} readListing={readActiveListing}/>}

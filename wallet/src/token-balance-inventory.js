@@ -2,6 +2,7 @@ import {text} from '@synergy-network/dapp-data-view';
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {blockHeight} from './transaction-observation.js';
 import {isStsFungibleObjectId} from './wallet-address.js';
+import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
 
 const atlasSource = 'atlas_token_balances';
 const unavailable = 'Token balance response is unavailable or unsupported. Inventory coverage is unknown.';
@@ -18,13 +19,6 @@ export const rpcTokenBalanceSources = {
 };
 export const RPC_TOKEN_INVENTORY_LIMIT = 50;
 const rpcSnapshotSources = new Set(['finalized_chain1266_execution_state', 'finalized_sts_snapshot']);
-export const maxU128 = 340282366920938463463374607431768211455n;
-
-export function exactRpcAmount(value, max) {
-  const digits = Number.isSafeInteger(value) && value >= 0 ? String(value) : value;
-  return typeof digits === 'string' && digits.trim() === digits && /^(0|[1-9][0-9]{0,38})$/.test(digits) &&
-    BigInt(digits) <= max ? digits : null;
-}
 
 // The chain-1266 owner RPC returns the native ledger row and an exact-owner STS execution snapshot.
 export function rpcTokenBalanceInventory(response, account, readiness) {
@@ -48,10 +42,10 @@ export function rpcTokenBalanceInventory(response, account, readiness) {
   }
 
   const [native, ...sts] = value.items;
-  const nativeAmount = exactRpcAmount(native?.balance_nwei, 18446744073709551615n);
+  const nativeAmount = exactRpcAmount(native?.balance_nwei, maxU64);
   if (native?.asset_kind !== 'native' || native.owner !== account || native.symbol !== 'SNRG' ||
       native.token_id !== null || native.token_address !== null || nativeAmount === null ||
-      nativeAmount !== exactRpcAmount(native.balance, 18446744073709551615n)) {
+      nativeAmount !== exactRpcAmount(native.balance, maxU64)) {
     throw Error('The selected RPC returned an unsupported native SNRG row.');
   }
 

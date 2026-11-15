@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.jsx",
     "./widget": "./src/Widget.jsx",
-    "./address": "./src/wallet-address.js"
+    "./address": "./src/wallet-address.js",
+    "./sts-activity": "./src/sts-activity.js"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

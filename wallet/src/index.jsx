@@ -8,6 +8,7 @@ import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-
 import {WalletFeeMarket} from './WalletFeeMarket.jsx';
 import {WalletConnections} from './WalletConnections.jsx';
 import {WalletHistory} from './WalletHistory.jsx';
+import {WalletStsActivity} from './WalletStsActivity.jsx';
 import {WalletBalances} from './WalletBalances.jsx';
 import {WalletTokens} from './WalletTokens.jsx';
 import {WalletOwnerTokens} from './WalletOwnerTokens.jsx';
@@ -102,8 +103,11 @@ export function WalletApp() {
           <WalletMultiAssetInventory key={`owner-multi-assets:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
         </>;
       case 'Activity':
-        return <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
-          endpoint={n.endpoint} readAtlas={readAtlas} recent={data} recentAt={data?.portalReceivedAt}/> : <p>{atlasEndpointRequired}</p>}</Card>;
+        return <>
+          <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
+            endpoint={n.endpoint} readAtlas={readAtlas} recent={data} recentAt={data?.portalReceivedAt}/> : <p>{atlasEndpointRequired}</p>}</Card>
+          <WalletStsActivity key={`sts-activity:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+        </>;
       case 'Receive':
         return <Receive account={connection.address} endpoint={n.endpoint} consentSession={n.walletConsentSession}
           readRpc={rpc} canUse={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')}/>;

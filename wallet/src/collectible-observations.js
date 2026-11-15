@@ -1,7 +1,7 @@
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {blockHeight, comparableTransactionHash} from './transaction-observation.js';
 import {isStsMultiAssetCollectionId, isStsNftObjectId} from './wallet-address.js';
-import {exactRpcAmount, maxU128} from './token-balance-inventory.js';
+import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
 
 // Atlas's public token registry projects at most 250 recent STS NFT instances.
 export const ATLAS_NFT_LIMIT = 250;
@@ -138,7 +138,7 @@ export function ownerMultiAssetObservation(response, account, readiness) {
   }
   const seen = new Set();
   const items = snapshot.items.map(item => {
-    const itemId = exactRpcAmount(item?.item_id, 18446744073709551615n);
+    const itemId = exactRpcAmount(item?.item_id, maxU64);
     const amount = exactRpcAmount(item?.amount, maxU128);
     if (item?.asset_kind !== 'multi_asset_balance' || item.owner !== account ||
         !isStsMultiAssetCollectionId(item.collection_id) || itemId === null || itemId === '0' || amount === null) {
