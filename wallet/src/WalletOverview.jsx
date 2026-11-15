@@ -1,7 +1,6 @@
 import {Card, Resource, Table, short} from '@synergy-network/portal-native/dapp-sdk';
-import {amount} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
-import {transactionDirection} from './WalletActivity.jsx';
+import {indexedTransactionAmount, transactionDirection} from './WalletActivity.jsx';
 import {WalletCollectiblesPreview} from './WalletCollectibles.jsx';
 import {sourceRecords} from './source-records.js';
 import {comparableTransactionHash} from './transaction-observation.js';
@@ -27,9 +26,7 @@ function recentActivity(raw, account) {
     if (typeof row.hash !== 'string' || counts.get(row.hash.toLowerCase()) !== 1) continue;
     const direction = transactionDirection(row, account);
     if (direction === 'Unclassified') continue;
-    const reportedAmount = row.amount_nwei;
-    const numericAmount = typeof reportedAmount === 'string' || typeof reportedAmount === 'number';
-    preview.push({hash: row.hash, direction, amount: numericAmount ? amount(reportedAmount) : 'Unavailable'});
+    preview.push({hash: row.hash, direction, amount: indexedTransactionAmount(row.amount_nwei)});
     if (preview.length === 3) break;
   }
   return preview;

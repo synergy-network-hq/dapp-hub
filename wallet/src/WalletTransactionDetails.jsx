@@ -1,8 +1,8 @@
 import {useState} from 'react';
 import {Copy, Detail, ErrorMessage, Resource, chainIdNumber, openExternal, useAction, useNative,
   useResource} from '@synergy-network/portal-native/dapp-sdk';
-import {amount, text} from '@synergy-network/dapp-data-view';
-import {indexedTransactionTime, transactionDirection} from './WalletActivity.jsx';
+import {text} from '@synergy-network/dapp-data-view';
+import {indexedTransactionAmount, indexedTransactionTime, transactionDirection} from './WalletActivity.jsx';
 import {sourceRecords} from './source-records.js';
 import {blockLookupHeight, comparableTransactionHash, compareIndexedBlock, reportedBlockMembership,
   transactionObservation} from './transaction-observation.js';
@@ -144,8 +144,8 @@ function IndexedDetails({row, account, endpoint, readRpc}) {
       indexedStatus: text(row.status),
       sender: text(row.sender_address ?? row.sender ?? row.from),
       receiver: text(row.receiver_address ?? row.receiver ?? row.to),
-      reportedSNRG: amount(row.amount_nwei),
-      reportedFeeSNRG: amount(row.fee_nwei),
+      reportedSNRG: indexedTransactionAmount(row.amount_nwei),
+      reportedFeeSNRG: indexedTransactionAmount(row.fee_nwei),
       reportedNonce: typeof row.nonce === 'string' && /^\d{1,78}$/.test(row.nonce) ? row.nonce : 'Unavailable',
       reportedBlock: text(block),
       reportedTimeUTC: time ? new Date(time.ms).toISOString() : 'Unavailable',

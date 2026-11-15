@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react';
 import {Card, Detail, ErrorMessage, ModalDialog} from '@synergy-network/portal-native/dapp-sdk';
+import {downloadJson} from './download-json.js';
 import {provisioningChecks} from './nodeNetwork.js';
 import {createInstallationReview, installationReviewKey, installationReviewMatches, readInstallationReview, saveInstallationReview} from './installation-review.js';
 
@@ -14,6 +15,8 @@ function loadReview() {
 export function InstallationDraftReview({form}) {
  const [stored, setStored] = useState(loadReview);
  const [staged, setStaged] = useState(null);
+ const [exportReview, setExportReview] = useState(null);
+ const [exportError, setExportError] = useState('');
  const [saveError, setSaveError] = useState('');
  const [notice, setNotice] = useState('');
  const saved = stored.snapshot?.record;
@@ -21,6 +24,7 @@ export function InstallationDraftReview({form}) {
  const valid = provisioningChecks(form).every(check => check.valid);
  const stillCurrent = installationReviewMatches(review, form);
  const sameBaseline = Boolean(staged && stored.snapshot && staged.expectedRaw === stored.snapshot.raw);
+ const exportMatchesSaved = Boolean(exportReview && stored.snapshot?.raw === exportReview.raw);
 
  useEffect(() => {
   function onStorage(event) {
@@ -50,6 +54,28 @@ export function InstallationDraftReview({form}) {
   }
  }
 
+ function reviewExport() {
+  setNotice('');
+  setExportError('');
+  const latest = loadReview();
+  setStored(latest);
+  if (latest.snapshot?.record) setExportReview(latest.snapshot);
+ }
+
+ function downloadReview() {
+  if (!exportMatchesSaved) return;
+  const latest = loadReview();
+  setStored(latest);
+  if (latest.snapshot?.raw !== exportReview.raw) return;
+  try {
+   downloadJson('nodenetwork-installation-draft-review.json', exportReview.record);
+   setExportReview(null);
+   setNotice('Installation review download requested.');
+  } catch {
+   setExportError('The device could not start the download.');
+  }
+ }
+
  return <Card title="Installation review record">
   <p>Keep a local record of the exact draft reviewed before host selection. Qualified build, chain identity, host prerequisites and operator approval are verified separately.</p>
   {saved ? <>
@@ -70,6 +96,7 @@ export function InstallationDraftReview({form}) {
     setStaged({record: createInstallationReview(form), expectedRaw: stored.snapshot.raw});
    }}>Review provisioning draft</button>
    <button onClick={reload}>Reload saved installation review</button>
+   {saved && <button onClick={reviewExport}>Review saved installation export</button>}
   </div>
   {review && <ModalDialog label="Review provisioning draft" onClose={() => setStaged(null)}>
    <h2>Review provisioning draft</h2>
@@ -82,6 +109,17 @@ export function InstallationDraftReview({form}) {
    <div className="native-actions">
     <button data-initial-focus onClick={() => setStaged(null)}>Cancel</button>
     <button disabled={!stillCurrent || !sameBaseline} onClick={save}>Save local review record</button>
+   </div>
+  </ModalDialog>}
+  {exportReview && <ModalDialog label="Review saved installation export" onClose={() => setExportReview(null)}>
+   <h2>Review saved installation export</h2>
+   <p>The file includes the shown node name, installation references and review time. It records a local draft review. Signed plans and installation approval require separate verification.</p>
+   <pre>{JSON.stringify(exportReview.record, null, 2)}</pre>
+   {!exportMatchesSaved && <p role="status">The saved review changed or became unavailable. Close this preview and reopen the current record before downloading.</p>}
+   <ErrorMessage error={exportError}/>
+   <div className="native-actions">
+    <button data-initial-focus onClick={() => setExportReview(null)}>Cancel</button>
+    <button disabled={!exportMatchesSaved} onClick={downloadReview}>Download reviewed installation record</button>
    </div>
   </ModalDialog>}
  </Card>;

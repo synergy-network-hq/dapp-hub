@@ -14,6 +14,9 @@ export function transactionDirection(tx,account){
   if (to) return 'Received';
   return 'Unclassified';
 }
+export function indexedTransactionAmount(value) {
+  return typeof value === 'string' || typeof value === 'number' ? amount(value) : 'Unavailable';
+}
 export function indexedTransactionTime(tx){
  const raw=tx.timestamp_unix;
  if((typeof raw==='number'&&Number.isSafeInteger(raw)||typeof raw==='string'&&/^[0-9]{1,13}$/.test(raw))&&Number(raw)>=0){const ms=Number(raw)*1000;if(Number.isSafeInteger(ms)&&ms<=8640000000000000)return {ms,source:'Transaction timestamp reported by index'};}
@@ -101,10 +104,10 @@ export function WalletActivity({data, account, onSelect, paged = false}) {
       <table>
         <thead><tr>
           <th>Hash</th><th>Direction</th><th>Transaction type</th><th>Indexed status</th>
-          <th>Reported time (UTC)</th><th>SNRG</th>
+          <th>Reported time (UTC)</th><th>Amount (SNRG)</th><th>Reported fee (SNRG)</th>
         </tr></thead>
         <tbody>{filtered.map(item => {
-          const {hash, amount_nwei: value, status: indexedStatus} = item.transaction;
+          const {hash, amount_nwei: value, fee_nwei: fee, status: indexedStatus} = item.transaction;
           const hashText = typeof hash === 'string' ? hash : undefined;
           const timestamp = item.time ? new Date(item.time.ms).toISOString() : null;
           return <tr key={item.index}>
@@ -118,7 +121,8 @@ export function WalletActivity({data, account, onSelect, paged = false}) {
               <time dateTime={timestamp}>{timestamp.replace('T', ' ').replace('.000Z', ' UTC')}</time>
               <small>{item.time.source}</small>
             </> : 'Unavailable'}</td>
-            <td>{amount(value)}</td>
+            <td>{indexedTransactionAmount(value)}</td>
+            <td>{indexedTransactionAmount(fee)}</td>
           </tr>;
         })}</tbody>
       </table>

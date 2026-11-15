@@ -26,8 +26,29 @@ export function WalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,read
   finally{if(generation===request.current.generation){request.current.pending=false;setBusy(false);}}
  }
  if(first.loading)return <><p role="status">Reading account-scoped history…</p><button onClick={restart}>Restart history read</button></>;
- if(first.error)return <><ErrorMessage error={first.error}/><p>Paginated account history is unavailable. The recent records below remain a separate limited source view.</p><button onClick={restart}>Retry paginated history</button><SourceAge updatedAt={recentAt}/><WalletActivity data={recent} account={account} onSelect={setSelected}/>{selected&&<WalletTransactionDetails data={recent} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}</>;
+ if(first.error)return <>
+  <ErrorMessage error={first.error}/>
+  <p>Paginated account history is unavailable. The recent records are a separate limited source without an indexed snapshot height.</p>
+  <button onClick={restart}>Retry paginated history</button>
+  <SourceAge source="Atlas recent account records" updatedAt={recentAt}/>
+  <WalletActivity data={recent} account={account} onSelect={setSelected}/>
+  {selected&&<WalletTransactionDetails data={recent} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}
+ </>;
  if(!current)return <p role="status">Preparing account history page…</p>;
  const data={recentTransactions:current.items};
- return <><SourceAge updatedAt={current.receivedAt} source="Atlas account-history page read"/><p>Page {current.ordinal} · reported network {current.network}. Filters apply to this page. Up to20 pages remain in local memory; restart to return to the newest records. The snapshot bounds indexing, not chain finality or complete account coverage.</p>{current.warnings.map((warning,i)=><p key={i}>{warning}</p>)}<div className="native-actions"><button disabled={busy||position===0} onClick={()=>{setPosition(position-1);setSelected(null);}}>Previous retained page</button><button disabled={busy||(!current.hasMore&&position+1>=pages.length)} onClick={next}>Next page</button><button onClick={restart}>Restart history</button></div>{busy&&<p role="status">Reading the next page…</p>}<ErrorMessage error={error}/><WalletActivity key={current.ordinal} data={data} account={account} paged onSelect={setSelected}/>{selected&&<WalletTransactionDetails data={data} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}</>;
+ return <>
+  <SourceAge updatedAt={current.receivedAt} source="Atlas account-history page read"/>
+  <p>Page {current.ordinal} · reported network {current.network} · Atlas snapshot height {current.snapshot?.blockNumber ?? 'unavailable'}</p>
+  <p>Filters apply to this page. Up to 20 pages remain in local memory. Restart to return to the newest records. The snapshot is an index boundary. Finality and full account coverage remain unverified.</p>
+  {current.warnings.map((warning,i)=><p key={i}>{warning}</p>)}
+  <div className="native-actions">
+    <button disabled={busy||position===0} onClick={()=>{setPosition(position-1);setSelected(null);}}>Previous retained page</button>
+    <button disabled={busy||(!current.hasMore&&position+1>=pages.length)} onClick={next}>Next page</button>
+    <button onClick={restart}>Restart history</button>
+  </div>
+  {busy&&<p role="status">Reading the next page…</p>}
+  <ErrorMessage error={error}/>
+  <WalletActivity key={current.ordinal} data={data} account={account} paged onSelect={setSelected}/>
+  {selected&&<WalletTransactionDetails data={data} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}
+ </>;
 }
