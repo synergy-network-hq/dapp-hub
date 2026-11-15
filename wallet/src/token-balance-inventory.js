@@ -30,7 +30,7 @@ export function tokenBalanceInventory(value, accountKey) {
     if (!accountReported || !Array.isArray(value.items) || value.total !== value.items.length) {
       throw Error(unavailable);
     }
-    return {items: value.items, accountReported};
+    return {items: value.items, accountReported, accountKey};
   }
 
   const items = [value.items, value.tokens, value.balances].find(Array.isArray);

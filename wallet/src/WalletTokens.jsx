@@ -2,11 +2,12 @@ import {useEffect, useState} from 'react';
 import {text} from '@synergy-network/dapp-data-view';
 import {sourceRecords} from './source-records.js';
 import {reportedTokenDecimals, reportedTokenQuantity, tokenBalanceSource, tokenBalanceSources} from './token-balance-inventory.js';
+import {WalletTokenProvenance} from './WalletTokenProvenance.jsx';
 
 const contractAddress = item => item.contractAddress ?? item.contract_address ?? item.contract;
 const tokenAddress = item => item.tokenAddress;
 
-function TokenDetails({item, onClose}) {
+function TokenDetails({item, accountKey, onClose}) {
   const source = tokenBalanceSource(item);
   const quantity = reportedTokenQuantity(item);
   return <aside aria-label="Selected token">
@@ -26,6 +27,7 @@ function TokenDetails({item, onClose}) {
       <dt>Provenance verification</dt><dd>Not independently verified</dd>
     </dl>
     {source === 'synq' && <p>This entry records the initial allocation. Current holdings require a balance observation.</p>}
+    {accountKey && <WalletTokenProvenance item={item} accountKey={accountKey}/>}
     <button onClick={onClose}>Close token details</button>
   </aside>;
 }
@@ -44,6 +46,8 @@ export function WalletTokens({inventory}) {
     return !query || fields.some(value => typeof value === 'string' && value.toLowerCase().includes(query));
   });
   const current = matches.includes(selected) ? selected : null;
+  const uniqueContract = typeof current?.contractAddress === 'string' &&
+    source.records.filter(item => item.contractAddress === current.contractAddress).length === 1;
 
   return <>
     {source.notice && <p role="alert">{source.notice}</p>}
@@ -72,6 +76,6 @@ export function WalletTokens({inventory}) {
       </table>
     </div> : <p>{source.items.length ? 'No returned tokens match these filters.' :
       source.notice ? 'No usable token records are available in this source view.' : 'The index returned no token records.'}</p>}
-    {current && <TokenDetails item={current} onClose={() => setSelected(null)}/>}
+    {current && <TokenDetails item={current} accountKey={uniqueContract ? inventory.accountKey : null} onClose={() => setSelected(null)}/>}
   </>;
 }
