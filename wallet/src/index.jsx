@@ -13,6 +13,7 @@ import {readAtlasTokenBalances} from './token-balance-inventory.js';
 import {readAtlasAddress} from './atlas-account.js';
 import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
+import {WalletCollectibles} from './WalletCollectibles.jsx';
 import './wallet.css';
 
 const tabs = ['Assets', 'Collectibles', 'Activity', 'Receive', 'Send', 'Address book', 'Connections'];
@@ -64,10 +65,7 @@ export function WalletApp() {
           <SourceAge updatedAt={result.receivedAt}/><WalletTokens inventory={result.inventory}/>
         </>}</Resource></Card>;
       case 'Collectibles':
-        return <Card title="Collectible availability">
-          <p>No supported collectible ownership or metadata service is connected for this account and network. Inventory is unavailable; this does not mean the account owns zero collectibles.</p>
-          <p>Unverified external media and metadata are not loaded.</p>
-        </Card>;
+        return <WalletCollectibles key={`${scope}:${revision}`} account={connection.address} endpoint={n.endpoint}/>;
       case 'Activity':
         return <Card title="Indexed transactions"><WalletHistory key={`${scope}:${revision}`} account={connection.address}
           endpoint={n.endpoint} recent={data} recentAt={data?.portalReceivedAt}/></Card>;
