@@ -2,15 +2,16 @@ import {useState} from 'react';
 import {Card, Detail, ErrorMessage, ModalDialog, Resource, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {downloadJson} from './download-json.js';
 import {nodeNetworkRequests} from './native-services.js';
-import {filterRequests, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
+import {configuredTargetFingerprint, filterRequests, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
 
 const allRequests = {status: 'all', operation: 'all', target: null};
+const configuredTarget = 'configured';
 
-export function RequestHistory({permitted}) {
- return <RequestHistoryView key={String(permitted)} permitted={permitted}/>;
+export function RequestHistory({permitted, target}) {
+ return <RequestHistoryView key={JSON.stringify([permitted,target])} permitted={permitted} target={target}/>;
 }
 
-function RequestHistoryView({permitted}) {
+function RequestHistoryView({permitted, target}) {
  const [filters, setFilters] = useState(allRequests);
  const [selected, setSelected] = useState(null);
  const [exportIds, setExportIds] = useState(() => new Set());
@@ -20,6 +21,10 @@ function RequestHistoryView({permitted}) {
   if (!permitted) throw Error('Allow NodeNetwork inspection in Security & permissions to read local request history.');
   return nodeNetworkRequests();
  }, String(permitted));
+ const filterConfigured = filters.target === configuredTarget;
+ const configured = useResource(() => filterConfigured && permitted && target ? configuredTargetFingerprint(target) : null,
+  String(filterConfigured));
+ const filterReady = !filterConfigured || Boolean(configured.data);
 
  function resetExport() {
   setExportIds(new Set());
@@ -52,7 +57,7 @@ function RequestHistoryView({permitted}) {
  }>
   <p>Review dispatch attempts from this device. Refresh reads the local journal. Target jobs and service state require separate evidence.</p>
   <Resource value={history}>{value => {
-   const rows = filterRequests(value.records, filters);
+   const rows = filterReady ? filterRequests(value.records, {...filters,target:filterConfigured ? configured.data : filters.target}) : [];
    const current = rows.find(record => record.id === selected);
    const visibleExportIds = rows.filter(record => exportIds.has(record.id)).map(record => record.id);
    const unresolved = value.records.filter(record => record.state !== 'response_received').length;
@@ -61,6 +66,13 @@ function RequestHistoryView({permitted}) {
     {value.records.length === value.limit && <p role="status">The journal is full. New mutations require an approved retention procedure.</p>}
     {unresolved > 0 && <button onClick={() => changeFilters({...allRequests, status: 'unresolved'})}>
      Review unresolved dispatches
+    </button>}
+    {target && <button onClick={() => {
+     changeFilters({...allRequests,status:'unresolved',target:configuredTarget});
+     if (filterConfigured) configured.reload();
+     history.reload();
+    }}>
+     Review unresolved dispatches for configured target
     </button>}
     <div className="native-actions">
      <label>Request history status
@@ -76,10 +88,14 @@ function RequestHistoryView({permitted}) {
      </label>
     </div>
     {filters.target && <div>
-     <p>Showing journal entries with the recorded target fingerprint <code style={{overflowWrap: 'anywhere'}}>{filters.target}</code>.</p>
+     {filterConfigured ? <>
+      {configured.loading && <p role="status">Checking the configured target fingerprint…</p>}
+      <ErrorMessage error={configured.error}/>
+      {configured.data && <p>Local dispatches matching the current configured target. This compares saved configuration fingerprints.</p>}
+     </> : <p>Showing journal entries with the recorded target fingerprint <code style={{overflowWrap: 'anywhere'}}>{filters.target}</code>.</p>}
      <button onClick={() => changeFilters({...filters, target: null})}>Clear target filter</button>
     </div>}
-    <p role="status">{rows.length} matching {rows.length === 1 ? 'record' : 'records'}.</p>
+    {filterReady && <p role="status">{rows.length} matching {rows.length === 1 ? 'record' : 'records'}.</p>}
     {rows.length > 0 && <div className="native-actions">
      <button disabled={!visibleExportIds.length} onClick={() => {
       setExportError('');
@@ -92,7 +108,7 @@ function RequestHistoryView({permitted}) {
      </>}
     </div>}
     {!currentReview && <ErrorMessage error={exportError}/>}
-    {!rows.length ? <p>{value.records.length
+    {filterReady && (!rows.length ? <p>{value.records.length
      ? 'No local records match these filters.'
      : 'This journal contains no recorded dispatches. It covers current Portal dispatches on this device.'}</p>
      : <ul>{rows.map(record => <li key={record.id}>
@@ -105,7 +121,7 @@ function RequestHistoryView({permitted}) {
         onChange={event => toggleExport(record.id, event.target.checked)}/>
        Select for export
       </label>
-     </li>)}</ul>}
+     </li>)}</ul>)}
     {current && <div aria-live="polite">
      <Detail data={{
       localRequestId: current.id,

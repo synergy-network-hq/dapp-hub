@@ -461,6 +461,18 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
 #[cfg(test)] mod tests {
     use super::*;
 
+    #[test] fn journal_identity_matches_renderer_fingerprint() {
+        for (kind, host, port, expected) in [
+            ("local", None, None, "12f8f8950509dcba72d0a36fb6bc54379c8242213366f6acb02d328bf10ce8b8"),
+            ("remote", Some("VALIDATOR-FIXTURE.EXAMPLE.INVALID"), None, "339c7f3add8333afcacd9a24f3e59a026aad8de56975310271444473da96c252"),
+            ("remote", Some("[2001:db8::1234]"), Some(2222), "5be522ca2c219d47e5fc80f0938c6ffa668c1d158cde365548993bf63b0f2a9f"),
+        ] {
+            let target = Target{kind:kind.into(),host:host.map(String::from),port,root:ROOT.into()};
+            assert!(target.validate().is_ok());
+            assert_eq!(format!("{:x}",Sha256::digest(target.journal_identity().to_string().as_bytes())), expected);
+        }
+    }
+
     #[test] fn ssh_socket_budget_uses_short_operator_namespace(){
         let path=control_directory(Path::new("/Users/jhutzler")).unwrap();
         assert_eq!(path,Path::new("/Users/jhutzler/.synergy-portal/ssh"));

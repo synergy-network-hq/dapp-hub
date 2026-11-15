@@ -1,3 +1,5 @@
+import {nodeNetworkTarget} from './nodeNetwork.js';
+
 export const requestOperations = Object.freeze([
  'bootstrap', 'install', 'commission', 'register', 'start', 'stop', 'restart', 'upgrade', 'uninstall',
 ]);
@@ -30,7 +32,7 @@ export function filterRequests(records, {status, operation, target}) {
  );
 }
 
-const pin = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const pin = value => typeof value === 'string' && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
 const validState = record => {
  if (record.state === 'dispatch_intent') return record.observed_at_ms === null && record.response_ok === null;
@@ -39,6 +41,21 @@ const validState = record => {
  return record.state === 'response_received' && typeof record.response_ok === 'boolean';
 };
 const historyLimit = 256;
+
+export async function configuredTargetFingerprint(target) {
+ if (target?.root !== '/opt/Synergy' || (target.kind === 'local' && (target.host != null || target.port != null))) {
+  throw Error('A supported configured target is required to filter local history.');
+ }
+ const selected = nodeNetworkTarget(target);
+ if (!globalThis.crypto?.subtle) throw Error('This window cannot match the configured target to the local journal.');
+ // Keep field order aligned with native Target::journal_identity and the v1 journal digest.
+ const canonical = JSON.stringify({
+  host:selected.host ?? null, kind:selected.kind,
+  port:selected.kind === 'remote' ? selected.port ?? 22 : null, root:selected.root,
+ });
+ const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+ return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
 
 export function parseRequestHistory(value) {
  if (

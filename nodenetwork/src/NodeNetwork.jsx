@@ -141,7 +141,7 @@ export function NodeNetworkApp(){
   {tab==='Management'&&<SavedValidatorObservation permitted={permitted} onOpenDiagnostics={()=>setSection('logs')}/>}
   {tab==='Management'&&!target&&<VpnStatus onOpenDiagnostics={()=>setSection('logs')}/>}
   {tab==='Management'&&!target&&<CustodyStatus onOpenHistory={()=>setSection('logs')}/>}
-  {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted}/>}
+  {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted} target={target}/>}
   {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} onOpenDiagnostics={()=>setSection('logs')}/>}
  </NodeNetworkPanelFrame>;
 }
