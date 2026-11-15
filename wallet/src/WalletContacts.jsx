@@ -1,10 +1,223 @@
-import {ModalDialog} from '@synergy-network/portal-native/dapp-sdk';
+import {useEffect, useId, useRef, useState} from 'react';
+import {Card, ErrorMessage, ModalDialog, useAction} from '@synergy-network/portal-native/dapp-sdk';
 import {isValidSynergyAddress} from './wallet-address.js';
-import {useEffect,useId,useRef,useState} from 'react';
-import {Card as Section} from '@synergy-network/portal-native/dapp-sdk';
-import {readContacts,saveContact,removeContact} from './wallet-contacts.js';
-export function WalletContacts({onSelect}){
- const [state,setState]=useState(()=>{try{return {items:readContacts(localStorage),error:'',readable:true};}catch(error){return {items:[],error:error.message,readable:false};}}),[draft,setDraft]=useState({name:'',address:''}),[search,setSearch]=useState(''),[status,setStatus]=useState(''),[errors,setErrors]=useState({}),[removeReview,setRemoveReview]=useState(null);const removed=useRef(false);useEffect(()=>{if(!removeReview&&removed.current){removed.current=false;nameField.current?.focus();}},[removeReview]);const formId=useId(),nameField=useRef(null),addressField=useRef(null);const matches=state.items.filter(item=>(item.name+' '+item.address).toLowerCase().includes(search.toLowerCase()));
- function update(work){try{const items=work();setState({items,error:'',readable:true});return true;}catch(error){setState(old=>({...old,error:error.message}));return false;}}
- return <Section title="Contacts"><p>Saved only in this Wallet window’s local store for Synergy Testnet v3 · chain 1266. A valid checksum does not verify the contact’s identity.</p>{state.error&&<p role="alert">{state.error}</p>}<button onClick={()=>{try{setState({items:readContacts(localStorage),error:'',readable:true});setStatus('Address book refreshed. Unsaved edits are retained; reopen a changed contact before saving.');}catch(error){setState(old=>({...old,error:error.message,readable:false}));}}}>Refresh address book</button><label>Search contacts<input value={search} onChange={e=>setSearch(e.target.value)}/></label><form noValidate onSubmit={e=>{e.preventDefault();const next={};if(!draft.name.trim())next.name='Enter a contact name.';if(!isValidSynergyAddress(draft.address.trim()))next.address='Enter a lowercase Synergy address with a valid checksum.';setErrors(next);if(Object.keys(next).length){(next.name?nameField:addressField).current?.focus();return;}if(update(()=>saveContact(localStorage,draft))){setDraft({name:'',address:''});setStatus('Contact saved.');}}}><label>Contact name<input ref={nameField} aria-invalid={!!errors.name} aria-describedby={errors.name?formId+'-name-error':undefined} required maxLength={80} value={draft.name} onChange={e=>{setDraft({...draft,name:e.target.value});setErrors(old=>({...old,name:null}));setStatus('');}}/></label>{errors.name&&<span className="integration-field-error" id={formId+'-name-error'} role="alert">{errors.name}</span>}<label>Contact address<input ref={addressField} aria-invalid={!!errors.address} aria-describedby={errors.address?formId+'-address-error':undefined} required maxLength={100} value={draft.address} onChange={e=>{setDraft({...draft,address:e.target.value});setErrors(old=>({...old,address:null}));setStatus('');}}/></label>{errors.address&&<span className="integration-field-error" id={formId+'-address-error'} role="alert">{errors.address}</span>}<button disabled={!state.readable}>{draft.id?'Save contact changes':'Add contact'}</button>{draft.id&&<button type="button" onClick={()=>{setDraft({name:'',address:''});setErrors({});setStatus('');}}>Cancel editing</button>}</form>{matches.map(item=><article className="wallet-contact" key={item.id}><h3>{item.name}</h3><p className="account-address">{item.address}</p><div className="contact-actions"><button onClick={()=>{onSelect(item.address);}}>Review address</button><button onClick={()=>{setDraft({...item,original:{...item}});setErrors({});setStatus('');}}>Edit {item.name}</button><button onClick={()=>setRemoveReview(item)}>Remove {item.name}</button></div></article>)}{state.readable&&state.items.length>0&&!matches.length&&<p>No contacts match your search.</p>}{state.readable&&!state.items.length&&<p>No contacts saved for this network.</p>}<p role="status">{status}</p>{removeReview&&<ModalDialog label="Remove Wallet contact" className="integration-dialog" onClose={()=>setRemoveReview(null)}><h2>Remove {removeReview.name}?</h2><p className="account-address">{removeReview.address}</p><p>This removes the contact from this device’s Wallet address book. It does not revoke a wallet session or change anything on-chain.</p><div className="contact-actions">{state.error&&<p role="alert">{state.error}</p>}<button onClick={()=>{if(update(()=>removeContact(localStorage,removeReview))){if(draft.id===removeReview.id)setDraft({name:'',address:''});setErrors({});setStatus('Contact removed.');removed.current=true;setRemoveReview(null);}}}>Confirm remove contact</button><button data-initial-focus onClick={()=>setRemoveReview(null)}>Cancel removal</button></div></ModalDialog>}</Section>;
+import {CONTACT_KEY, matchesReviewedContact, readContacts, removeContact, saveContact} from './wallet-contacts.js';
+
+const emptyContact = {name: '', address: ''};
+
+function ContactEditor({original, blocked, onClose, onSave}) {
+  const [draft, setDraft] = useState(original ?? emptyContact);
+  const [errors, setErrors] = useState({});
+  const [saveError, setSaveError] = useState('');
+  const formId = useId();
+  const nameField = useRef(null);
+  const addressField = useRef(null);
+  const title = original ? 'Edit Wallet contact' : 'Add Wallet contact';
+
+  function change(field, value) {
+    setDraft(current => ({...current, [field]: value}));
+    setErrors(current => ({...current, [field]: null}));
+    setSaveError('');
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    if (blocked) return;
+    const nextErrors = {};
+    if (!draft.name.trim()) nextErrors.name = 'Enter a contact name.';
+    if (!isValidSynergyAddress(draft.address.trim())) {
+      nextErrors.address = 'Enter a lowercase Synergy address with a valid checksum.';
+    }
+    setErrors(nextErrors);
+    setSaveError('');
+    if (nextErrors.name || nextErrors.address) {
+      (nextErrors.name ? nameField : addressField).current?.focus();
+      return;
+    }
+    try {
+      onSave({...draft, original});
+    } catch (error) {
+      setSaveError(error.message);
+    }
+  }
+
+  return <ModalDialog label={title} className="wallet-contact-drawer" onClose={onClose}>
+    <h2>{title}</h2>
+    <form noValidate onSubmit={submit}>
+      <label>Contact name<input data-initial-focus ref={nameField} required maxLength={80}
+        aria-invalid={!!errors.name} aria-describedby={errors.name ? formId + '-name-error' : undefined}
+        value={draft.name} onChange={event => change('name', event.target.value)}/></label>
+      {errors.name && <span className="integration-field-error" id={formId + '-name-error'} role="alert">{errors.name}</span>}
+      <label>Contact address<input ref={addressField} required maxLength={100}
+        aria-invalid={!!errors.address} aria-describedby={errors.address ? formId + '-address-error' : undefined}
+        value={draft.address} onChange={event => change('address', event.target.value)}/></label>
+      {errors.address && <span className="integration-field-error" id={formId + '-address-error'} role="alert">{errors.address}</span>}
+      <ErrorMessage error={blocked || saveError}/>
+      <div className="native-actions">
+        <button disabled={!!blocked}>{original ? 'Save contact changes' : 'Add contact'}</button>
+        <button type="button" onClick={onClose}>{original ? 'Cancel editing' : 'Cancel adding contact'}</button>
+      </div>
+    </form>
+  </ModalDialog>;
+}
+
+function ContactRemoval({contact, blocked, onClose, onRemove}) {
+  const [removeError, setRemoveError] = useState('');
+  function confirm() {
+    try {
+      onRemove(contact);
+    } catch (error) {
+      setRemoveError(error.message);
+    }
+  }
+  return <ModalDialog label="Remove Wallet contact" className="integration-dialog" onClose={onClose}>
+    <h2>Remove {contact.name}?</h2>
+    <p className="account-address">{contact.address}</p>
+    <p>This removes the contact from this device’s Wallet address book.</p>
+    <ErrorMessage error={blocked || removeError}/>
+    <div className="native-actions">
+      <button disabled={!!blocked} onClick={confirm}>Confirm remove contact</button>
+      <button data-initial-focus onClick={onClose}>Cancel removal</button>
+    </div>
+  </ModalDialog>;
+}
+
+function ContactPreview({contact, onClose, readCurrent, onChanged}) {
+  const action = useAction();
+  function copy() {
+    return action.run(async () => {
+      const items = readCurrent();
+      if (!items?.some(item => matchesReviewedContact(item, contact))) {
+        onChanged();
+        return;
+      }
+      await navigator.clipboard.writeText(contact.address);
+    });
+  }
+  return <Card title="Selected contact">
+    <p>{contact.name}</p>
+    <p className="account-address">{contact.address}</p>
+    <div className="native-actions">
+      <button disabled={action.busy} onClick={copy}>Copy address</button>
+      <button onClick={onClose}>Close contact preview</button>
+    </div>
+    <ErrorMessage error={action.error}/>
+  </Card>;
+}
+
+function openAddressBook() {
+  try {
+    return {items: readContacts(localStorage), error: ''};
+  } catch (error) {
+    return {items: [], error: error.message};
+  }
+}
+
+export function WalletContacts() {
+  const [state, setState] = useState(openAddressBook);
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('');
+  const [dialog, setDialog] = useState(null);
+  const [reviewed, setReviewed] = useState(null);
+  const addButton = useRef(null);
+  const removed = useRef(false);
+  const readable = !state.error;
+
+  function applyItems(items) {
+    setState({items, error: ''});
+    setReviewed(current => items.some(item => matchesReviewedContact(item, current)) ? current : null);
+  }
+
+  function refresh() {
+    try {
+      const items = readContacts(localStorage);
+      applyItems(items);
+      return items;
+    } catch (error) {
+      setState(current => ({...current, error: error.message}));
+      setReviewed(null);
+      setStatus('');
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    function storageChanged(event) {
+      if (event.key !== CONTACT_KEY && event.key !== null) return;
+      if (event.storageArea && event.storageArea !== window.localStorage) return;
+      if (refresh()) setStatus('Address book updated from another window.');
+    }
+    window.addEventListener('storage', storageChanged);
+    return () => window.removeEventListener('storage', storageChanged);
+  }, []);
+
+  useEffect(() => {
+    if (!dialog && removed.current) {
+      removed.current = false;
+      addButton.current?.focus();
+    }
+  }, [dialog]);
+
+  function save(draft) {
+    try {
+      applyItems(saveContact(localStorage, draft));
+      setDialog(null);
+      setStatus('Contact saved.');
+    } catch (error) {
+      refresh();
+      throw error;
+    }
+  }
+
+  function remove(contact) {
+    try {
+      applyItems(removeContact(localStorage, contact));
+      removed.current = true;
+      setDialog(null);
+      setStatus('Contact removed.');
+    } catch (error) {
+      refresh();
+      throw error;
+    }
+  }
+
+  const query = search.trim().toLowerCase();
+  const matches = state.items.filter(item => (item.name + ' ' + item.address).toLowerCase().includes(query));
+  const dialogContact = dialog?.contact;
+  const changed = dialogContact && !state.items.some(item => matchesReviewedContact(item, dialogContact));
+  const blocked = state.error || (changed ? 'This saved contact changed. Review the current address book before applying changes.' : '');
+
+  return <>
+    <Card title="Contacts">
+      <p>Stored on this device for Synergy Testnet v3, chain 1266. A valid checksum does not verify identity.</p>
+      <ErrorMessage error={state.error}/>
+      {!readable && state.items.length > 0 && <p>Showing the last readable address book. Refresh before using contacts.</p>}
+      <div className="native-actions">
+        <button ref={addButton} disabled={!readable} onClick={() => setDialog({type: 'add'})}>Add contact</button>
+        <button onClick={() => {if (refresh()) setStatus('Address book refreshed.');}}>Refresh address book</button>
+      </div>
+      <label>Search contacts<input value={search} maxLength={160} onChange={event => setSearch(event.target.value)}/></label>
+      {matches.map(contact => <article className="wallet-contact" key={contact.id}>
+        <h3>{contact.name}</h3>
+        <p className="account-address">{contact.address}</p>
+        <div className="contact-actions">
+          <button aria-label={'Review address for ' + contact.name} disabled={!readable} onClick={() => {
+            const items = refresh();
+            if (items?.some(item => matchesReviewedContact(item, contact))) setReviewed(contact);
+            else if (items) setStatus('This contact changed. Review the current address before copying.');
+          }}>Review address</button>
+          <button disabled={!readable} onClick={() => setDialog({type: 'edit', contact})}>Edit {contact.name}</button>
+          <button disabled={!readable} onClick={() => setDialog({type: 'remove', contact})}>Remove {contact.name}</button>
+        </div>
+      </article>)}
+      {readable && state.items.length > 0 && !matches.length && <p>No contacts match your search.</p>}
+      {readable && !state.items.length && <p>No contacts saved for this network.</p>}
+      <p role="status">{status}</p>
+    </Card>
+    {readable && reviewed && <ContactPreview key={reviewed.id} contact={reviewed}
+      onClose={() => setReviewed(null)} readCurrent={refresh}
+      onChanged={() => setStatus('This contact changed or became unavailable. Review it again before copying.')}/>}
+    {dialog?.type === 'remove' && <ContactRemoval contact={dialogContact} blocked={blocked} onClose={() => setDialog(null)} onRemove={remove}/>}
+    {dialog && dialog.type !== 'remove' && <ContactEditor original={dialogContact} blocked={blocked} onClose={() => setDialog(null)} onSave={save}/>}
+  </>;
 }
