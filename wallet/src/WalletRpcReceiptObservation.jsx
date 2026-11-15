@@ -7,6 +7,7 @@ import {checkConfiguredReceiptGenesis, rpcReceiptObservation, rpcReceiptReadines
   rpcReceiptBlockReportsFinality} from './rpc-receipt-observation.js';
 import {blockLookupHeight, reportedBlockMembership} from './transaction-observation.js';
 import {WalletAtlasReceiptBlock} from './WalletAtlasReceiptBlock.jsx';
+import {nativeBlockMembership} from './native-block-membership.js';
 
 const blockMessages = {
   listed: 'The reported receipt block lists this transaction.',
@@ -15,6 +16,13 @@ const blockMessages = {
   unsupported: 'The block hash matches the receipt. A supported transaction hash list is unavailable.',
   ambiguous: 'The block hash matches the receipt. The block listed this transaction more than once.',
   differentHash: 'The selected RPC returned a different block hash at the receipt height.',
+};
+const nativeMembershipMessages = {
+  listed: 'The derived transaction hashes match the reported block root and include this transaction.',
+  notListed: 'The derived transaction hashes match the reported block root. This transaction is absent from that list.',
+  ambiguous: 'The derived transaction hashes match the reported block root and list this transaction more than once.',
+  rootMismatch: 'The derived transaction hashes disagree with the reported block root. Transaction membership is unavailable.',
+  indexMismatch: 'The transaction position disagrees with the receipt index. Transaction membership is unavailable.',
 };
 
 function receiptRpc(readRpc, canRead, signal) {
@@ -58,7 +66,8 @@ function ReceiptBlockLookup({receipt, hash, endpoint, readRpc, canRead}) {
     }
     const membership = reportedBlockMembership(value, height, hash, receipt.blockHash);
     const reportsFinality = membership.state !== 'differentHash' && rpcReceiptBlockReportsFinality(value, receipt);
-    return {...membership, reportsFinality, checkedAt: new Date().toISOString()};
+    const typedMembership = reportsFinality ? nativeBlockMembership(value, hash, receipt.index) : null;
+    return {...membership, reportsFinality, typedMembership, checkedAt: new Date().toISOString()};
   }, revision);
 
   if (height === null) return <p>The receipt block height cannot be sent as an exact RPC integer.</p>;
@@ -66,7 +75,7 @@ function ReceiptBlockLookup({receipt, hash, endpoint, readRpc, canRead}) {
   return <section aria-label="Receipt block observation">
     <h5>Receipt block check</h5>
     <Resource value={{...observation, reload: check}}>{value => <>
-      <p role="status">{blockMessages[value.state]}</p>
+      <p role="status">{nativeMembershipMessages[value.typedMembership] ?? blockMessages[value.state]}</p>
       {value.hash && <p>Checked block hash: {value.hash}</p>}
       {value.reportsFinality && <p role="status">The selected RPC reports the matching receipt block as finalized with an authority signature.</p>}
       <p>Receipt block checked <time dateTime={value.checkedAt}>{value.checkedAt}</time></p>

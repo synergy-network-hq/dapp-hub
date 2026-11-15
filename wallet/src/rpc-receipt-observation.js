@@ -58,8 +58,10 @@ export function rpcReceiptObservation(value, selection, readiness) {
     throw Error('The RPC receipt did not match the selected transaction participants.');
   }
   if (value.status !== '0x0' && value.status !== '0x1') throw Error('The RPC returned an unsupported receipt status.');
+  const index = value.transactionIndex == null ? null : blockHeight(value.transactionIndex);
+  if (value.transactionIndex != null && index === null) throw Error('The selected RPC returned an unsupported receipt transaction index.');
 
-  return {status: value.status, blockHash: value.blockHash, height: selection.height,
+  return {status: value.status, blockHash: value.blockHash, height: selection.height, index,
     chain: expectedChain, tip: readiness.chainStateAvailable ? readiness.height : null};
 }
 
