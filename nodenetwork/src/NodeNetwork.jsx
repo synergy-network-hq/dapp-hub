@@ -5,6 +5,7 @@ import {emptyProvisioningDraft,readProvisioningSnapshot,saveProvisioningDraft} f
 import './monitor.css';
 import {ValidatorMonitor} from './ValidatorMonitor.jsx';
 import {NodeWatchlist} from './NodeWatchlist.jsx';
+import {validatorLookupObservation, validatorLookupPath} from './validator-lookup.js';
 import {useEffect,useRef,useState} from 'react';
 import {useNative} from "@synergy-network/portal-native/dapp-sdk";
 import {atlas,rpc} from "@synergy-network/portal-native/dapp-sdk";
@@ -52,6 +53,17 @@ export function NodeNetworkApp(){
   return readNodeNetwork(rpc,profile,signal);
  },`${profile.id}:${profile.rpc}:${profile.chainId}:${permitted}`);
  const validators=useResource(async signal=>{if(!permitted||Number(profile.chainId)!==1266)throw Error('Public Atlas validator monitoring requires read permission and chain 1266.');if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');const data=await atlas('validators?limit=100',{signal});return {data,updatedAt:Date.now()};},`${profile.id}:${profile.rpc}:${profile.chainId}:${permitted}`);
+ const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted]);
+ async function lookupValidator(address,signal){
+  if(!permitted||Number(profile.chainId)!==1266)throw Error('Public validator lookup requires read permission and chain 1266.');
+  const path=validatorLookupPath(address);
+  signal?.throwIfAborted();
+  if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');
+  signal?.throwIfAborted();
+  const detail=await atlas(path,{signal});
+  signal?.throwIfAborted();
+  return validatorLookupObservation(detail,address);
+ }
  const refreshPublic=()=>{live.reload();validators.reload();};
  return <NodeNetworkPanelFrame section={section} onSectionChange={setSection} subtitle="Operator workspace · Enrollment policy has not been verified." statusLabel={live.loading?'Checking observation network':live.error?'Observation network error':'Public network observed'} statusTone={live.data?'blue':'gray'} onRefresh={refreshPublic} refreshing={live.loading||validators.loading} nodeLabel={!targetSettings.snapshot?'Target settings need review':!target?'Host selection deferred':target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} statusItems={[{label:'Target root',value:target?.root||'No target selected'},{label:'Observation network',value:profile.name},{label:'Chain ID',value:profile.chainId},{label:'Enrollment policy',value:'Not verified'}]}>
   {section==='settings'&&<TargetSettings selection={targetSettings} local={local}/>}
@@ -67,7 +79,13 @@ export function NodeNetworkApp(){
      ? <><p>A target is configured. Open Monitoring to inspect its native controller.</p><button onClick={()=>setSection('monitoring')}>Open target monitoring</button></>
      : <><p>Monitor-only · Host selection deferred.</p><button onClick={()=>setSection('settings')}>Review target settings</button></>}
    </Card>
-   <RpcReadiness profile={profile} permitted={permitted}/><div className="node-read-monitor"><Card title="Public validator index"><Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/><NodeWatchlist data={value.data} updatedAt={value.updatedAt}/></>}</Resource></Card></div>
+   <RpcReadiness profile={profile} permitted={permitted}/>
+   <div className="node-read-monitor"><Card title="Public validator index">
+    <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
+   </Card></div>
+   {permitted&&Number(profile.chainId)===1266&&<div className="node-read-monitor">
+    <NodeWatchlist key={monitorScope} data={validators.data?.data} updatedAt={validators.data?.updatedAt} readValidator={lookupValidator}/>
+   </div>}
    <p className="native-source">Public RPC observations from {profile.rpc}. These observations do not authenticate a provisioning target or approve enrollment.</p>
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>
   </>:tab==='Validator setup'?<div className="native-grid">
