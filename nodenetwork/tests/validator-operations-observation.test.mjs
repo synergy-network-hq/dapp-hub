@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {parseValidatorObservation, readValidatorObservationFile, validatorObservationLimit} from '../src/validator-operations-observation.js';
+import {parseValidatorObservation, readSavedServiceObservation, readValidatorObservationFile, validatorObservationLimit} from '../src/validator-operations-observation.js';
 
 const fixture = readFileSync(new URL('./fixtures/validator-operations-observation.json', import.meta.url), 'utf-8').trim();
 const release = JSON.parse(fixture).release;
@@ -172,6 +172,14 @@ test('bounds bytes before reading and refuses unreadable or malformed files', as
  assert.equal((await readValidatorObservationFile(file)).headHeight, '18446744073709551615');
  await assert.rejects(readValidatorObservationFile(new Blob([new Uint8Array([255])])), /not a supported/);
  await assert.rejects(readValidatorObservationFile({size:1, arrayBuffer:async()=>new ArrayBuffer(2)}), /could not be read/);
+});
+
+test('offboarding receives only the captured service state, validator and observation time', async () => {
+ const inactive = fixture.replace('"state":"ACTIVE"','"state":"INACTIVE"');
+ assert.deepEqual(await readSavedServiceObservation(new Blob([inactive])), {
+  validator: 'fixture-validator', observedAt: '2026-11-15T13:00:00Z', serviceState: 'INACTIVE',
+ });
+ await assert.rejects(readSavedServiceObservation(new Blob([inactive.replace('"state":"INACTIVE"','"state":"RETIRED"')])), /not a supported/);
 });
 
 const ownerFixturePath = process.env.SYNERGY_VALIDATOR_OPERATIONS_OWNER_FIXTURE;

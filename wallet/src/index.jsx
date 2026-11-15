@@ -90,7 +90,8 @@ export function WalletApp() {
         return <Card title="Send requires a supported transaction contract">
           <p>Transfers remain unavailable until the network’s authoritative ETDAG transaction preparation and mobile signing contracts are integrated. No nonce, fees, signature algorithm or transaction envelope is guessed.</p>
           {recipientDraft?.scope === draftScope && <WalletRecipientDraft contact={recipientDraft.contact} endpoint={n.endpoint}
-            onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}/>}
+            onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}
+            canReview={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')}/>}
           <WalletFeeMarket endpoint={n.endpoint}/>
           <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
         </Card>;

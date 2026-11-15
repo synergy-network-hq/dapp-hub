@@ -1,6 +1,8 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useId, useState} from 'react';
+import {amount} from '@synergy-network/dapp-data-view';
 import {CONTACT_KEY, matchesReviewedContact, readContacts} from './wallet-contacts.js';
-import {contactAddressProfile} from './wallet-address.js';
+import {canSaveContactAddress, contactAddressProfile} from './wallet-address.js';
+import {parseSnrgDraftAmount} from './send-draft-amount.js';
 
 function contactStillSaved(contact) {
   try {
@@ -10,7 +12,57 @@ function contactStillSaved(contact) {
   }
 }
 
-export function WalletRecipientDraft({contact, endpoint, onClear, onInvalidate}) {
+function AmountDraft({contact, endpoint, canReview, onInvalidate}) {
+  const [input, setInput] = useState('');
+  const [review, setReview] = useState(null);
+  const [error, setError] = useState('');
+  const errorId = useId();
+
+  function reviewDraft(event) {
+    event.preventDefault();
+    setReview(null);
+    setError('');
+    if (!canReview()) {
+      setError('Wallet draft access is unavailable in this Portal context.');
+      return;
+    }
+    if (!canSaveContactAddress(contact.address) || !contactStillSaved(contact)) {
+      onInvalidate(contact);
+      return;
+    }
+    try {
+      setReview(parseSnrgDraftAmount(input));
+    } catch (failure) {
+      setError(failure.message);
+    }
+  }
+
+  return <>
+    <form noValidate onSubmit={reviewDraft}>
+      <label>Amount (SNRG)<input value={input} autoComplete="off" inputMode="decimal" maxLength={64}
+        aria-invalid={!!error} aria-describedby={error ? errorId : undefined}
+        onChange={event => {
+          setInput(event.target.value);
+          setReview(null);
+          setError('');
+        }}/></label>
+      {error && <p role="alert" id={errorId}>{error}</p>}
+      <button type="submit">Review local draft</button>
+    </form>
+    {review && <section aria-label="Reviewed local SNRG draft">
+      <h4>Local draft review</h4>
+      <dl className="native-details">
+        <div><dt>Recipient</dt><dd>{contact.address}</dd></div>
+        <div><dt>Selected network</dt><dd>{endpoint.name} · Chain {endpoint.chainId}</dd></div>
+        <div><dt>Draft amount</dt><dd>{amount(review)} SNRG</dd></div>
+        <div><dt>Exact atomic amount</dt><dd>{review} nWei</dd></div>
+      </dl>
+      <p>Input checks are local. Fees, spendable balance and simulation remain unverified.</p>
+    </section>}
+  </>;
+}
+
+export function WalletRecipientDraft({contact, endpoint, onClear, onInvalidate, canReview}) {
   const [storedOnOpen] = useState(() => !!contact && contactStillSaved(contact));
 
   useEffect(() => {
@@ -35,6 +87,7 @@ export function WalletRecipientDraft({contact, endpoint, onClear, onInvalidate})
       <p>{contact.name} · {endpoint.name} · Chain {endpoint.chainId}</p>
       <label>Recipient address<input readOnly value={contact.address}/></label>
       {contactAddressProfile(contact.address) === 'burn' && <p>Canonical burn address</p>}
+      <AmountDraft {...{contact, endpoint, canReview, onInvalidate}}/>
     </> : <p role="status">The saved contact changed or became unavailable. Review it again in the address book.</p>}
     <button onClick={onClear}>Clear recipient draft</button>
   </section>;

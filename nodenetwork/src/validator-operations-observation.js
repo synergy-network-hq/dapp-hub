@@ -249,6 +249,15 @@ export async function readValidatorObservationFile(file) {
  return parseValidatorObservation(await readObservationText(file));
 }
 
+export async function readSavedServiceObservation(file) {
+ const value = parseObservationContract(await readObservationText(file));
+ return {
+  validator: displayText(value.discovery.validator_id),
+  observedAt: displayText(value.observed_at_utc),
+  serviceState: value.service.state,
+ };
+}
+
 function captureTime(value) {
  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:Z|\+00:00)$/.exec(value);
  if (!match) throw Error('The observation requires a supported UTC capture time for comparison.');
