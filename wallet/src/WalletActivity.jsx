@@ -3,6 +3,7 @@ import {useState} from 'react';
 import {amount,text} from '@synergy-network/dapp-data-view';
 import {comparableTransactionHash} from './transaction-observation.js';
 import {atlasAccountKey} from './atlas-account.js';
+import {WalletActivityExport} from './WalletActivityExport.jsx';
 const address=(tx,side)=>tx[side+'_address']??tx[side]??tx[side==='sender'?'from':'to'];
 export function transactionDirection(tx,account){
   const indexed = atlasAccountKey(account);
@@ -31,7 +32,7 @@ const transactionTypes = {
   unclassified: 'Unclassified',
 };
 
-export function WalletActivity({data, account, onSelect, paged = false}) {
+export function WalletActivity({data, account, onSelect, paged = false, exportPage, exportEndpoint}) {
   const [query, setQuery] = useState('');
   const [direction, setDirection] = useState('All');
   const [status, setStatus] = useState('All');
@@ -100,6 +101,8 @@ export function WalletActivity({data, account, onSelect, paged = false}) {
         <p>{missingTime} returned records have no usable timestamp and are excluded by the date filter.</p>}
     </div>
     <p role="status">{filtered.length} of {items.length} returned records</p>
+    {exportPage && <WalletActivityExport page={exportPage} visible={filtered} account={account}
+      endpoint={exportEndpoint} filters={[query, direction, status, type, from, through]}/>}
     {filtered.length ? <div className="integration-table" role="region" aria-label="Wallet transaction history" tabIndex={0}>
       <table>
         <thead><tr>

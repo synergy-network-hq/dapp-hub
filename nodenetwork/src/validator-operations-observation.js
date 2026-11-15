@@ -1,4 +1,6 @@
 // Node Control Panel 608f2529: control-service/src/validator_operations.rs.
+import {projectSavedHostPreflight} from './saved-host-preflight.js';
+
 export const validatorObservationLimit = 1024 * 1024;
 const schemaVersion = 'synergy.validator-operations.v1';
 const unsupported = 'The file is not a supported Validator Operations v1 observation.';
@@ -223,6 +225,7 @@ export function parseValidatorObservation(raw) {
   protectedSource: pipeline.source,
   protectedPhase: pipeline.phase,
   missingTransition: firstMissingTransition(value),
+  savedPreflight: projectSavedHostPreflight(value.preflight),
  };
 }
 

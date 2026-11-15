@@ -114,6 +114,41 @@ test('reports release comparison as unavailable, matching or differing using the
  assert.throws(()=>parseValidatorObservation(withExpected({...release, binary_sha256:'not-a-digest'})), /not a supported/);
 });
 
+test('projects only the required saved preflight results with fixed follow-up for missing or conflicting evidence', () => {
+ const observation = healthy();
+ const fixtureDetail = 'unreviewed fixture location /private/path';
+ const checks = [
+  {id:'chain_id', status:'PASS', detail:fixtureDetail},
+  {id:'network', status:'FAIL', detail:fixtureDetail},
+  {id:'storage', status:'UNKNOWN', detail:fixtureDetail},
+  {id:'peer_readiness', status:'FAIL', detail:fixtureDetail},
+  {id:'peer_readiness', status:'PASS', detail:fixtureDetail},
+  {id:'clock_sync', status:'PASS', detail:fixtureDetail},
+  {id:'clock_sync', status:'PASS', detail:fixtureDetail},
+  {id:'unreviewed-optional-check', status:'PASS', detail:fixtureDetail},
+ ];
+ const {savedPreflight} = parseValidatorObservation(JSON.stringify({...observation, preflight:checks}));
+ const rows = new Map(savedPreflight.rows.map(row => [row.id,row]));
+ assert.equal(rows.size,18);
+ assert.equal(savedPreflight.passCount,1);
+ assert.equal(savedPreflight.additionalCount,1);
+ assert.equal(rows.get('chain_id').status,'Reported pass');
+ assert.equal(rows.get('chain_id').next,null);
+ assert.match(rows.get('network').next,/approved network profile/);
+ assert.equal(rows.get('network').status,'Reported fail');
+ assert.equal(rows.get('storage').status,'Reported unknown');
+ assert.equal(rows.get('peer_readiness').status,'Ambiguous');
+ assert.equal(rows.get('clock_sync').status,'Ambiguous');
+ assert.equal(rows.get('genesis_hash').status,'Missing');
+ const projected = JSON.stringify(savedPreflight);
+ assert.ok(!projected.includes('unreviewed'));
+ assert.equal(parseValidatorObservation(JSON.stringify({...observation, preflight:checks.toReversed()})).savedPreflight.passCount,1);
+ delete observation.preflight;
+ const absent = parseValidatorObservation(JSON.stringify(observation)).savedPreflight;
+ assert.equal(absent.passCount,0);
+ assert.ok(absent.rows.every(row => row.status === 'Missing'));
+});
+
 test('refuses wrong schemas, unknown and duplicate fields, invalid scalar types and inconsistent owner evidence', () => {
  for (const raw of [
   fixture.replace('synergy.validator-operations.v1','synergy.validator-operations.v2'),
@@ -145,7 +180,10 @@ test('projects the pinned Node Control Panel five-validator fixture observations
  const envelope = JSON.parse(ownerFixture);
  const owner = envelope.base_observation;
  assert.throws(()=>parseValidatorObservation(ownerFixture), /not a supported/);
- assert.equal(parseValidatorObservation(JSON.stringify(owner)).headHeight, '128');
+ const base = parseValidatorObservation(JSON.stringify(owner));
+ assert.equal(base.headHeight, '128');
+ assert.equal(base.savedPreflight.passCount, 18);
+ assert.deepEqual(base.savedPreflight.rows.map(row => row.id), owner.preflight.map(row => row.id));
  for (const id of envelope.validator_ids) {
   const observation = {...owner, discovery:{...owner.discovery, validator_id:id}};
   if (id === envelope.release_mismatch_validator_id) observation.release = {...owner.release, binary_sha256:'b'.repeat(64)};

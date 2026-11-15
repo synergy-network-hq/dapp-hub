@@ -1,14 +1,20 @@
 import {useEffect, useRef, useState} from 'react';
-import {Card, Detail, ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
+import {Card, Detail, ErrorMessage, Table} from '@synergy-network/portal-native/dapp-sdk';
 import {readValidatorObservationFile} from './validator-operations-observation.js';
 
-export function SavedValidatorObservation({permitted}) {
+const preflightColumns = [
+ {key: 'check', label: 'Required check'},
+ {key: 'status', label: 'Result at capture'},
+ {key: 'next', label: 'Follow-up'},
+];
+
+export function SavedValidatorObservation({permitted, onOpenDiagnostics}) {
  return <Card title="Saved validator operations observation">
-  {permitted ? <ObservationReview/> : <p>Allow NodeNetwork inspection in Security &amp; permissions to review a saved observation.</p>}
+  {permitted ? <ObservationReview onOpenDiagnostics={onOpenDiagnostics}/> : <p>Allow NodeNetwork inspection in Security &amp; permissions to review a saved observation.</p>}
  </Card>;
 }
 
-function ObservationReview() {
+function ObservationReview({onOpenDiagnostics}) {
  const [result, setResult] = useState(null);
  const [error, setError] = useState('');
  const [reading, setReading] = useState(false);
@@ -50,12 +56,12 @@ function ObservationReview() {
   </div>
   {reading && <p role="status">Reading the selected observation…</p>}
   <ErrorMessage error={error}/>
-  {result && <ObservationDetails result={result}/>}
+  {result && <ObservationDetails result={result} onOpenDiagnostics={onOpenDiagnostics}/>}
  </>;
 }
 
-function ObservationDetails({result}) {
- const {releaseMismatches, missingTransition, ...savedStatus} = result;
+function ObservationDetails({result, onOpenDiagnostics}) {
+ const {releaseMismatches, missingTransition, savedPreflight, ...savedStatus} = result;
  return <section aria-label="Saved observation evidence">
   <h3>Reported status at capture</h3>
   <Detail data={savedStatus}/>
@@ -71,5 +77,12 @@ function ObservationDetails({result}) {
    <p>{missingTransition.evidence}</p>
   </> : <p>The saved fields satisfy the checks in the transition sequence.</p>}
   <p>The finding is derived from this file. Review a newer observation to compare progress.</p>
+  <details>
+   <summary>Saved host preflight · {savedPreflight.passCount} of {savedPreflight.rows.length} required checks reported pass</summary>
+   <p>These results record the file’s captured evidence. Current host preflight and lifecycle approval require an authenticated controller.</p>
+   <Table rows={savedPreflight.rows} columns={preflightColumns}/>
+   {savedPreflight.additionalCount > 0 && <p>{savedPreflight.additionalCount} additional {savedPreflight.additionalCount === 1 ? 'entry' : 'entries'} outside the required check list omitted.</p>}
+   {onOpenDiagnostics && <button onClick={onOpenDiagnostics}>Open Logs &amp; Diagnostics</button>}
+  </details>
  </section>;
 }

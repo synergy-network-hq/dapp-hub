@@ -1,10 +1,20 @@
 import {useEffect,useRef,useState} from 'react';
-import {atlas,rpc,chainIdNumber,useResource,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
+import {atlas,rpc,chainIdNumber,useNative,useResource,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {readAccountHistory} from './account-history.js';
 import {WalletActivity} from './WalletActivity.jsx';
+import {activityWalletVersion} from './WalletActivityExport.jsx';
 import {WalletTransactionDetails} from './WalletTransactionDetails.jsx';
-export function WalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas=atlas}){
+
+export function WalletHistory(props) {
+ const n = useNative();
+ const {account, endpoint} = props;
+ const scope = JSON.stringify([account, endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey,
+   n?.walletConsentSession, activityWalletVersion(n)]);
+ return <ScopedWalletHistory key={scope} {...props}/>;
+}
+
+function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas=atlas}){
  const [epoch,setEpoch]=useState(0),[pages,setPages]=useState([]),[position,setPosition]=useState(0),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const request=useRef({generation:0,controller:null,pending:false});
  async function load(cursor,previous,signal){if(chainIdNumber(await readRpc('synergy_getChainId',[],{endpoint:endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet history chain1266.');return readAccountHistory(readAtlas,account,{cursor,previous,signal});}
@@ -48,7 +58,8 @@ export function WalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,read
   </div>
   {busy&&<p role="status">Reading the next page…</p>}
   <ErrorMessage error={error}/>
-  <WalletActivity key={current.ordinal} data={data} account={account} paged onSelect={setSelected}/>
+  <WalletActivity key={current.ordinal} data={data} account={account} paged onSelect={setSelected}
+    exportPage={current} exportEndpoint={endpoint}/>
   {selected&&<WalletTransactionDetails data={data} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}
  </>;
 }
