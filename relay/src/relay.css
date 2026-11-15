@@ -22,3 +22,13 @@
 .relay-migrated .btn--cyan{color:var(--cyan);background:#00ced11f;border:1px solid #00ced166}
 .relay-migrated .btn--block{width:100%;min-height:3.4rem}
 .relay-migrated{max-width:900px;padding:24px;margin:auto}.relay-migrated form{display:grid;gap:16px}.relay-migrated label{display:grid;gap:6px}.relay-migrated select,.relay-migrated input{width:100%;max-width:100%}
+.relay-migrated .relay-direction{justify-self:center;min-width:2.75rem}
+.relay-migrated .relay-reload{margin-top:1rem}
+.relay-migrated .relay-quote{border-top:1px solid var(--border);margin-top:1.25rem;padding-top:1rem}
+.relay-migrated .relay-quote-output{font-size:1.5rem;font-weight:700;overflow-wrap:anywhere}
+.relay-migrated .relay-quote-details{display:grid;gap:.5rem}
+.relay-migrated .relay-quote-details>div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.25rem 1rem}
+.relay-migrated .relay-quote-details dt{color:var(--text-soft)}
+.relay-migrated .relay-quote-details dd{margin:0;overflow-wrap:anywhere}
+.relay-migrated .relay-quote-details ul{display:flex;flex-wrap:wrap;gap:.35rem;margin:0;padding:0;list-style:none}
+.relay-migrated .relay-quote-details li{border-radius:var(--radius-pill);border:1px solid var(--border);padding:.1rem .55rem}
