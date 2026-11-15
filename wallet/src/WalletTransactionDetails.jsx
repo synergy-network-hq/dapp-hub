@@ -1,5 +1,6 @@
 import {useState} from 'react';
-import {Copy, Detail, Resource, chainIdNumber, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {Copy, Detail, ErrorMessage, Resource, chainIdNumber, openExternal, useAction, useNative,
+  useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {amount, text} from '@synergy-network/dapp-data-view';
 import {indexedTransactionTime, transactionDirection} from './WalletActivity.jsx';
 import {sourceRecords} from './source-records.js';
@@ -103,14 +104,39 @@ function TransactionLookup({hash, account, endpoint, readRpc, indexedBlock}) {
   </section>;
 }
 
+function AtlasExplorerAction({hash}) {
+  const n = useNative();
+  const action = useAction();
+  if (!n?.permit('wallet', 'readWallet')) return null;
+  if (!n.permit('wallet', 'externalLinks')) return <p>Allow Wallet external links in Security &amp; permissions to open Atlas.</p>;
+
+  function openTransaction() {
+    return action.run(async () => {
+      if (!n.permit('wallet', 'readWallet') || !n.permit('wallet', 'externalLinks')) {
+        throw Error('Wallet external links are unavailable in this Portal context.');
+      }
+      try {
+        await openExternal(`https://atlas.synergy-network.io/transactions/${encodeURIComponent(hash)}`);
+      } catch {
+        throw Error('Portal could not open the Atlas transaction. Try again.');
+      }
+    });
+  }
+
+  return <>
+    <button disabled={action.busy} onClick={openTransaction}>Open in Atlas explorer</button>
+    <ErrorMessage error={action.error}/>
+  </>;
+}
+
 function IndexedDetails({row, account, endpoint, readRpc}) {
   const [checking, setChecking] = useState(false);
   const time = indexedTransactionTime(row);
   const block = row.block_number ?? row.blockNumber;
   const hashSupported = !!comparableTransactionHash(row.hash);
-  const canCheck = hashSupported && typeof account === 'string' && !!account &&
-    transactionDirection(row, account) !== 'Unclassified' && typeof readRpc === 'function' &&
-    !!endpoint?.rpc && Number(endpoint.chainId) === 1266;
+  const supportedTransaction = hashSupported && typeof account === 'string' && !!account &&
+    transactionDirection(row, account) !== 'Unclassified' && Number(endpoint?.chainId) === 1266;
+  const canCheck = supportedTransaction && typeof readRpc === 'function' && !!endpoint.rpc;
 
   return <>
     <Detail data={{
@@ -126,6 +152,7 @@ function IndexedDetails({row, account, endpoint, readRpc}) {
       timeSource: time?.source || 'Unavailable',
     }}/>
     {hashSupported && <Copy value={row.hash} label="Copy transaction hash"/>}
+    {supportedTransaction && <AtlasExplorerAction hash={row.hash}/>}
     <p>This is the current Atlas record. Finality requires independent chain evidence.</p>
     {canCheck && (checking
       ? <TransactionLookup hash={row.hash} account={account} endpoint={endpoint} readRpc={readRpc} indexedBlock={block}/>

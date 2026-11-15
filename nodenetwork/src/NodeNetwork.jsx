@@ -1,4 +1,5 @@
 import {RpcReadiness} from './RpcReadiness.jsx';
+import {NetworkComparison} from './NetworkComparison.jsx';
 import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {emptyProvisioningDraft,readProvisioningSnapshot,saveProvisioningDraft} from './provisioning-draft.js';
@@ -80,6 +81,7 @@ export function NodeNetworkApp(){
      : <><p>Monitor-only · Host selection deferred.</p><button onClick={()=>setSection('settings')}>Review target settings</button></>}
    </Card>
    <RpcReadiness profile={profile} permitted={permitted}/>
+   <NetworkComparison profile={profile} profiles={profiles} permitted={permitted} onOpenEndpoints={()=>n.navigate('network/endpoints')}/>
    <div className="node-read-monitor"><Card title="Public validator index">
     <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
    </Card></div>
