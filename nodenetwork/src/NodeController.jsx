@@ -4,6 +4,20 @@ import {Card,Detail,ErrorMessage,useResource,Resource} from "@synergy-network/po
 import {controllerOperation,installParameters} from './nodeNetwork.js';
 import {installPreflightChecklist} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
+import {targetControllerObservation} from './target-observation.js';
+
+function ControllerReceipt({receivedAt}) {
+ const [now, setNow] = useState(Date.now);
+ useEffect(() => {
+  setNow(Date.now());
+  const timer = setInterval(() => setNow(Date.now()), 15000);
+  return () => clearInterval(timer);
+ }, [receivedAt]);
+ const older = now - receivedAt >= 60000;
+ return <p role="status">
+  Source: native target controller · Response received {new Date(receivedAt).toISOString()} · {older ? 'Older than one minute' : 'Read within the past minute'}
+ </p>;
+}
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
@@ -11,9 +25,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const [preflightAttempt,setPreflightAttempt]=useState(null);
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const key=JSON.stringify(target);
- const capabilities=useResource(()=>{
+ const capabilities=useResource(async()=>{
   if(!permitted)throw new Error('Allow NodeNetwork inspection in Security & permissions.');
-  return nodeNetworkController(target,'target');
+  return targetControllerObservation(await nodeNetworkController(target,'target'));
  },`${key}:${permitted}`);
  const state=capabilities.data;
  const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
@@ -56,7 +70,11 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const release=()=>{const p=installParameters({...form,network_id:form.network_id||'preflight-network',node_name:form.node_name||'preflight-node'});return {release_id:p.release_id,manifest_sha256:p.manifest_sha256};};
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={capabilities.reload}>Inspect selected target</button>}>
-   <Resource value={capabilities}>{data=><Detail data={{platform:data.platform,architecture:data.architecture,root:data.root,installed:data.installed,localValidatorSupported:data.localValidatorSupported,controllerVersion:data.controllerVersion,communityEnrollment:data.communityEnrollment}}/>}</Resource>
+   <Resource value={capabilities}>{data=><>
+    <ControllerReceipt receivedAt={data.receivedAt}/>
+    <Detail data={data.summary}/>
+    <p>This controller report describes the selected configuration. Verify node identity, installed state, and consensus readiness through their authoritative checks.</p>
+   </>}</Resource>
    <p>Inspect an enrolled target, or bootstrap a clean target from the approved master below. Remote access uses an enrolled dedicated account, verified SSH host keys and agent credentials. No password or private key is sent to the dApp.</p>
   </Card>
   {tab==='Validator setup'&&<div className="native-grid">
