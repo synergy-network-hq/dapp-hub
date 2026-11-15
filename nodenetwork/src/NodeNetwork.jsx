@@ -9,9 +9,11 @@ import {NodeWatchlist} from './NodeWatchlist.jsx';
 import {validatorLookupObservation, validatorLookupPath} from './validator-lookup.js';
 import {readValidatorActiveListing,readValidatorGenesisPin} from './validator-active-list.js';
 import {readValidatorRpcBlock} from './validator-rpc-block.js';
+import {readValidatorRecord} from './validator-record.js';
+import {ValidatorRegistration} from './ValidatorRegistration.jsx';
 import {useEffect,useRef,useState} from 'react';
 import {useNative} from "@synergy-network/portal-native/dapp-sdk";
-import {atlas,rpc} from "@synergy-network/portal-native/dapp-sdk";
+import {atlas,rpc,rpcValidatorRecordObservation} from "@synergy-network/portal-native/dapp-sdk";
 import {nodeNetworkHostStatus,nodeNetworkReviewMaster} from "./native-services.js";
 import {Card,Detail,ErrorMessage,Resource,useResource} from "@synergy-network/portal-native/dapp-sdk";
 import {NodeController} from './NodeController.jsx';
@@ -95,6 +97,10 @@ export function NodeNetworkApp(){
   if (!indexAvailable) throw Error('Indexed block attribution requires read permission and the canonical Synergy Testnet RPC.');
   return readValidatorRpcBlock(rpc, profile, address, row, signal, () => !n.recoverySuspended && n.permit('node','readNetwork'));
  }
+ function lookupValidatorRecord(address, signal) {
+  return readValidatorRecord(rpc, rpcValidatorRecordObservation, profile, address, signal,
+   () => !n.recoverySuspended && n.permit('node','readNetwork'));
+ }
  const refreshPublic=()=>{live.reload();if(indexAvailable)validators.reload();};
  const refreshing=live.loading||(indexAvailable&&validators.loading);
  return <NodeNetworkPanelFrame section={section} onSectionChange={setSection} subtitle="Operator workspace · Enrollment policy has not been verified." statusLabel={live.loading?'Checking observation network':live.error?'Observation network error':'Public network observed'} statusTone={live.data?'blue':'gray'} onRefresh={refreshPublic} refreshing={refreshing} nodeLabel={!targetSettings.snapshot?'Target settings need review':!target?'Host selection deferred':target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} statusItems={[{label:'Target root',value:target?.root||'No target selected'},{label:'Observation network',value:profile.name},{label:'Chain ID',value:profile.chainId},{label:'Enrollment policy',value:'Not verified'}]}>
@@ -129,6 +135,7 @@ export function NodeNetworkApp(){
    <p className="native-source">Public RPC observations from {profile.rpc}. These observations do not authenticate a provisioning target or approve enrollment.</p>
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>
   </>:tab==='Validator setup'?<div className="native-grid">
+   <ValidatorRegistration key={monitorScope} permitted={permitted} testnet={Number(profile.chainId)===1266} readRecord={lookupValidatorRecord}/>
    <Card title="Provisioning draft"><p>Prepare package and network references before choosing a host. A saved draft is local presentation data, not a signed plan, approval or queued job. It never resumes an operation automatically.</p>{[['release_id','Approved release ID'],['manifest_sha256','Approved manifest SHA-256'],['network_id','Approved network incarnation'],['chain_id','Approved chain ID'],['node_name','Validator node name']].map(([key,label])=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" onChange={event=>{setForm({...form,[key]:event.target.value});setDraftNotice('');}}/></label>)}<p>Draft input checks validate formatting only. They do not approve the release, network, enrollment, host prerequisites or execution.</p><ul aria-label="Provisioning draft input checks">{provisioningChecks(form).map(check=><li key={check.field}>{check.label}: {check.valid?'Format accepted; approval not verified':check.message}</li>)}</ul><button onClick={()=>{try{if(savedDraft.error)throw Error(savedDraft.error);const saved=saveProvisioningDraft(form,savedDraft.raw);setSavedDraft({...saved,error:''});setDraftError('');setDraftNotice('Draft saved on this device. No host or operation was authorized.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Draft could not be saved. Your edits and the prior saved record are retained.'));}}}>Save provisioning draft</button><p>Replacing your draft below discards the unsaved field values and reads the saved local copy. It does not choose a host or resume work.</p><button onClick={()=>{try{const saved=readProvisioningSnapshot();setSavedDraft({...saved,error:''});setForm(saved.form);setDraftError('');setDraftNotice('Saved copy loaded. No operation was resumed.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Saved copy unavailable. Your draft is retained.'));}}}>Replace draft with saved copy</button><ErrorMessage error={draftError}/>{draftNotice&&<p role="status">{draftNotice}</p>}</Card>
    <Card title="Standardized validator installation">{!target&&<p>Host selection remains deferred.</p>}<p>Every validator must use the same qualified master package. Its identity, APQE custody, authenticated network configuration, blockchain data, recovery material and update staging belong inside /opt/Synergy.</p><ol><li>Authenticate the operator, target host and approved release.</li><li>Check host prerequisites and installation isolation.</li><li>Provision independent APQE role keys into local custody.</li><li>Verify authenticated Genesis, membership and transport authority.</li><li>Install through the shared lifecycle and verify restart, synchronization and finality.</li></ol></Card>
    <InstallationDraftReview form={form}/>

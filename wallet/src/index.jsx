@@ -9,6 +9,7 @@ import {WalletFeeMarket} from './WalletFeeMarket.jsx';
 import {WalletConnections} from './WalletConnections.jsx';
 import {WalletHistory} from './WalletHistory.jsx';
 import {WalletStsActivity} from './WalletStsActivity.jsx';
+import {WalletReceiptHashLookup} from './WalletRpcReceiptObservation.jsx';
 import {WalletBalances} from './WalletBalances.jsx';
 import {WalletTokens} from './WalletTokens.jsx';
 import {WalletOwnerTokens} from './WalletOwnerTokens.jsx';
@@ -107,6 +108,7 @@ export function WalletApp() {
           <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
             endpoint={n.endpoint} readAtlas={readAtlas} recent={data} recentAt={data?.portalReceivedAt}/> : <p>{atlasEndpointRequired}</p>}</Card>
           <WalletStsActivity key={`sts-activity:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+          <WalletReceiptHashLookup key={`receipt-hash:${draftScope}`} account={connection.address} endpoint={n.endpoint} readRpc={rpc}/>
         </>;
       case 'Receive':
         return <Receive account={connection.address} endpoint={n.endpoint} consentSession={n.walletConsentSession}

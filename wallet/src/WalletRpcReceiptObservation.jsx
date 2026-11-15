@@ -1,13 +1,14 @@
-import {useState} from 'react';
-import {Detail, Resource, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {useLayoutEffect, useRef, useState} from 'react';
+import {Card, Detail, Resource, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {atlasAccountKey} from './atlas-account.js';
 import {canReadWalletAtlas} from './atlas-scope.js';
 import {checkConfiguredReceiptGenesis, rpcReceiptObservation, rpcReceiptReadiness, rpcReceiptSelection,
-  rpcReceiptBlockReportsFinality} from './rpc-receipt-observation.js';
+  rpcReceiptBlockReportsFinality, rpcReceiptHashSelection} from './rpc-receipt-observation.js';
 import {blockLookupHeight, reportedBlockMembership} from './transaction-observation.js';
 import {WalletAtlasReceiptBlock} from './WalletAtlasReceiptBlock.jsx';
 import {nativeBlockMembership} from './native-block-membership.js';
+import {isProtectedWalletAddress} from './wallet-address.js';
 
 const blockMessages = {
   listed: 'The reported receipt block lists this transaction.',
@@ -84,12 +85,18 @@ function ReceiptBlockLookup({receipt, hash, endpoint, readRpc, canRead}) {
   </section>;
 }
 
-function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead}) {
-  const [revision, setRevision] = useState(0);
+function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead, startOnMount = false}) {
+  const [revision, setRevision] = useState(startOnMount ? 1 : 0);
+  const mounted = useRef(false);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {mounted.current = false;};
+  }, []);
+  const canUse = () => mounted.current && canRead();
   const check = () => setRevision(value => value + 1);
   const observation = useResource(async signal => {
     if (!revision) return null;
-    const request = receiptRpc(readRpc, canRead, signal);
+    const request = receiptRpc(readRpc, canUse, signal);
     let readiness;
     try {
       readiness = await readProtocolObservation(request, 'synergy_getReadiness', endpoint, signal, rpcReceiptReadiness);
@@ -119,14 +126,51 @@ function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead}) {
         }}/>
         {receipt.tip !== null && BigInt(receipt.height) > BigInt(receipt.tip) &&
           <p role="status">The RPC returned a receipt above its reported chain tip.</p>}
-        <ReceiptBlockLookup key={revision} hash={selection.hash} {...{receipt, endpoint, readRpc, canRead}}/>
-        <WalletAtlasReceiptBlock key={`atlas:${revision}`} hash={selection.hash} {...{receipt, native, canRead}}/>
-      </> : <p role="status">The selected RPC returned no receipt for this transaction.</p>}
+        <ReceiptBlockLookup key={revision} hash={selection.hash} canRead={canUse} {...{receipt, endpoint, readRpc}}/>
+        {canReadWalletAtlas(native, endpoint) &&
+          <WalletAtlasReceiptBlock key={`atlas:${revision}`} hash={selection.hash} canRead={canUse} {...{receipt, native}}/>}
+      </> : <p role="status">The selected RPC returned no receipt for this transaction.{startOnMount && ' Its current status is unknown.'}</p>}
       <p>RPC receipt checked <time dateTime={checkedAt}>{checkedAt}</time></p>
       <button onClick={check}>Check RPC receipt again</button>
     </>}</Resource>
     <p>The selected RPC can return retained receipts. Chain inclusion, finality and settlement remain unverified.</p>
   </section>;
+}
+
+export function WalletReceiptHashLookup({account, endpoint, readRpc}) {
+  const native = useNative();
+  const [input, setInput] = useState('');
+  const [request, setRequest] = useState(null);
+  const [invalid, setInvalid] = useState(false);
+  const canRead = () => !native.recoverySuspended && native.permit('wallet', 'readWallet') &&
+    native.wallet.connection?.address === account && native.wallet.connection?.chainId === 'synergy:1266' &&
+    Number(endpoint.chainId) === 1266 && isProtectedWalletAddress(account);
+
+  function check(event) {
+    event.preventDefault();
+    const selection = rpcReceiptHashSelection(input.trim(), account);
+    if (!selection || !canRead()) {
+      setRequest(null);
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    setRequest(previous => ({selection, revision: (previous?.revision ?? 0) + 1}));
+  }
+
+  return <Card title="Look up a transaction receipt">
+    {canRead() ? <>
+      <p>Check a known public transaction hash on the selected RPC, including transactions absent from the Atlas index.</p>
+      <form onSubmit={check} noValidate>
+        <label>Typed transaction hash<input value={input} maxLength={128} spellCheck={false} autoComplete="off"
+          aria-invalid={invalid} onChange={event => {setInput(event.target.value); setInvalid(false); setRequest(null);}}/></label>
+        <button type="submit">Check transaction receipt</button>
+      </form>
+      {invalid && <p role="alert">Enter a complete syntxn- or synxxn- transaction hash.</p>}
+      {request && <RpcReceiptLookup key={request.revision} selection={request.selection} startOnMount
+        {...{endpoint, readRpc, native, canRead}}/>}
+    </> : <p>A current protected Wallet address on chain 1266 is required for this check.</p>}
+  </Card>;
 }
 
 export function WalletRpcReceiptObservation({row, account, endpoint, readRpc}) {

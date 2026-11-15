@@ -1,6 +1,7 @@
 import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {atlasAccountKey} from './atlas-account.js';
 import {blockHeight, comparableTransactionHash} from './transaction-observation.js';
+import {isProtectedWalletAddress} from './wallet-address.js';
 
 function participant(value) {
   if (value === null) return null;
@@ -18,6 +19,12 @@ export function rpcReceiptSelection(row, account) {
   if (!hash?.kind || !row.hash.startsWith(`${hash.kind}-`) || height === null || !from || to === undefined || !accountKey ||
       (from !== accountKey && to !== accountKey)) return null;
   return {hash: row.hash, height, from, to};
+}
+
+export function rpcReceiptHashSelection(value, account) {
+  const hash = comparableTransactionHash(value);
+  if (!hash?.kind || !value.startsWith(`${hash.kind}-`) || !isProtectedWalletAddress(account)) return null;
+  return {hash: `${hash.kind}-${hash.digest}`, accountKey: atlasAccountKey(account)};
 }
 
 const isHash = value => typeof value === 'string' && value.length === 64 && /^[a-f0-9]{64}$/i.test(value);
@@ -51,17 +58,27 @@ export function rpcReceiptObservation(value, selection, readiness) {
       chain.genesis_hash !== expectedChain.genesis || blockHeight(chain.chain_incarnation) !== expectedChain.incarnation) {
     throw Error('The RPC receipt and readiness observation report different or unsupported chain identities.');
   }
-  if (blockHeight(value.blockNumber) !== selection.height || !isHash(value.blockHash)) {
+  const height = blockHeight(value.blockNumber);
+  if (selection.height !== undefined && (height !== selection.height || !isHash(value.blockHash))) {
     throw Error('The RPC receipt did not match the selected indexed block height or provide a supported block hash.');
   }
-  if (participant(value.from) !== selection.from || participant(value.to) !== selection.to) {
+  if (height === null || !isHash(value.blockHash)) {
+    throw Error('The selected RPC receipt did not provide a supported block height or hash.');
+  }
+  const from = participant(value.from);
+  const to = participant(value.to);
+  if (selection.accountKey) {
+    if (!from || to === undefined || (from !== selection.accountKey && to !== selection.accountKey)) {
+      throw Error('The selected RPC receipt did not establish participation by the connected Wallet account.');
+    }
+  } else if (from !== selection.from || to !== selection.to) {
     throw Error('The RPC receipt did not match the selected transaction participants.');
   }
   if (value.status !== '0x0' && value.status !== '0x1') throw Error('The RPC returned an unsupported receipt status.');
   const index = value.transactionIndex == null ? null : blockHeight(value.transactionIndex);
   if (value.transactionIndex != null && index === null) throw Error('The selected RPC returned an unsupported receipt transaction index.');
 
-  return {status: value.status, blockHash: value.blockHash, height: selection.height, index,
+  return {status: value.status, blockHash: value.blockHash, height, index,
     chain: expectedChain, tip: readiness.chainStateAvailable ? readiness.height : null};
 }
 
