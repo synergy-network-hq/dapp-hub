@@ -21,7 +21,6 @@ function saveFallback(project: ForgeProject) {
   try {
     const previous=localStorage.getItem(projectKey(project.id));if(previous!==null){if(previous.length>80000000)throw Error('Oversized saved project');validateProject(JSON.parse(previous));}
     localStorage.setItem(projectKey(project.id), JSON.stringify(project));
-    localStorage.setItem("forge-v3-last-project", project.id);
     return true;
   } catch {
     return false;
@@ -68,7 +67,7 @@ async function requestFromStore<T>(
   }
 }
 
-export async function saveProject(project: ForgeProject) {
+async function persistProject(project: ForgeProject) {
   validateProject(project);
   let saved = false;
   if (hasIndexedDb()) {
@@ -77,6 +76,25 @@ export async function saveProject(project: ForgeProject) {
   }
   const recoverySaved = saveFallback(project);
   if (!saved && !recoverySaved) throw new Error("Local project storage is unavailable. Keep this window open and copy your source before closing.");
+}
+
+// Order writes from this editor instance so a pending autosave cannot overtake
+// the outgoing snapshot saved when the user changes projects.
+let pendingProjectSave: Promise<void> = Promise.resolve();
+
+export function saveProject(project: ForgeProject) {
+  const write = pendingProjectSave.then(() => persistProject(project));
+  pendingProjectSave = write.catch(() => {});
+  return write;
+}
+
+export function rememberLastProject(id: string) {
+  try {
+    localStorage.setItem("forge-v3-last-project", id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function loadProject(id: string): Promise<ForgeProject | null> {
