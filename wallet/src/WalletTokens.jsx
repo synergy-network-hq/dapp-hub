@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useState} from 'react';
 import {text} from '@synergy-network/dapp-data-view';
 import {sourceRecords} from './source-records.js';
 import {reportedTokenDecimals, reportedTokenQuantity, tokenBalanceSource, tokenBalanceSources} from './token-balance-inventory.js';
@@ -36,7 +36,7 @@ export function WalletTokens({inventory}) {
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
   const [selected, setSelected] = useState(null);
-  useEffect(() => setSelected(null), [inventory]);
+  if (selected && selected.inventory !== inventory) setSelected(null);
 
   const source = sourceRecords(inventory.items, 'Token balances');
   const query = search.trim().toLowerCase();
@@ -45,7 +45,7 @@ export function WalletTokens({inventory}) {
     const fields = [item.symbol, item.name, contractAddress(item), tokenAddress(item), item.tokenId];
     return !query || fields.some(value => typeof value === 'string' && value.toLowerCase().includes(query));
   });
-  const current = matches.includes(selected) ? selected : null;
+  const current = selected?.inventory === inventory && matches.includes(selected.item) ? selected.item : null;
   const uniqueContract = typeof current?.contractAddress === 'string' &&
     source.records.filter(item => item.contractAddress === current.contractAddress).length === 1;
 
@@ -68,7 +68,7 @@ export function WalletTokens({inventory}) {
           const kind = tokenBalanceSource(item);
           const address = kind === 'sts' ? tokenAddress(item) : contractAddress(item) ?? tokenAddress(item);
           return <tr key={index}>
-            <td><button onClick={() => setSelected(item)}>{text(item.symbol || item.name)}</button><small>{tokenBalanceSources[kind]}</small></td>
+            <td><button onClick={() => setSelected({inventory, item})}>{text(item.symbol || item.name)}</button><small>{tokenBalanceSources[kind]}</small></td>
             <td>{quantity.value}<small>{quantity.units}</small></td>
             <td>{text(address)}</td>
           </tr>;
