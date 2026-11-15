@@ -2,10 +2,13 @@ import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap} from "./native-services.js";
 import {Card,Detail,ErrorMessage,useResource,Resource} from "@synergy-network/portal-native/dapp-sdk";
 import {controllerOperation,installParameters} from './nodeNetwork.js';
+import {installPreflightChecklist} from './install-preflight.js';
+import {InstallPreflight} from './InstallPreflight.jsx';
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null),[confirmation,setConfirmation]=useState('');
+ const [preflightAttempt,setPreflightAttempt]=useState(null);
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const key=JSON.stringify(target);
  const capabilities=useResource(()=>{
@@ -13,17 +16,34 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   return nodeNetworkController(target,'target');
  },`${key}:${permitted}`);
  const state=capabilities.data;
+ const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
  async function run(operation,parameters={}){
   if(!permitted||busy)return;
   setBusy(true);setError('');setResult(null);
   const submitted={...parameters};
-  try{const response=await nodeNetworkController(target,operation,submitted);if(alive.current){setResult({operation,submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
-  catch(failure){if(alive.current)setError(String(failure?.message||failure));}
+  const isPreflight=operation==='install_preflight';
+  setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
+  try{
+   const response=await nodeNetworkController(target,operation,submitted);
+   if(alive.current){
+    const receivedAt=Date.now();
+    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt});
+    setResult({operation,submitted,result:response,receivedAt});
+    capabilities.reload();
+   }
+  }
+  catch(failure){
+   if(alive.current){
+    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'failed'});
+    setError(String(failure?.message||failure));
+   }
+  }
   finally{if(alive.current)setBusy(false);}
  }
  async function bootstrap(){
   if(!permitted||busy)return;
   setBusy(true);setError('');setResult(null);
+  setPreflightAttempt(null);
   try{const submitted=installParameters(form);const response=await nodeNetworkBootstrap(target,operator,submitted);if(response&&alive.current){setResult({operation:'bootstrap',submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
   catch(failure){if(alive.current)setError(String(failure?.message||failure));}
   finally{if(alive.current)setBusy(false);}
@@ -47,7 +67,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <button disabled={!permitted||busy||!operator||(target.kind==='local'&&!localSupported)} onClick={bootstrap}>Bootstrap clean target from approved master</button>
     <p>Bootstrap uses native package and public-key pickers, verified SSH host identity and agent authentication. Its embedded canonical engine requires an empty /opt/Synergy and confirms the exact target and privilege scope before transmission.</p>
     <p>The R5 baseline is shown for comparison. Its digest alone does not approve this target, network or installation.</p>
-    {button('install_preflight','Run installation preflight',()=>installParameters(form))}
     {button('install','Install approved node',()=>installParameters(form))}
     {button('commission','Verify and commission provisioned custody')}
     {button('register','Register contained service')}
@@ -56,6 +75,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     {button('health','Read target health')}{button('start','Start node')}{button('stop','Stop node')}{button('restart','Restart node')}
     <p>Mutations require native operator confirmation and a matching one-time grant on the target. Software installation does not grant consensus membership.</p>
    </Card>
+   <InstallPreflight checklist={preflight} action={
+    <button disabled={busy||!preflight.canRun} onClick={()=>run('install_preflight',installParameters(form))}>Run installation preflight</button>
+   }/>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
    {button('health','Read target health')}{button('inventory','Inventory node-owned files')}
