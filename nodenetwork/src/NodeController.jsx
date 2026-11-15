@@ -6,6 +6,7 @@ import {installPreflightChecklist} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
+import {ControllerRemoval} from './Offboarding.jsx';
 
 function ControllerReceipt({receivedAt}) {
  const [now, setNow] = useState(Date.now);
@@ -22,7 +23,7 @@ function ControllerReceipt({receivedAt}) {
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
- const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null),[confirmation,setConfirmation]=useState('');
+ const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null);
  const [preflightAttempt,setPreflightAttempt]=useState(null);
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const key=JSON.stringify(target);
@@ -103,12 +104,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <p>Health and diagnostics use the selected target controller. Public RPC observations describe their RPC node. Recovery executes only through a separately qualified procedure; this interface does not offer arbitrary checkpoint imports or shell access.</p>
   </Card>}
   {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={result} run={run}/>}
-  {tab==='Installation isolation'&&<Card title="Containment and removal">
-   {button('inventory','Inventory node-owned files')}{button('uninstall_preflight','Review uninstall scope')}
-   <label>Confirm destructive root<input aria-label="Confirm destructive root" autoComplete="off" value={confirmation} onChange={event=>setConfirmation(event.target.value)} placeholder="/opt/Synergy"/></label>
-   {button('uninstall','Uninstall reviewed node',()=>{if(confirmation!=='/opt/Synergy')throw new Error('Type /opt/Synergy to confirm the destructive root.');return {confirmation};})}
-   <p>Uninstall removes node custody, signing-safety records and chain data. Review the host scope and preserve required material through an approved operational procedure first.</p>
-  </Card>}
+  {tab==='Installation isolation'&&<ControllerRemoval target={target} permitted={permitted} busy={busy}
+   controller={state} result={result} run={run}
+   inventoryAction={button('inventory','Inventory node-owned files')}
+   preflightAction={button('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
   <ErrorMessage error={error}/>{result&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;

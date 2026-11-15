@@ -16,6 +16,7 @@ import {installPreflightChecklist} from './install-preflight.js';
 import {RequestHistory} from './RequestHistory.jsx';
 import {Troubleshooter} from './Troubleshooter.jsx';
 import {UpdatePackage} from './UpdatePackage.jsx';
+import {OffboardingChecklist} from './Offboarding.jsx';
 import {TargetSettings, useTargetSelection} from './TargetSettings.jsx';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
 import {CANARY_PROFILE,readNodeNetwork,provisioningChecks} from './nodeNetwork.js';
@@ -79,6 +80,7 @@ export function NodeNetworkApp(){
   </div>:tab==='Management'?null:tab==='Updates'?<UpdatePackage form={form} setForm={setForm}/>:<div className="native-grid">
    <Card title="Single-root contract"><Detail data={{installationRoot:'/opt/Synergy',software:'/opt/Synergy/bin',configuration:'/opt/Synergy/config',custody:'/opt/Synergy/keys/apqe',network:'/opt/Synergy/network',vpnState:'/opt/Synergy/vpn',blockchainState:'/opt/Synergy/data',recovery:'/opt/Synergy/recovery',updateStaging:'/opt/Synergy/tmp',temporaryFiles:'/opt/Synergy/tmp',runtime:'/opt/Synergy/run',serviceDefinitions:'/opt/Synergy/systemd',logs:'/opt/Synergy/logs'}}/><p>Every node-owned file and directory must stay inside this root on both local and remote targets. External release, custody, VPN, checkpoint, staging or diagnostic files fail installation qualification. Any operating-system registration must reference definitions inside this root and be included in the isolation audit.</p></Card>
    <Card title="Audit status"><p>A host isolation audit is required before installation and after every update. Inspect the target inventory and conformance results below; a configured target is not automatically marked compliant.</p><p>Removing NodeNetwork from Portal does not uninstall a validator or delete chain state, keys or signing journals.</p></Card>
+   <OffboardingChecklist onOpenHistory={()=>setSection('logs')}/>
   </div>}
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>No target controller will be contacted until you explicitly save a target in Settings. Public network observations do not select or authenticate a host.</p><button onClick={()=>setSection('settings')}>Review target settings</button></Card>}
   {(tab==='Management'||section==='logs')&&<RequestHistory key={String(permitted)} permitted={permitted}/>}
