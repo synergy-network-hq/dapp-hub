@@ -256,6 +256,20 @@ pub(crate) fn reconcile_evidence<'a>(
                 "nodenetwork-formation-v1",
             )
         }
+        "identity_status"
+            if value["pending"] == true
+                && value["genesis_authority_verified"] == true
+                && value["possession_verified"] == true
+                && value["membership_granted"] == false
+                && value["address"].as_str().is_some_and(address)
+                && !value["request_sha256"].is_null() =>
+        {
+            (
+                "identity_generate",
+                "genesis_sha256",
+                "nodenetwork-existing-identity-network-v1",
+            )
+        }
         "genesis_binding_preflight"
             if value["bound"] == true
                 && value["genesis_authority_verified"] == true
@@ -527,6 +541,25 @@ fn existing_network_stage_rejects_changed_scope_and_membership_claims() {
     assert!(stage_receipt(&receipt,&policy,&hash).is_ok());
     receipt["membership_verified"]=true.into();
     assert!(stage_receipt(&receipt,&policy,&hash).is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn existing_network_custody_reconciles_only_the_original_dispatch() {
+    let scope = "d".repeat(64);
+    let operation = "identity_generate";
+    let request = Request { version:1, operation:operation.into(), parameters:json!({"genesis_sha256":scope}) };
+    let digest = request.approval_id();
+    let mut status = json!({
+        "schema":"nodenetwork-existing-identity-network-v1","pending":true,
+        "network_id":"existing-network","chain_id":"99999",
+        "address":"synv11lrh6jcxaejkj4zv994j7qwn2rk6u3ar4emn",
+        "genesis_sha256":scope,"genesis_authority_verified":true,
+        "possession_verified":true,"membership_granted":false,"request_sha256":digest
+    });
+    assert_eq!(reconcile_evidence("identity_status",&status),Ok(Some((operation,digest.as_str()))));
+    status["genesis_sha256"]="e".repeat(64).into();
+    assert!(reconcile_evidence("identity_status",&status).is_err());
 }
 
 pub(crate) fn stage_policy(value: &Value, expected_address: &str) -> Result<(), String> {
