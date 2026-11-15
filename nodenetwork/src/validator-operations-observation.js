@@ -2,6 +2,7 @@
 import {projectSavedHostPreflight} from './saved-host-preflight.js';
 
 export const validatorObservationLimit = 1024 * 1024;
+export const performanceCaptureLimit = 12;
 const schemaVersion = 'synergy.validator-operations.v1';
 const unsupported = 'The file is not a supported Validator Operations v1 observation.';
 const integerMarker = '\u0000';
@@ -263,7 +264,7 @@ export async function readSavedServiceObservation(file) {
 
 export function captureTime(value) {
  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:Z|\+00:00)$/.exec(value);
- if (!match) throw Error('The observation requires a supported UTC capture time for comparison.');
+ if (!match || match[0] !== value) throw Error('The observation requires a supported UTC capture time for comparison.');
  const [, second, fraction = ''] = match;
  const startMs = Date.parse(`${second}Z`);
  if (!Number.isFinite(startMs) || new Date(startMs).toISOString() !== `${second}.000Z`) {
@@ -272,12 +273,16 @@ export function captureTime(value) {
  return BigInt(startMs) * 1_000_000n + BigInt(fraction.padEnd(9, '0'));
 }
 
+function savedIdentity({discovery, release}) {
+ return [discovery.validator_id, discovery.chain_id, discovery.network, discovery.incarnation, release.genesis_hash,
+  discovery.validator_public_key_fingerprint, discovery.consensus_public_key_fingerprint, discovery.ingress_public_key_fingerprint,
+  discovery.key_binding_status];
+}
+
 export async function readMaintenanceObservationFile(file) {
  const value = parseObservationContract(await readObservationText(file));
  const {discovery, release, service, chain} = value;
- const identity = [discovery.validator_id, discovery.chain_id, discovery.network, discovery.incarnation, release.genesis_hash,
-  discovery.validator_public_key_fingerprint, discovery.consensus_public_key_fingerprint, discovery.ingress_public_key_fingerprint,
-  discovery.key_binding_status];
+ const identity = savedIdentity(value);
  if ([...identity, ...Object.values(release)].some(field => !displayable(field))) {
   throw Error('The observation lacks usable validator identity or release fields for comparison.');
  }
@@ -309,4 +314,49 @@ export function compareMaintenanceObservations(before, after) {
   .filter(key => before.release[key] !== after.release[key])
   .map(key => ({id:key, field:key.replaceAll('_', ' '), before:before.release[key], after:after.release[key]}));
  return {before:before.status, after:after.status, changes};
+}
+
+export async function readPerformanceObservationFiles(files, current = () => true) {
+ if (!Array.isArray(files) || !files.length || files.length > performanceCaptureLimit) {
+  throw Error(`Choose up to ${performanceCaptureLimit} Validator Operations observation files.`);
+ }
+ const observations = [];
+ let identity;
+ for (const file of files) {
+  const raw = await readObservationText(file);
+  if (!current()) return null;
+  const value = parseObservationContract(raw);
+  const scope = savedIdentity(value);
+  if (!scope.every(displayable)) throw Error('An observation lacks usable validator, chain or public key binding fields.');
+  if (identity && scope.some((field, index) => field !== identity[index])) {
+   throw Error('Select captures for the same reported validator, chain and public key binding.');
+  }
+  identity = scope;
+  const {chain, service, peers} = value;
+  const gap = numeric(chain.sync_target_height) - numeric(chain.head_height);
+  observations.push({
+   capturedAt: captureTime(value.observed_at_utc),
+   sample: {
+    observedAtUtc: value.observed_at_utc,
+    headHeight: numberSource(chain.head_height),
+    finalizedHeight: numberSource(chain.finalized_height),
+    syncTargetHeight: numberSource(chain.sync_target_height),
+    headLagBlocks: gap < 0n ? null : gap.toString(),
+    serviceState: service.state,
+    serviceUptimeSeconds: numberSource(service.uptime_seconds),
+    serviceRestartCount: numberSource(service.restart_count),
+    connectedPeers: numberSource(peers.connected_peer_count),
+    authenticatedValidatorPeers: numberSource(peers.authenticated_validator_peer_count),
+    expectedValidatorPeers: numberSource(peers.expected_validator_peer_count),
+    peerQuorumThreshold: numberSource(peers.peer_quorum_threshold),
+    finalityProgress: chain.finality_progress,
+   },
+  });
+ }
+ observations.sort((a, b) => a.capturedAt < b.capturedAt ? -1 : a.capturedAt > b.capturedAt ? 1 : 0);
+ if (observations.some(({capturedAt}, index) => index > 0 && observations[index - 1].capturedAt === capturedAt)) {
+  throw Error('Choose one observation for each UTC capture time.');
+ }
+ const [validator, chainId, network, incarnation] = identity;
+ return {validator, chainId, network, incarnation, samples:observations.map(({sample}) => sample)};
 }

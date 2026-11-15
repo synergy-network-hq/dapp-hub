@@ -24,6 +24,7 @@ import {SavedValidatorObservation} from './SavedValidatorObservation.jsx';
 import {Troubleshooter} from './Troubleshooter.jsx';
 import {TargetDiagnostics} from './TargetDiagnostics.jsx';
 import {SavedValidatorLogs} from './SavedValidatorLogs.jsx';
+import {SavedValidatorPerformance} from './SavedValidatorPerformance.jsx';
 import {UpdatePackage} from './UpdatePackage.jsx';
 import {MaintenanceComparison} from './MaintenanceComparison.jsx';
 import {VpnStatus} from './VpnStatus.jsx';
@@ -95,12 +96,12 @@ export function NodeNetworkApp(){
   {section==='settings'&&<TargetSettings selection={targetSettings} local={local}/>}
   <div className="native-actions"><label>Observation network<select aria-label="NodeNetwork observation network" value={profileId} onChange={e=>setProfileId(e.target.value)}>{profiles.map(p=><option key={p.id} value={p.id}>{p.name} · {p.chainId}</option>)}</select></label><button disabled={refreshing} onClick={refreshPublic}>Refresh NodeNetwork</button></div>
   {section==='settings'&&<div className="native-tabs" role="tablist" aria-label="Node settings sections">{['Updates','Installation isolation'].map(name=><button role="tab" key={name} aria-selected={tab===name} onClick={()=>setSettingsTab(name)}>{name}</button>)}</div>}
-  {section==='performance'?<NodeNetworkPanelCard title="Validator performance telemetry">
+  {section==='performance'?<><SavedValidatorPerformance permitted={permitted}/><NodeNetworkPanelCard title="Validator performance telemetry">
    <p>Logs &amp; Diagnostics can read an enrolled controller's service counters and storage snapshot. Managed telemetry history and duty timing require a supported telemetry interface.</p>
    <button onClick={()=>setSection('logs')}>Open Logs &amp; Diagnostics</button>
    <p>Use public validator lookup in Overview to review attributed Atlas blocks and their receipt time.</p>
    <button onClick={()=>setSection('overview')}>Open public validator observations</button>
-  </NodeNetworkPanelCard>:section==='logs'?<>
+  </NodeNetworkPanelCard></>:section==='logs'?<>
    <TargetDiagnostics key={JSON.stringify([target,permitted])} target={target} permitted={permitted}/>
    <SavedValidatorLogs permitted={permitted}/>
    <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>

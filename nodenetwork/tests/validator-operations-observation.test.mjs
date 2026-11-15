@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {parseValidatorObservation, readSavedServiceObservation, readValidatorObservationFile, validatorObservationLimit} from '../src/validator-operations-observation.js';
+import {parseValidatorObservation, readPerformanceObservationFiles, readSavedServiceObservation, readValidatorObservationFile, validatorObservationLimit} from '../src/validator-operations-observation.js';
 
 const fixture = readFileSync(new URL('./fixtures/validator-operations-observation.json', import.meta.url), 'utf-8').trim();
 const release = JSON.parse(fixture).release;
@@ -183,7 +183,7 @@ test('offboarding receives only the captured service state, validator and observ
 });
 
 const ownerFixturePath = process.env.SYNERGY_VALIDATOR_OPERATIONS_OWNER_FIXTURE;
-test('projects the pinned Node Control Panel five-validator fixture observations', {skip:!ownerFixturePath}, () => {
+test('projects the pinned Node Control Panel five-validator fixture observations', {skip:!ownerFixturePath}, async () => {
  const ownerFixture = readFileSync(ownerFixturePath, 'utf8');
  const envelope = JSON.parse(ownerFixture);
  const owner = envelope.base_observation;
@@ -192,6 +192,23 @@ test('projects the pinned Node Control Panel five-validator fixture observations
  assert.equal(base.headHeight, '128');
  assert.equal(base.savedPreflight.passCount, 18);
  assert.deepEqual(base.savedPreflight.rows.map(row => row.id), owner.preflight.map(row => row.id));
+ const performance = await readPerformanceObservationFiles([new Blob([JSON.stringify(owner)])]);
+ assert.equal(performance.validator, owner.discovery.validator_id);
+ assert.deepEqual(performance.samples, [{
+  observedAtUtc:owner.observed_at_utc,
+  headHeight:String(owner.chain.head_height),
+  finalizedHeight:String(owner.chain.finalized_height),
+  syncTargetHeight:String(owner.chain.sync_target_height),
+  headLagBlocks:String(owner.chain.sync_target_height - owner.chain.head_height),
+  serviceState:owner.service.state,
+  serviceUptimeSeconds:String(owner.service.uptime_seconds),
+  serviceRestartCount:String(owner.service.restart_count),
+  connectedPeers:String(owner.peers.connected_peer_count),
+  authenticatedValidatorPeers:String(owner.peers.authenticated_validator_peer_count),
+  expectedValidatorPeers:String(owner.peers.expected_validator_peer_count),
+  peerQuorumThreshold:String(owner.peers.peer_quorum_threshold),
+  finalityProgress:owner.chain.finality_progress,
+ }]);
  for (const id of envelope.validator_ids) {
   const observation = {...owner, discovery:{...owner.discovery, validator_id:id}};
   if (id === envelope.release_mismatch_validator_id) observation.release = {...owner.release, binary_sha256:'b'.repeat(64)};
