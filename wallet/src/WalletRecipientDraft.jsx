@@ -1,8 +1,9 @@
-import {useEffect, useId, useState} from 'react';
+import {useEffect, useId, useRef, useState} from 'react';
 import {amount} from '@synergy-network/dapp-data-view';
 import {CONTACT_KEY, matchesReviewedContact, readContacts} from './wallet-contacts.js';
 import {canSaveContactAddress, contactAddressProfile} from './wallet-address.js';
 import {parseSnrgDraftAmount} from './send-draft-amount.js';
+import {WalletDraftBalanceComparison} from './WalletDraftBalanceComparison.jsx';
 
 function contactStillSaved(contact) {
   try {
@@ -12,11 +13,12 @@ function contactStillSaved(contact) {
   }
 }
 
-function AmountDraft({contact, endpoint, canReview, onInvalidate}) {
+function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
   const [input, setInput] = useState('');
   const [review, setReview] = useState(null);
   const [error, setError] = useState('');
   const errorId = useId();
+  const reviewCount = useRef(0);
 
   function reviewDraft(event) {
     event.preventDefault();
@@ -31,7 +33,7 @@ function AmountDraft({contact, endpoint, canReview, onInvalidate}) {
       return;
     }
     try {
-      setReview(parseSnrgDraftAmount(input));
+      setReview({nwei: parseSnrgDraftAmount(input), revision: ++reviewCount.current});
     } catch (failure) {
       setError(failure.message);
     }
@@ -54,15 +56,17 @@ function AmountDraft({contact, endpoint, canReview, onInvalidate}) {
       <dl className="native-details">
         <div><dt>Recipient</dt><dd>{contact.address}</dd></div>
         <div><dt>Selected network</dt><dd>{endpoint.name} · Chain {endpoint.chainId}</dd></div>
-        <div><dt>Draft amount</dt><dd>{amount(review)} SNRG</dd></div>
-        <div><dt>Exact atomic amount</dt><dd>{review} nWei</dd></div>
+        <div><dt>Draft amount</dt><dd>{amount(review.nwei)} SNRG</dd></div>
+        <div><dt>Exact atomic amount</dt><dd>{review.nwei} nWei</dd></div>
       </dl>
       <p>Input checks are local. Fees, spendable balance and simulation remain unverified.</p>
+      <WalletDraftBalanceComparison key={review.revision} account={account} endpoint={endpoint} draftNwei={review.nwei}
+        canCompare={() => canReview() && contactStillSaved(contact)}/>
     </section>}
   </>;
 }
 
-export function WalletRecipientDraft({contact, endpoint, onClear, onInvalidate, canReview}) {
+export function WalletRecipientDraft({contact, account, endpoint, onClear, onInvalidate, canReview}) {
   const [storedOnOpen] = useState(() => !!contact && contactStillSaved(contact));
 
   useEffect(() => {
@@ -87,7 +91,7 @@ export function WalletRecipientDraft({contact, endpoint, onClear, onInvalidate, 
       <p>{contact.name} · {endpoint.name} · Chain {endpoint.chainId}</p>
       <label>Recipient address<input readOnly value={contact.address}/></label>
       {contactAddressProfile(contact.address) === 'burn' && <p>Canonical burn address</p>}
-      <AmountDraft {...{contact, endpoint, canReview, onInvalidate}}/>
+      <AmountDraft {...{contact, account, endpoint, canReview, onInvalidate}}/>
     </> : <p role="status">The saved contact changed or became unavailable. Review it again in the address book.</p>}
     <button onClick={onClear}>Clear recipient draft</button>
   </section>;

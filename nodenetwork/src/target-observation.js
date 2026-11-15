@@ -23,3 +23,17 @@ export function targetControllerObservation(value, receivedAt = Date.now()) {
   },
  };
 }
+import {controllerOperation} from './nodeNetwork.js';
+
+
+export function installedControllerRead(controller, operation) {
+ const capability = controllerOperation(controller, operation);
+ if (!capability.available) return capability;
+ if (controller.summary?.controllerVersion !== 1 || controller.operations.find(row => row?.operation === operation)?.kind !== 'read') {
+  return {available: false, blocker: 'The selected controller did not advertise a supported read.'};
+ }
+ if (controller.summary.controllerReportedInstalled !== true) {
+  return {available: false, blocker: 'A controller-reported node installation is required for this inspection.'};
+ }
+ return capability;
+}

@@ -49,7 +49,7 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status" => false,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status" => false,
             "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
@@ -189,6 +189,47 @@ fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
+fn custody_digest(value: &Value) -> bool {
+    value.as_str().is_some_and(|pin| pin.len() == 64 && pin.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
+    const UNSUPPORTED: &str = "The selected controller returned unsupported pending custody evidence.";
+    if reply["ok"] != true {
+        if reply["error"]["code"] == "reconciliation_required" {
+            return Err("The controller could not verify pending custody. Preserve it and contact the node operator for reconciliation.");
+        }
+        return Err("The selected controller could not provide a pending custody status.");
+    }
+    let result = &reply["result"];
+    let fields = result.as_object().ok_or(UNSUPPORTED)?;
+    if result["pending"] == false && fields.len() == 1 {
+        return Ok(json!({"version":1,"ok":true,"result":result}));
+    }
+    let valid_context = result["network_id"].as_str().is_some_and(|network| {
+        (2..=128).contains(&network.len()) && network.as_bytes()[0].is_ascii_alphanumeric()
+            && network.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
+    }) && result["chain_id"].as_str().is_some_and(|chain| {
+        chain.parse::<u64>().is_ok_and(|number| number > 0 && number.to_string() == chain)
+    });
+    let valid_address = result["address"].as_str().and_then(|value| value.strip_prefix("synv1")).is_some_and(|tail| {
+        (10..=90).contains(&tail.len()) && tail.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    });
+    if result["pending"] != true || !valid_context || !valid_address
+        || result["possession_verified"] != true || result["membership_granted"] != false {
+        return Err(UNSUPPORTED);
+    }
+    let valid_kind = match operation {
+        "identity_status" => fields.len() == 8 && result["genesis_authority_verified"] == true && custody_digest(&result["genesis_sha256"]),
+        "formation_status" => fields.len() == 10 && result["schema"] == "nodenetwork-formation-v1"
+            && ["formation_sha256", "formation_id", "request_sha256"].iter().all(|key| custody_digest(&result[*key]))
+            && result["formation_id"].as_str().is_some_and(|id| id.bytes().any(|byte| byte != b'0')),
+        _ => false,
+    };
+    if !valid_kind { return Err(UNSUPPORTED); }
+    Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
 async fn execute_pinned(target: Target, request: Request, control_dir: &Path, known_hosts: Option<&Path>) -> Result<Value, String> {
     target.validate()?; request.validate()?;
     let _serial=SERIAL.lock().await;
@@ -216,8 +257,11 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         if !status.success() { return Err("Controller connection failed. Check enrolled target, pinned SSH identity, agent authentication and restricted sudo policy."); }
         let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Controller returned an invalid response.")?;
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
-        if request.operation == "vpn_status" { return vpn_status_reply(&value); }
-        Ok(value)
+        match request.operation.as_str() {
+            "vpn_status" => vpn_status_reply(&value),
+            "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
+            _ => Ok(value),
+        }
     }).await;
     match result { Ok(value)=>value.map_err(String::from), Err(_)=>Err("Controller timed out. The result is uncertain; inspect target state before retrying a mutation.".into()) }
 }
@@ -274,6 +318,46 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         reply["result"]["private_payload"] = json!("fixture");
         assert!(vpn_status_reply(&reply).is_err());
         assert_eq!(vpn_status_reply(&json!({"ok":false,"error":{"message":"private fixture"}})), Err("The selected controller could not provide VPN status."));
+    }
+    #[test] fn custody_status_admits_only_the_empty_parameter_reads() {
+        for operation in ["identity_status", "formation_status"] {
+            let mut request = Request{version:1,operation:operation.into(),parameters:json!({})};
+            assert_eq!(request.validate(), Ok(false));
+            request.parameters = json!({"path":"fixture"});
+            assert!(request.validate().is_err());
+        }
+        for operation in ["identity_generate", "formation_prepare", "formation_export", "genesis_bind"] {
+            let request = Request{version:1,operation:operation.into(),parameters:json!({})};
+            assert!(request.validate().is_err());
+        }
+    }
+    #[test] fn custody_status_keeps_pending_identity_and_formation_contracts_distinct() {
+        let mut reply = json!({"version":1,"ok":true,"internal":"unreviewed fixture","result":{
+            "pending":true,"network_id":"fixture-network","chain_id":"18446744073709551615",
+            "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true,"address":"synv1".to_string()+&"a".repeat(36),
+            "possession_verified":true,"membership_granted":false
+        }});
+        let identity = custody_status_reply("identity_status", &reply).unwrap();
+        assert!(identity.get("internal").is_none());
+        assert!(custody_status_reply("formation_status", &reply).is_err());
+        reply["result"]["membership_granted"] = json!(true);
+        assert!(custody_status_reply("identity_status", &reply).is_err());
+        reply["result"]["membership_granted"] = json!(false);
+        reply["result"]["private_payload"] = json!("fixture");
+        assert!(custody_status_reply("identity_status", &reply).is_err());
+        reply["result"] = json!({"pending":true,"network_id":"fixture-network","chain_id":"1266",
+            "schema":"nodenetwork-formation-v1","formation_sha256":"a".repeat(64),"formation_id":"b".repeat(64),
+            "request_sha256":"c".repeat(64),"address":"synv1".to_string()+&"a".repeat(36),
+            "possession_verified":true,"membership_granted":false});
+        assert!(custody_status_reply("formation_status", &reply).is_ok());
+        assert!(custody_status_reply("identity_status", &reply).is_err());
+        reply["result"]["chain_id"] = json!("18446744073709551616");
+        assert!(custody_status_reply("formation_status", &reply).is_err());
+        reply["result"] = json!({"pending":false});
+        assert!(custody_status_reply("identity_status", &reply).is_ok());
+        assert!(custody_status_reply("formation_status", &reply).is_ok());
+        assert!(custody_status_reply("identity_status", &json!({"ok":false,"error":{"code":"reconciliation_required","message":"private fixture"}}))
+            .unwrap_err().contains("Preserve it"));
     }
     #[test]
     #[ignore = "Requires an explicitly enrolled disposable Linux VM and its authenticated SSH host pin"]

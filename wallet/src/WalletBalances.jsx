@@ -3,16 +3,11 @@ import {Card, Resource, chainIdNumber, rpc, useResource} from '@synergy-network/
 import {amount} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import background from '../assets/card-backgrounds/graphic1.png';
+import {observedSnrgNwei} from './snrg-balance.js';
 
 const cardBackground = {
   backgroundImage: `linear-gradient(90deg,rgba(0,0,0,.7),rgba(0,0,0,.3)),url(${background})`,
 };
-
-function nwei(value) {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
-  if (typeof value !== 'string' || value.trim() !== value || !/^[0-9]{1,78}$/.test(value)) return null;
-  return BigInt(value).toString();
-}
 
 function useSnrgObservation(request, endpoint, account, method) {
   const [revision, setRevision] = useState(0);
@@ -39,7 +34,7 @@ function useSnrgObservation(request, endpoint, account, method) {
       const validShape = result && typeof result === 'object' && !Array.isArray(result);
       observation = validShape ? result.balance : null;
     }
-    const value = nwei(observation);
+    const value = observedSnrgNwei(observation);
     if (value === null) throw Error('The selected RPC returned an unsupported SNRG quantity.');
     return {value, receivedAt: Date.now()};
   }, JSON.stringify([account, endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey, method, revision]));
@@ -62,8 +57,8 @@ export function WalletBalances({account, endpoint, index, indexReceivedAt, readR
   const balance = useSnrgObservation(readRpc, endpoint, account, 'synergy_getBalance');
   const stake = useSnrgObservation(readRpc, endpoint, account, 'synergy_getStakedBalance');
   const indexMatches = typeof account === 'string' && index?.address === account.toLowerCase();
-  const indexedBalance = indexMatches ? nwei(index.walletBalanceNwei) : null;
-  const indexedStake = indexMatches ? nwei(index.stakedBalanceNwei) : null;
+  const indexedBalance = indexMatches ? observedSnrgNwei(index.walletBalanceNwei) : null;
+  const indexedStake = indexMatches ? observedSnrgNwei(index.stakedBalanceNwei) : null;
   const atlasBalance = indexedBalance === null ? 'Unavailable' : amount(indexedBalance) + ' SNRG';
   const atlasStake = indexedStake === null ? 'Unavailable' : amount(indexedStake) + ' SNRG';
 

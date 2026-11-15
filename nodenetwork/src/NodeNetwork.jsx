@@ -23,6 +23,7 @@ import {Troubleshooter} from './Troubleshooter.jsx';
 import {UpdatePackage} from './UpdatePackage.jsx';
 import {MaintenanceComparison} from './MaintenanceComparison.jsx';
 import {VpnStatus} from './VpnStatus.jsx';
+import {CustodyStatus} from './CustodyStatus.jsx';
 import {OffboardingChecklist} from './Offboarding.jsx';
 import {TargetSettings, useTargetSelection} from './TargetSettings.jsx';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
@@ -134,6 +135,7 @@ export function NodeNetworkApp(){
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>No target controller will be contacted until you explicitly save a target in Settings. Public network observations do not select or authenticate a host.</p><button onClick={()=>setSection('settings')}>Review target settings</button></Card>}
   {tab==='Management'&&<SavedValidatorObservation permitted={permitted} onOpenDiagnostics={()=>setSection('logs')}/>}
   {tab==='Management'&&!target&&<VpnStatus onOpenDiagnostics={()=>setSection('logs')}/>}
+  {tab==='Management'&&!target&&<CustodyStatus onOpenHistory={()=>setSection('logs')}/>}
   {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted}/>}
   {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} onOpenDiagnostics={()=>setSection('logs')}/>}
  </NodeNetworkPanelFrame>;

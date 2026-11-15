@@ -4,11 +4,19 @@ import {Card,Detail,ErrorMessage,useResource,Resource} from "@synergy-network/po
 import {controllerOperation,installParameters} from './nodeNetwork.js';
 import {installPreflightChecklist} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
-import {targetControllerObservation} from './target-observation.js';
+import {installedControllerRead,targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
 import {ControllerRemoval} from './Offboarding.jsx';
 import {VpnStatus} from './VpnStatus.jsx';
-import {vpnStatusGate,vpnStatusObservation} from './vpn-status.js';
+import {vpnStatusObservation} from './vpn-status.js';
+import {CustodyStatus} from './CustodyStatus.jsx';
+import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
+
+const typedStatus = {
+ vpn_status: vpnStatusObservation,
+ identity_status: response => custodyStatusObservation('identity_status',response),
+ formation_status: response => custodyStatusObservation('formation_status',response),
+};
 
 function ControllerReceipt({receivedAt}) {
  const [now, setNow] = useState(Date.now);
@@ -35,22 +43,26 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  },`${key}:${permitted}`);
  const state=capabilities.data;
  const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
- const vpn=vpnStatusGate(state);
- const vpnResult=permitted&&vpn.available&&result?.operation==='vpn_status'?result:null;
+ const statusGates=Object.fromEntries(Object.keys(typedStatus).map(operation=>[operation,installedControllerRead(state,operation)]));
+ const vpn=statusGates.vpn_status;
+ const statusResult=permitted&&statusGates[result?.operation]?.available?result:null;
+ const vpnResult=statusResult?.operation==='vpn_status'?statusResult:null;
+ const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  async function run(operation,parameters={}){
-  if(!permitted||busy||(operation==='vpn_status'&&!vpn.available))return;
+  const read=statusGates[operation];
+  if(!permitted||busy||(read&&!read.available))return;
   setBusy(true);setError('');setResult(null);
   const submitted={...parameters};
   const isPreflight=operation==='install_preflight';
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
   try{
    const raw=await nodeNetworkController(target,operation,submitted);
-   const response=operation==='vpn_status'?vpnStatusObservation(raw):raw;
+   const response=read?typedStatus[operation](raw):raw;
    if(alive.current){
     const receivedAt=Date.now();
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt});
     setResult({operation,submitted,result:response,receivedAt});
-    if(operation!=='vpn_status')capabilities.reload();
+    if(!read)capabilities.reload();
    }
   }
   catch(failure){
@@ -75,7 +87,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  }
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
-   if(result?.operation==='vpn_status')setResult(null);
+   if(typedStatus[result?.operation])setResult(null);
    capabilities.reload();
   }}>Inspect selected target</button>}>
    <Resource value={capabilities}>{data=><>
@@ -119,12 +131,23 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    observation={vpnResult?.result}
    receipt={vpnResult&&<ControllerReceipt receivedAt={vpnResult.receivedAt}/>}
    onOpenDiagnostics={onOpenDiagnostics}/>}
+  {tab==='Management'&&<CustodyStatus
+   actions={<div className="native-actions">{custodyStatusReads.map(({operation,label})=>{
+    const gate=statusGates[operation];
+    return <div className="native-controller-action" key={operation}>
+     <button disabled={!permitted||busy||!gate.available} onClick={()=>run(operation)}>{label}</button>
+     {permitted&&!gate.available&&<small>{gate.blocker}</small>}
+    </div>;
+   })}</div>}
+   observation={custodyResult?.result}
+   receipt={custodyResult&&<ControllerReceipt receivedAt={custodyResult.receivedAt}/>}
+   onOpenHistory={onOpenDiagnostics}/>}
   {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={result} run={run}/>}
   {tab==='Installation isolation'&&<ControllerRemoval target={target} permitted={permitted} busy={busy}
    controller={state} result={result} run={run}
    inventoryAction={button('inventory','Inventory node-owned files')}
    preflightAction={button('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&result.operation!=='vpn_status'&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }
