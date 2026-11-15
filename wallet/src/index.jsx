@@ -114,7 +114,7 @@ export function WalletApp() {
             onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}
             canReview={canReviewDraft}/> : <WalletOneTimeDraft key={draftScope} account={connection.address} endpoint={n.endpoint}
             canReview={canReviewDraft}/>}
-          <WalletFeeMarket endpoint={n.endpoint}/>
+          <WalletFeeMarket key={`fee:${draftScope}`} endpoint={n.endpoint} canRead={canReviewDraft}/>
           <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
         </Card>;
     }
