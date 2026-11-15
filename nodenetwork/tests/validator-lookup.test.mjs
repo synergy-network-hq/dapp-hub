@@ -28,6 +28,7 @@ test('lookup returns matching public detail and ignores unrelated account payloa
   status: 'Reported active consensus',
   receivedAt: 1000,
   indexedBlocks: null,
+  indexedRewards: null,
  });
  assert.throws(() => validatorLookupObservation({...response, validator: {...response.validator, address: 'synv' + 'b'.repeat(34)}}, validatorAddress), /mismatched/);
  assert.throws(() => validatorLookupObservation({...response, setupStatus: 'unknown'}, validatorAddress), /unsupported/);

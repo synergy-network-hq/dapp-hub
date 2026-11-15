@@ -4,6 +4,7 @@ import {Copy, Detail, ErrorMessage, Resource, chainIdNumber, openExternal, useAc
 import {text} from '@synergy-network/dapp-data-view';
 import {indexedTransactionAmount, indexedTransactionTime, transactionDirection} from './WalletActivity.jsx';
 import {sourceRecords} from './source-records.js';
+import {WalletReceiptObservation} from './WalletReceiptObservation.jsx';
 import {blockLookupHeight, comparableTransactionHash, compareIndexedBlock, reportedBlockMembership,
   transactionObservation} from './transaction-observation.js';
 
@@ -154,6 +155,7 @@ function IndexedDetails({row, account, endpoint, readRpc}) {
     {hashSupported && <Copy value={row.hash} label="Copy transaction hash"/>}
     {supportedTransaction && <AtlasExplorerAction hash={row.hash}/>}
     <p>This is the current Atlas record. Finality requires independent chain evidence.</p>
+    {supportedTransaction && <WalletReceiptObservation hash={row.hash} account={account} block={block}/>}
     {canCheck && (checking
       ? <TransactionLookup hash={row.hash} account={account} endpoint={endpoint} readRpc={readRpc} indexedBlock={block}/>
       : <button onClick={() => setChecking(true)}>Check status on selected RPC</button>)}

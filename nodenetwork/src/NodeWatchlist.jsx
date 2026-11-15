@@ -5,6 +5,7 @@ import {text} from '@synergy-network/dapp-data-view';
 import {validatorSource} from './validator-source.js';
 import {validatorLookupAddress} from './validator-lookup.js';
 import {ValidatorBlockReview} from './ValidatorBlockReview.jsx';
+import {ValidatorRewardSettlements} from './ValidatorRewardSettlements.jsx';
 
 const key = 'portal-node-watchlist-1266-v1';
 const valid = id => typeof id === 'string' && id.length > 0 && id.length <= 160 && !/[\x00-\x1f\x7f]/.test(id);
@@ -131,6 +132,7 @@ export function NodeWatchlist({data, updatedAt, readValidator}) {
      if (lookupResult?.hasProfile && !lookup.loading) edit({add: lookupResult.address});
     }}>Watch looked-up validator</button>
    <ValidatorBlockReview key={`${result.address}:${result.receivedAt}`} observation={result}/>
+   <ValidatorRewardSettlements key={`${result.address}:${result.receivedAt}:rewards`} settlements={result.indexedRewards ?? null}/>
   </section>}</Resource>}
 
   {!ids.length && !error && <p>No watched validators.</p>}

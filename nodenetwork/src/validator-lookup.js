@@ -1,4 +1,5 @@
 import {validatorBlockRows} from './validator-blocks.js';
+import {validatorRewardRows} from './validator-rewards.js';
 
 const setupLabels = new Map([
  ['active_consensus', 'Reported active consensus'],
@@ -34,5 +35,6 @@ export function validatorLookupObservation(value, address, receivedAt = Date.now
   status: hasProfile ? status : 'Atlas returned account evidence without a validator profile',
   receivedAt,
   indexedBlocks: validatorBlockRows(value.recentProducedBlocks, expected),
+  indexedRewards: validatorRewardRows(value.rewardSettlements, expected),
  };
 }

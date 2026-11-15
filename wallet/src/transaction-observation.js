@@ -1,3 +1,5 @@
+import {atlasAccountKey} from './atlas-account.js';
+
 // Response fields from testnet-v3's synergy_getTransactionByHash explorer projection.
 const hashPattern = /^(?:(syntxn|synxxn)-)?([a-f0-9]{64})$/i;
 
@@ -7,7 +9,7 @@ export function comparableTransactionHash(value) {
   return match?.[0] === value ? {kind: match[1]?.toLowerCase(), digest: match[2].toLowerCase()} : null;
 }
 
-function blockHeight(value) {
+export function blockHeight(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
     return String(value);
   }
@@ -16,6 +18,50 @@ function blockHeight(value) {
     if (height <= 18446744073709551615n) return height.toString();
   }
   return null;
+}
+
+function atlasParticipant(value, primary, alias) {
+  const address = value[primary];
+  if ((address !== null && typeof address !== 'string') ||
+      (Object.hasOwn(value, alias) && value[alias] !== address)) {
+    throw Error('Atlas returned inconsistent transaction participants.');
+  }
+  return address;
+}
+
+// The Atlas detail route attaches receipt fields to a transaction projection.
+// It does not return the upstream receipt's own chain, block or transaction identity.
+export function atlasReceiptObservation(value, hash, account, height) {
+  const selected = comparableTransactionHash(hash);
+  const returned = comparableTransactionHash(value?.hash);
+  if (!selected || !returned || selected.kind !== returned.kind || selected.digest !== returned.digest) {
+    throw Error('Atlas did not return the selected transaction hash.');
+  }
+
+  const accountKey = atlasAccountKey(account);
+  const sender = atlasParticipant(value, 'sender_address', 'sender');
+  const receiver = atlasParticipant(value, 'receiver_address', 'receiver');
+  if (!accountKey || ![sender, receiver].some(address => address === accountKey || address === account)) {
+    throw Error('The Atlas transaction does not include the connected account.');
+  }
+  if (value.indexed === false) return {kind: 'fallback'};
+  if (value.indexed !== true) throw Error('Atlas did not identify an indexed transaction record.');
+
+  const expectedBlock = blockHeight(height);
+  if (expectedBlock === null || blockHeight(value.block_number) !== expectedBlock ||
+      (Object.hasOwn(value, 'blockNumber') && blockHeight(value.blockNumber) !== expectedBlock)) {
+    throw Error('Atlas returned a different or unsupported indexed block. Refresh Wallet observations.');
+  }
+
+  const receiptStatus = value.receipt_status ?? null;
+  const executionStatus = value.synq_execution_status ?? null;
+  if (receiptStatus === null && executionStatus === null) return {kind: 'unavailable'};
+  if ((receiptStatus !== '0x0' && receiptStatus !== '0x1') ||
+      (executionStatus !== null && executionStatus !== 'succeeded' && executionStatus !== 'failed') ||
+      (receiptStatus === '0x1' && executionStatus === 'failed')) {
+    throw Error('Atlas returned an unsupported receipt status.');
+  }
+  return {kind: 'reported', receiptStatus, executionStatus};
 }
 
 export function transactionObservation(value, requestedHash, account) {
