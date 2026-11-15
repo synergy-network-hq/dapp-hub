@@ -1,5 +1,6 @@
 // This source registry discovers bundled implementations; host installation/permission gates still apply.
 export const knownApplicationLoaders=Object.freeze({
+ horizon:()=>import("@synergy-network/dapp-horizon").then(module=>({default:module.HorizonApp})),
  spark:()=>import("@synergy-network/dapp-spark").then(module=>({default:module.SparkApp})),
  relay:()=>import("@synergy-network/dapp-relay").then(module=>({default:module.RelayApp})),
  "forge-projects":()=>import("@synergy-network/dapp-forge-projects").then(module=>({default:module.ForgeApp})),

@@ -6,7 +6,7 @@
   "scripts": {
     "validate": "python3 registry/validate.py",
     "test": "node --test registry/*.test.mjs",
-    "build:apps": "pnpm --filter \"@synergy-network/dapp-wallet\" --filter \"@synergy-network/dapp-atlas\" --filter \"@synergy-network/dapp-keystone\" --filter \"@synergy-network/dapp-learn\" --filter \"@synergy-network/dapp-nodenetwork\" --filter \"@synergy-network/dapp-relay\" --filter \"@synergy-network/dapp-forge-projects\" --filter \"@synergy-network/dapp-spark\" run build"
+    "build:apps": "pnpm --filter \"@synergy-network/dapp-wallet\" --filter \"@synergy-network/dapp-atlas\" --filter \"@synergy-network/dapp-keystone\" --filter \"@synergy-network/dapp-learn\" --filter \"@synergy-network/dapp-nodenetwork\" --filter \"@synergy-network/dapp-relay\" --filter \"@synergy-network/dapp-forge-projects\" --filter \"@synergy-network/dapp-spark\" --filter \"@synergy-network/dapp-horizon\" run build"
   },
   "workspaces": [
     "wallet",
@@ -18,7 +18,8 @@
     "shared/*",
     "relay",
     "forge-projects",
-    "spark"
+    "spark",
+    "horizon"
   ],
   "devDependencies": {
     "vite": "8.3.2",
