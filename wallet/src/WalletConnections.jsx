@@ -1,4 +1,5 @@
 import {useNative, Card, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {WalletRelayStatus} from './WalletRelayStatus.jsx';
 
 const grants = {
   readWallet: 'Read public account data',
@@ -56,6 +57,7 @@ export function WalletConnections({canRead}) {
         </>}
       </dl>
       {!connection && <p>Wallet account access is unavailable in this Portal context.</p>}
+      {connection && <WalletRelayStatus connection={connection}/>}
       <div className="native-actions">
         <button onClick={() => n.navigate('wallet-connection')}>Manage connection in Portal</button>
         <button onClick={() => n.navigate('security')}>Manage grants in Portal</button>

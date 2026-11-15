@@ -1,5 +1,5 @@
-import {useEffect, useRef, useState} from 'react';
 import {Card, Detail, ErrorMessage, Table} from '@synergy-network/portal-native/dapp-sdk';
+import {useObservationFile} from './useObservationFile.js';
 import {readValidatorObservationFile} from './validator-operations-observation.js';
 
 const preflightColumns = [
@@ -15,42 +15,13 @@ export function SavedValidatorObservation({permitted, onOpenDiagnostics}) {
 }
 
 function ObservationReview({onOpenDiagnostics}) {
- const [result, setResult] = useState(null);
- const [error, setError] = useState('');
- const [reading, setReading] = useState(false);
- const revision = useRef(0);
- useEffect(() => () => {revision.current++;}, []);
-
- function clear() {
-  revision.current++;
-  setResult(null);
-  setError('');
-  setReading(false);
- }
-
- async function inspect(event) {
-  const file = event.target.files?.[0];
-  event.target.value = '';
-  if (!file) return;
-  const requested = ++revision.current;
-  setResult(null);
-  setError('');
-  setReading(true);
-  try {
-   const report = await readValidatorObservationFile(file);
-   if (revision.current === requested) setResult(report);
-  } catch (failure) {
-   if (revision.current === requested) setError(failure.message);
-  } finally {
-   if (revision.current === requested) setReading(false);
-  }
- }
+ const {result, error, reading, clear, select} = useObservationFile(readValidatorObservationFile);
 
  return <>
   <p>Review a local Validator Operations v1 observation, up to 1 MiB. It describes what the file reports at capture time. Host identity, current health and release approval require separate evidence.</p>
   <div className="native-actions">
    <label>Validator Operations observation JSON
-    <input type="file" accept=".json,application/json" onChange={inspect}/>
+    <input type="file" accept=".json,application/json" onChange={select}/>
    </label>
    {(reading || result || error) && <button onClick={clear}>Clear observation</button>}
   </div>

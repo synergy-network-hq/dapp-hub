@@ -191,15 +191,21 @@ function firstMissingTransition({service, peers, posy, protected_pipeline: pipel
  return null;
 }
 
-const displayText = value => nonempty(value) && value.length <= 256 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/.test(value) ? value : 'Unavailable';
+const displayable = value => nonempty(value) && value.length <= 256 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/.test(value);
+const displayText = value => displayable(value) ? value : 'Unavailable';
 
-export function parseValidatorObservation(raw) {
+function parseObservationContract(raw) {
  if (typeof raw !== 'string' || raw.length > validatorObservationLimit || new TextEncoder().encode(raw).length > validatorObservationLimit) {
   throw Error('The Validator Operations observation must be a JSON file of at most 1 MiB.');
  }
  let value;
  try {value = parseExactNumbers(raw);} catch {throw Error(unsupported);}
  if (!observation(value) || (Object.hasOwn(value, 'preflight') && value.preflight === null) || !consistent(value)) throw Error(unsupported);
+ return value;
+}
+
+export function parseValidatorObservation(raw) {
+ const value = parseObservationContract(raw);
  const {discovery, chain, service, peers, posy, release: reportedRelease, expected_release: expected, protected_pipeline: pipeline} = value;
  const mismatches = expected == null ? null : Object.keys(releaseFields).filter(key => expected[key] !== reportedRelease[key]);
  return {
@@ -229,14 +235,66 @@ export function parseValidatorObservation(raw) {
  };
 }
 
-export async function readValidatorObservationFile(file) {
+async function readObservationText(file) {
  if (!file || !Number.isSafeInteger(file.size) || file.size < 1 || file.size > validatorObservationLimit) {
   throw Error('Choose a Validator Operations JSON file of at most 1 MiB.');
  }
  let bytes;
  try {bytes = await file.arrayBuffer();} catch {throw Error('The selected observation file could not be read.');}
  if (bytes.byteLength > validatorObservationLimit || bytes.byteLength !== file.size) throw Error('The selected observation file could not be read.');
- let raw;
- try {raw = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes);} catch {throw Error(unsupported);}
- return parseValidatorObservation(raw);
+ try {return new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes);} catch {throw Error(unsupported);}
+}
+
+export async function readValidatorObservationFile(file) {
+ return parseValidatorObservation(await readObservationText(file));
+}
+
+function captureTime(value) {
+ const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:Z|\+00:00)$/.exec(value);
+ if (!match) throw Error('The observation requires a supported UTC capture time for comparison.');
+ const [, second, fraction = ''] = match;
+ const startMs = Date.parse(`${second}Z`);
+ if (!Number.isFinite(startMs) || new Date(startMs).toISOString() !== `${second}.000Z`) {
+  throw Error('The observation requires a supported UTC capture time for comparison.');
+ }
+ return BigInt(startMs) * 1_000_000n + BigInt(fraction.padEnd(9, '0'));
+}
+
+export async function readMaintenanceObservationFile(file) {
+ const value = parseObservationContract(await readObservationText(file));
+ const {discovery, release, service, chain} = value;
+ const identity = [discovery.validator_id, discovery.chain_id, discovery.network, discovery.incarnation, release.genesis_hash,
+  discovery.validator_public_key_fingerprint, discovery.consensus_public_key_fingerprint, discovery.ingress_public_key_fingerprint,
+  discovery.key_binding_status];
+ if ([...identity, ...Object.values(release)].some(field => !displayable(field))) {
+  throw Error('The observation lacks usable validator identity or release fields for comparison.');
+ }
+ return {
+  identity,
+  capturedAt: captureTime(value.observed_at_utc),
+  release,
+  status: {
+   observedAt: value.observed_at_utc,
+   validator: discovery.validator_id,
+   releaseId: release.release_id,
+   releaseTag: release.release_tag,
+   binarySha256: release.binary_sha256,
+   serviceState: service.state,
+   headHeight: numberSource(chain.head_height),
+   finalizedHeight: numberSource(chain.finalized_height),
+  },
+ };
+}
+
+export function compareMaintenanceObservations(before, after) {
+ if (before.identity.some((value, index) => value !== after.identity[index])) {
+  throw Error('The reports describe different validator, chain or public key binding contexts.');
+ }
+ if (before.capturedAt >= after.capturedAt) {
+  throw Error('Choose an earlier capture for Before and a later capture for After.');
+ }
+ const changes = Object.keys(releaseFields)
+  .filter(key => before.release[key] !== after.release[key])
+  .map(key => ({id:key, field:key.replaceAll('_', ' '), before:before.release[key], after:after.release[key]}));
+ return {before:before.status, after:after.status, changes};
 }
