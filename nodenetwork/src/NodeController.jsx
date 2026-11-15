@@ -7,6 +7,8 @@ import {InstallPreflight} from './InstallPreflight.jsx';
 import {targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
 import {ControllerRemoval} from './Offboarding.jsx';
+import {VpnStatus} from './VpnStatus.jsx';
+import {vpnStatusGate,vpnStatusObservation} from './vpn-status.js';
 
 function ControllerReceipt({receivedAt}) {
  const [now, setNow] = useState(Date.now);
@@ -21,7 +23,7 @@ function ControllerReceipt({receivedAt}) {
  </p>;
 }
 
-export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
+export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onOpenDiagnostics}){
  const [operator,setOperator]=useState('');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null);
  const [preflightAttempt,setPreflightAttempt]=useState(null);
@@ -33,19 +35,22 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  },`${key}:${permitted}`);
  const state=capabilities.data;
  const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
+ const vpn=vpnStatusGate(state);
+ const vpnResult=permitted&&vpn.available&&result?.operation==='vpn_status'?result:null;
  async function run(operation,parameters={}){
-  if(!permitted||busy)return;
+  if(!permitted||busy||(operation==='vpn_status'&&!vpn.available))return;
   setBusy(true);setError('');setResult(null);
   const submitted={...parameters};
   const isPreflight=operation==='install_preflight';
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
   try{
-   const response=await nodeNetworkController(target,operation,submitted);
+   const raw=await nodeNetworkController(target,operation,submitted);
+   const response=operation==='vpn_status'?vpnStatusObservation(raw):raw;
    if(alive.current){
     const receivedAt=Date.now();
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt});
     setResult({operation,submitted,result:response,receivedAt});
-    capabilities.reload();
+    if(operation!=='vpn_status')capabilities.reload();
    }
   }
   catch(failure){
@@ -69,7 +74,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   return <div className="native-controller-action" key={operation}><button disabled={!permitted||busy||!gate.available} onClick={()=>{try{run(operation,parameters());}catch(failure){setError(failure.message);}}}>{label}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
  }
  return <div className="native-controller">
-  <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={capabilities.reload}>Inspect selected target</button>}>
+  <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
+   if(result?.operation==='vpn_status')setResult(null);
+   capabilities.reload();
+  }}>Inspect selected target</button>}>
    <Resource value={capabilities}>{data=><>
     <ControllerReceipt receivedAt={data.receivedAt}/>
     <Detail data={data.summary}/>
@@ -103,12 +111,20 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    {button('recovery_preflight','Diagnose recovery readiness')}
    <p>Health and diagnostics use the selected target controller. Public RPC observations describe their RPC node. Recovery executes only through a separately qualified procedure; this interface does not offer arbitrary checkpoint imports or shell access.</p>
   </Card>}
+  {tab==='Management'&&<VpnStatus
+   action={<div className="native-controller-action">
+    <button disabled={!permitted||busy||!vpn.available} onClick={()=>run('vpn_status')}>Read VPN status</button>
+    {permitted&&!vpn.available&&<small>{vpn.blocker}</small>}
+   </div>}
+   observation={vpnResult?.result}
+   receipt={vpnResult&&<ControllerReceipt receivedAt={vpnResult.receivedAt}/>}
+   onOpenDiagnostics={onOpenDiagnostics}/>}
   {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={result} run={run}/>}
   {tab==='Installation isolation'&&<ControllerRemoval target={target} permitted={permitted} busy={busy}
    controller={state} result={result} run={run}
    inventoryAction={button('inventory','Inventory node-owned files')}
    preflightAction={button('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&result.operation!=='vpn_status'&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }

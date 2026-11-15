@@ -7,6 +7,7 @@ import {sourceRecords} from './source-records.js';
 import {canReadWalletAtlas} from './atlas-scope.js';
 import {atlasAccountKey} from './atlas-account.js';
 import {WalletReceiptObservation} from './WalletReceiptObservation.jsx';
+import {WalletRpcReceiptObservation} from './WalletRpcReceiptObservation.jsx';
 import {blockLookupHeight, comparableTransactionHash, compareIndexedBlock, reportedBlockMembership,
   transactionObservation} from './transaction-observation.js';
 
@@ -159,6 +160,7 @@ function IndexedDetails({row, account, endpoint, readRpc}) {
     {supportedTransaction && <AtlasExplorerAction hash={row.hash} account={account} endpoint={endpoint}/>}
     <p>This is the current Atlas record. Finality requires independent chain evidence.</p>
     {supportedTransaction && <WalletReceiptObservation hash={row.hash} account={account} endpoint={endpoint} block={block}/>}
+    {canCheck && <WalletRpcReceiptObservation {...{row, account, endpoint, readRpc}}/>}
     {canCheck && (checking
       ? <TransactionLookup hash={row.hash} account={account} endpoint={endpoint} readRpc={readRpc} indexedBlock={block}/>
       : <button onClick={() => setChecking(true)}>Check status on selected RPC</button>)}

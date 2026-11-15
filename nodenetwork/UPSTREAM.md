@@ -78,3 +78,7 @@ with TemporaryDirectory(prefix='portal-hostless-check-', dir='/private/tmp') as 
     raise SystemExit(result.returncode)
 PY
 ```
+
+The same uppercase Core revision's `node-platform/tools/linux-node/controller.py` implements `vpn_status` under its fixed read set with empty parameters. Its v1 response reports service registration, staged enrollment, recorded enrollment, reconciliation requirement, checked server binding, connected client and optional overlay CIDR. The adapter uses the existing operation lease and selected-target transport for this read. The separate `vpn_enroll` requires a scoped one-use grant and issuer. Those execution and custody paths need additional qualified integration.
+
+To exercise the native VPN schema tests without the application window, copy the Hub `nodenetwork/native` crate and Portal `apps/desktop/src-tauri/Cargo.lock` to a temporary crate, then run `cargo test --offline --manifest-path <temporary crate>/Cargo.toml --lib node_controller::tests::vpn_status` using the pinned engine environment above. The filter runs the pure request and response tests. The physical-host tests are a separate, explicitly ignored suite.

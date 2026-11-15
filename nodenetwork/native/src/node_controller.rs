@@ -49,7 +49,7 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight" => false,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status" => false,
             "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
@@ -153,6 +153,42 @@ pub async fn execute(target: Target, request: Request, control_dir: &Path) -> Re
     execute_pinned(target,request,control_dir,None).await
 }
 
+fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
+    use std::net::IpAddr;
+    const UNSUPPORTED: &str = "The selected controller returned unsupported VPN status.";
+    const FIELDS: [&str; 6] = ["service_registered", "enrollment_staged", "enrollment_recorded", "reconciliation_required", "server_bound", "connected"];
+    if reply["ok"] != true {
+        return Err("The selected controller could not provide VPN status.");
+    }
+    let result = &reply["result"];
+    let fields = result.as_object().ok_or(UNSUPPORTED)?;
+    if fields.len() != FIELDS.len() + 2 || result["schema"] != "nodenetwork-vpn-status-v1"
+        || FIELDS.iter().any(|key| result[*key].as_bool().is_none()) {
+        return Err(UNSUPPORTED);
+    }
+    let recorded = result["enrollment_recorded"] == true;
+    let bound = result["server_bound"] == true;
+    let connected = result["connected"] == true;
+    let reconciliation = result["reconciliation_required"] == true;
+    if (recorded && reconciliation) || (!recorded && (bound || connected))
+        || (connected && result["service_registered"] != true) {
+        return Err(UNSUPPORTED);
+    }
+    let overlay = fields.get("overlay_address").ok_or(UNSUPPORTED)?;
+    if recorded {
+        let (address, prefix) = overlay.as_str().filter(|text| text.len() <= 49)
+            .and_then(|text| text.split_once('/')).ok_or(UNSUPPORTED)?;
+        let ip = address.parse::<IpAddr>().map_err(|_| UNSUPPORTED)?;
+        let limit = if ip.is_ipv4() { 32 } else { 128 };
+        if !prefix.bytes().all(|byte| byte.is_ascii_digit()) || prefix.parse::<u8>().map_or(true, |bits| bits > limit) {
+            return Err(UNSUPPORTED);
+        }
+    } else if !overlay.is_null() {
+        return Err(UNSUPPORTED);
+    }
+    Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
 async fn execute_pinned(target: Target, request: Request, control_dir: &Path, known_hosts: Option<&Path>) -> Result<Value, String> {
     target.validate()?; request.validate()?;
     let _serial=SERIAL.lock().await;
@@ -180,6 +216,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         if !status.success() { return Err("Controller connection failed. Check enrolled target, pinned SSH identity, agent authentication and restricted sudo policy."); }
         let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Controller returned an invalid response.")?;
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
+        if request.operation == "vpn_status" { return vpn_status_reply(&value); }
         Ok(value)
     }).await;
     match result { Ok(value)=>value.map_err(String::from), Err(_)=>Err("Controller timed out. The result is uncertain; inspect target state before retrying a mutation.".into()) }
@@ -205,6 +242,38 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert_eq!(request.approval_id(),"9887b763bee52b22d58471c0e0adc4a7753458601c2e23db52437e040cc3c084");
         request.operation="target".into(); assert_eq!(request.validate(),Ok(false));
         request.operation="shell".into(); assert!(request.validate().is_err());
+    }
+    #[test] fn vpn_status_is_an_empty_parameter_read_and_enrollment_is_unavailable() {
+        let mut request = Request{version:1,operation:"vpn_status".into(),parameters:json!({})};
+        assert_eq!(request.validate(), Ok(false));
+        request.parameters = json!({"address":"fixture"});
+        assert!(request.validate().is_err());
+        request.operation = "vpn_enroll".into();
+        request.parameters = json!({});
+        assert!(request.validate().is_err());
+    }
+    #[test] fn vpn_status_validates_owner_shape_and_keeps_extra_reply_metadata_private() {
+        let mut reply = json!({"version":1,"ok":true,"internal":"unreviewed fixture","result":{
+            "schema":"nodenetwork-vpn-status-v1","service_registered":true,"enrollment_staged":false,
+            "enrollment_recorded":true,"reconciliation_required":false,"server_bound":false,"connected":true,
+            "overlay_address":"100.80.10.4/16"
+        }});
+        let projected = vpn_status_reply(&reply).unwrap();
+        assert_eq!(projected["result"],reply["result"]);
+        assert!(projected.get("internal").is_none());
+        reply["result"]["overlay_address"] = json!("100.80.10.4/64");
+        assert!(vpn_status_reply(&reply).is_err());
+        reply["result"]["overlay_address"] = json!("fd00::4/64");
+        assert!(vpn_status_reply(&reply).is_ok());
+        reply["result"]["enrollment_recorded"] = json!(false);
+        assert!(vpn_status_reply(&reply).is_err());
+        reply["result"]["connected"] = json!(false);
+        reply["result"]["overlay_address"] = Value::Null;
+        reply["result"]["reconciliation_required"] = json!(true);
+        assert!(vpn_status_reply(&reply).is_ok());
+        reply["result"]["private_payload"] = json!("fixture");
+        assert!(vpn_status_reply(&reply).is_err());
+        assert_eq!(vpn_status_reply(&json!({"ok":false,"error":{"message":"private fixture"}})), Err("The selected controller could not provide VPN status."));
     }
     #[test]
     #[ignore = "Requires an explicitly enrolled disposable Linux VM and its authenticated SSH host pin"]
