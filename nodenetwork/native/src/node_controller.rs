@@ -446,6 +446,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "diagnostics" => crate::node_diagnostics::reply(&value),
             "install_preflight" => install_preflight_reply(&request, &value),
             "upgrade_preflight" => upgrade_preflight_reply(&request, &value),
+            "uninstall_preflight" => crate::node_removal_scope::reply(&value),
             "vpn_status" => vpn_status_reply(&value),
             "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
             "genesis_binding_preflight" => genesis_binding_reply(&value),

@@ -4,10 +4,11 @@ import {Card,Detail,ErrorMessage,useResource,Resource,Table} from "@synergy-netw
 import {controllerOperation,installParameters} from './nodeNetwork.js';
 import {installPreflightChecklist,installPreflightObservation} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
-import {installedControllerRead,targetControllerObservation} from './target-observation.js';
+import {controllerRead,installedControllerRead,targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
 import {upgradePreflightObservation} from './upgrade-preflight.js';
 import {ControllerRemoval} from './Offboarding.jsx';
+import {removalPreflightObservation} from './removal-preflight.js';
 import {VpnStatus} from './VpnStatus.jsx';
 import {vpnStatusObservation} from './vpn-status.js';
 import {CustodyStatus} from './CustodyStatus.jsx';
@@ -19,6 +20,7 @@ import {targetHealthObservation} from './target-health.js';
 const typedStatus = {
  health: targetHealthObservation,
  upgrade_preflight: upgradePreflightObservation,
+ uninstall_preflight: removalPreflightObservation,
  vpn_status: vpnStatusObservation,
  identity_status: response => custodyStatusObservation('identity_status',response),
  formation_status: response => custodyStatusObservation('formation_status',response),
@@ -69,7 +71,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  },`${key}:${permitted}`);
  const state=capabilities.data;
  const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
- const statusGates=Object.fromEntries(Object.keys(typedStatus).map(operation=>[operation,installedControllerRead(state,operation)]));
+ const statusGates=Object.fromEntries(Object.keys(typedStatus).map(operation=>[
+  operation, operation==='uninstall_preflight'?controllerRead(state,operation):installedControllerRead(state,operation),
+ ]));
  const statusResult=permitted&&statusGates[result?.operation]?.available?result:null;
  const healthResult=statusResult?.operation==='health'?statusResult:null;
  const vpnResult=statusResult?.operation==='vpn_status'?statusResult:null;
@@ -176,9 +180,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    onOpenHistory={onOpenDiagnostics}/>}
   {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={statusResult} run={run}/>}
   {tab==='Installation isolation'&&<ControllerRemoval target={target} permitted={permitted} busy={busy}
-   controller={state} result={result} run={run}
+   controller={state} result={statusResult} run={run}
    inventoryAction={button('inventory','Inventory node-owned files')}
-   preflightAction={button('uninstall_preflight','Review uninstall scope')}/>}
+   preflightAction={statusAction('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
   <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
