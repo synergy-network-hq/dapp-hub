@@ -1,6 +1,6 @@
 import {useEffect, useId, useRef, useState} from 'react';
 import {Card, ErrorMessage, ModalDialog, useAction} from '@synergy-network/portal-native/dapp-sdk';
-import {isValidSynergyAddress} from './wallet-address.js';
+import {canSaveContactAddress,contactAddressProfile} from './wallet-address.js';
 import {CONTACT_KEY, matchesReviewedContact, readContacts, removeContact, saveContact} from './wallet-contacts.js';
 
 const emptyContact = {name: '', address: ''};
@@ -25,8 +25,11 @@ function ContactEditor({original, blocked, onClose, onSave}) {
     if (blocked) return;
     const nextErrors = {};
     if (!draft.name.trim()) nextErrors.name = 'Enter a contact name.';
-    if (!isValidSynergyAddress(draft.address.trim())) {
-      nextErrors.address = 'Enter a lowercase Synergy address with a valid checksum.';
+    const address = draft.address.trim();
+    if (!canSaveContactAddress(address, original?.address)) {
+      nextErrors.address = contactAddressProfile(address) === 'legacy'
+        ? 'Keep the original saved address or enter a current Synergy address.'
+        : 'Enter a current Synergy address with its exact checksum.';
     }
     setErrors(nextErrors);
     setSaveError('');
@@ -48,9 +51,11 @@ function ContactEditor({original, blocked, onClose, onSave}) {
         aria-invalid={!!errors.name} aria-describedby={errors.name ? formId + '-name-error' : undefined}
         value={draft.name} onChange={event => change('name', event.target.value)}/></label>
       {errors.name && <span className="integration-field-error" id={formId + '-name-error'} role="alert">{errors.name}</span>}
-      <label>Contact address<input ref={addressField} required maxLength={100}
+      <label>Contact address<input ref={addressField} autoCapitalize="none" spellCheck={false} required maxLength={100}
         aria-invalid={!!errors.address} aria-describedby={errors.address ? formId + '-address-error' : undefined}
         value={draft.address} onChange={event => change('address', event.target.value)}/></label>
+      {original && contactAddressProfile(original.address) === 'legacy' &&
+        <p>You can keep the saved legacy address when editing this contact.</p>}
       {errors.address && <span className="integration-field-error" id={formId + '-address-error'} role="alert">{errors.address}</span>}
       <ErrorMessage error={blocked || saveError}/>
       <div className="native-actions">
@@ -97,6 +102,7 @@ function ContactPreview({contact, onClose, readCurrent, onChanged}) {
   return <Card title="Selected contact">
     <p>{contact.name}</p>
     <p className="account-address">{contact.address}</p>
+    {contactAddressProfile(contact.address) === 'legacy' && <p>Saved legacy address. Confirm that the receiving wallet supports this format.</p>}
     <div className="native-actions">
       <button disabled={action.busy} onClick={copy}>Copy address</button>
       <button onClick={onClose}>Close contact preview</button>

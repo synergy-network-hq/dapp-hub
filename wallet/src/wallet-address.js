@@ -1,55 +1,54 @@
-// Extracted from synergy-wallet@50d9981d588043f7db3a16dc7b5c8ca3e7db80cc
-// packages/wallet-core/src/address.js; canonical checksum/active-prefix validation only.
+import {keccak_256} from '@noble/hashes/sha3';
 import {bech32m} from 'bech32';
-const TARGET_ADDRESS_LEN = 41;
-const CHECKSUM_LEN = 6;
-const SEPARATOR_LEN = 1;
-const FNDSA1024_PUBLIC_KEY_BYTES = 1793;
 
-export const SYNERGY_ADDRESS_ENGINE_VERSION = 'synergy-address-engine-v1';
-export const SYNERGY_ADDRESS_REGISTRY_VERSION = 'SNTS-01-v1.3';
-export const SYNERGY_BURN_ADDRESS = 'syn0000000000000000000000000000000';
-export const SYNERGY_TYPED_HASH_HEX_LENGTHS = Object.freeze({
-  syntxn: 64,
-  synxxn: 64,
-  synixn: 64,
-  synblk: 64,
-  synmkl: 64,
-  synepoch: 128,
-  synqc: 64,
-});
+const BECH32M_ADDRESS_LENGTH = 41;
+const BECH32M_SEPARATOR_AND_CHECKSUM_LENGTH = 7;
+const PROTECTED_ADDRESS_LENGTH = 44;
+const BURN_ADDRESS = 'syn0000000000000000000000000000000';
 
-const KEY_CONTROLLED_PREFIXES = new Set([
-  'synw', 'syns', 'syna', 'synz',
-  'synv1', 'synv2', 'synv3', 'synv4', 'synv5',
-  'syno', 'syny', 'synm', 'synu', 'synl',
-]);
-
-const OBJECT_ADDRESS_PREFIXES = new Set([
-  'synb1', 'synb2', 'synb3',
-  'synn1', 'synn2',
-  'synj', 'synk', 'synq', 'sync',
+// Current address namespaces from the Wallet owner at e7af1fce62c396a95e989cec33edc333eb405a05.
+const activeBech32mPrefixes = new Set([
+  'syns', 'syna', 'synz', 'synv1', 'synv2', 'synv3', 'synv4', 'synv5', 'syno', 'syny',
+  'synb1', 'synb2', 'synb3', 'synn1', 'synn2', 'synj', 'synk', 'synq', 'sync', 'synf',
   'syngrp1', 'syngrp2', 'syngrp3', 'syngrp4', 'syngrp5',
-  'synf',
 ]);
+// These exact namespaces were accepted by the old local contact store at 50d9981d588043f7db3a16dc7b5c8ca3e7db80cc.
+const savedOnlyPrefixes = new Set(['synw', 'synm', 'synu', 'synl']);
 
-const ACTIVE_ADDRESS_PREFIXES = new Set([
-  ...KEY_CONTROLLED_PREFIXES,
-  ...OBJECT_ADDRESS_PREFIXES,
-]);
+function isProtectedWalletAddress(address) {
+  if (address.length !== PROTECTED_ADDRESS_LENGTH || !/^synw[0-9a-fA-F]{40}$/.test(address)) return false;
+  // SYNW_HEX_EIP55_V1 from the Wallet owner. Keccak hashes the lowercase hex body without its prefix.
+  const body = address.slice(4);
+  const lower = body.toLowerCase();
+  const checksum = keccak_256(new TextEncoder().encode(lower));
+  const expected = [...lower].map((digit, index) => {
+    const nibble = index % 2 ? checksum[index >> 1] & 15 : checksum[index >> 1] >> 4;
+    return nibble >= 8 ? digit.toUpperCase() : digit;
+  }).join('');
+  return body === expected;
+}
 
-export function isValidSynergyAddress(address) {
-  if (typeof address !== 'string' || address !== address.toLowerCase()) {
-    return false;
+// A contact format classifier for local storage and display. This does not verify ownership or transfer eligibility.
+export function contactAddressProfile(address) {
+  if (typeof address !== 'string') return null;
+  if (address.length === PROTECTED_ADDRESS_LENGTH) {
+    return isProtectedWalletAddress(address) ? 'protected' : null;
   }
-  if (address === SYNERGY_BURN_ADDRESS) return true;
-  if (address.length !== TARGET_ADDRESS_LEN) return false;
+  if (address === BURN_ADDRESS) return 'burn';
+  if (address.length !== BECH32M_ADDRESS_LENGTH || address !== address.toLowerCase()) return null;
   try {
-    const { prefix, words } = bech32m.decode(address);
-    const expectedWordCount = TARGET_ADDRESS_LEN - prefix.length - SEPARATOR_LEN - CHECKSUM_LEN;
-    return ACTIVE_ADDRESS_PREFIXES.has(prefix) && words.length === expectedWordCount;
+    const {prefix, words} = bech32m.decode(address);
+    if (words.length !== BECH32M_ADDRESS_LENGTH - prefix.length - BECH32M_SEPARATOR_AND_CHECKSUM_LENGTH) {
+      return null;
+    }
+    if (activeBech32mPrefixes.has(prefix)) return 'bech32m';
+    return savedOnlyPrefixes.has(prefix) ? 'legacy' : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
+export function canSaveContactAddress(address, savedAddress) {
+  const profile = contactAddressProfile(address);
+  return profile !== null && (profile !== 'legacy' || address === savedAddress);
+}
