@@ -87,24 +87,35 @@ function ContactRemoval({contact, blocked, onClose, onRemove}) {
   </ModalDialog>;
 }
 
-function ContactPreview({contact, onClose, readCurrent, onChanged}) {
+function ContactPreview({contact, onClose, readCurrent, onChanged, onDraftRecipient}) {
   const action = useAction();
+  const canDraftRecipient = onDraftRecipient && canSaveContactAddress(contact.address);
+
+  function recheckContact(operation) {
+    const current = readCurrent()?.find(item => matchesReviewedContact(item, contact));
+    if (!current) onChanged(operation);
+    return current;
+  }
+
   function copy() {
     return action.run(async () => {
-      const items = readCurrent();
-      if (!items?.some(item => matchesReviewedContact(item, contact))) {
-        onChanged();
-        return;
-      }
-      await navigator.clipboard.writeText(contact.address);
+      const current = recheckContact('copying');
+      if (current) await navigator.clipboard.writeText(current.address);
     });
   }
+
+  function useInDraft() {
+    const current = recheckContact('using it in the recipient draft');
+    if (current) onDraftRecipient(current);
+  }
+
   return <Card title="Selected contact">
     <p>{contact.name}</p>
     <p className="account-address">{contact.address}</p>
     {contactAddressProfile(contact.address) === 'legacy' && <p>Saved legacy address. Confirm that the receiving wallet supports this format.</p>}
     <div className="native-actions">
       <button disabled={action.busy} onClick={copy}>Copy address</button>
+      {canDraftRecipient && <button onClick={useInDraft}>Use in recipient draft</button>}
       <button onClick={onClose}>Close contact preview</button>
     </div>
     <ErrorMessage error={action.error}/>
@@ -119,7 +130,7 @@ function openAddressBook() {
   }
 }
 
-export function WalletContacts() {
+export function WalletContacts({onDraftRecipient} = {}) {
   const [state, setState] = useState(openAddressBook);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
@@ -222,7 +233,10 @@ export function WalletContacts() {
     </Card>
     {readable && reviewed && <ContactPreview key={reviewed.id} contact={reviewed}
       onClose={() => setReviewed(null)} readCurrent={refresh}
-      onChanged={() => setStatus('This contact changed or became unavailable. Review it again before copying.')}/>}
+      onChanged={operation => setStatus(`This contact changed or became unavailable. Review it again before ${operation}.`)}
+      onDraftRecipient={onDraftRecipient && (contact => {
+        if (onDraftRecipient(contact)) setStatus('Recipient added to the local Send draft.');
+      })}/>}
     {dialog?.type === 'remove' && <ContactRemoval contact={dialogContact} blocked={blocked} onClose={() => setDialog(null)} onRemove={remove}/>}
     {dialog && dialog.type !== 'remove' && <ContactEditor original={dialogContact} blocked={blocked} onClose={() => setDialog(null)} onSave={save}/>}
   </>;

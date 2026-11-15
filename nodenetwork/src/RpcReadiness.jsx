@@ -1,6 +1,7 @@
 import {rpc,Resource,useResource,Detail,Card,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
+import {RpcSyncHistory} from './RpcSyncHistory.jsx';
 import {rpcReadinessWithSync} from './rpc-sync-observation.js';
 
 function PublicSyncSummary({sync, error}) {
@@ -24,6 +25,24 @@ function PublicSyncSummary({sync, error}) {
 }
 
 export function RpcReadiness({profile,permitted}){
- const observation=useResource(signal=>{if(!permitted)throw Error('Allow public NodeNetwork reads in Security & permissions.');return readProtocolObservation(rpc,'synergy_getReadiness',profile,signal,rpcReadinessWithSync);},JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted]));
- return <Card title="Public RPC readiness report"><p>This describes the selected RPC server only. It does not select, authenticate or qualify a managed host, VPN, signer, validator activation or participation.</p><Resource value={observation}>{value=><><SourceAge source="Selected public RPC readiness read" updatedAt={value.receivedAt}/><Detail data={{rpcReportedReady:value.reportedReady,reportedHealth:value.status,chainStateAvailable:value.chainStateAvailable,reportedFailClosed:value.failClosed,reportedHeight:value.height??'Unavailable',reportedNetwork:value.chain.network,reportedIncarnation:value.chain.incarnation,reportedGenesis:value.chain.genesis}}/><PublicSyncSummary sync={value.sync} error={value.syncError}/><p>Server-reported context is not independently verified. Filesystem paths, raw health errors and other server details are excluded.</p></>}</Resource><button disabled={!permitted||observation.loading} onClick={observation.reload}>Refresh RPC readiness report</button></Card>;
+ const scope = JSON.stringify([profile.id, profile.rpc, profile.chainId, permitted]);
+ return <RpcReadinessReport key={scope} profile={profile} permitted={permitted}/>;
+}
+
+function RpcReadinessReport({profile, permitted}) {
+ const observation = useResource(signal => {
+  if (!permitted) throw Error('Allow public NodeNetwork reads in Security & permissions.');
+  return readProtocolObservation(rpc, 'synergy_getReadiness', profile, signal, rpcReadinessWithSync);
+ }, 'readiness-report');
+ return <Card title="Public RPC readiness report">
+  <p>This describes the selected RPC server only. It does not select, authenticate or qualify a managed host, VPN, signer, validator activation or participation.</p>
+  <Resource value={observation}>{value => <>
+   <SourceAge source="Selected public RPC readiness read" updatedAt={value.receivedAt}/>
+   <Detail data={{rpcReportedReady: value.reportedReady, reportedHealth: value.status, chainStateAvailable: value.chainStateAvailable, reportedFailClosed: value.failClosed, reportedHeight: value.height ?? 'Unavailable', reportedNetwork: value.chain.network, reportedIncarnation: value.chain.incarnation, reportedGenesis: value.chain.genesis}}/>
+   <PublicSyncSummary sync={value.sync} error={value.syncError}/>
+   <p>Server-reported context is not independently verified. Filesystem paths, raw health errors and other server details are excluded.</p>
+  </>}</Resource>
+  <button disabled={!permitted || observation.loading} onClick={observation.reload}>Refresh RPC readiness report</button>
+  {permitted && <RpcSyncHistory profile={profile} observation={observation.data} refreshing={observation.loading}/>}
+ </Card>;
 }

@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useCallback, useState} from 'react';
 import {
   useNative, atlas, rpc, chainIdNumber, openWallet, Card, Resource, useResource,
   useAction, ErrorMessage, Detail, Copy,
@@ -15,6 +15,7 @@ import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
 import {WalletCollectibles} from './WalletCollectibles.jsx';
 import {WalletOverview} from './WalletOverview.jsx';
+import {WalletRecipientDraft} from './WalletRecipientDraft.jsx';
 import './wallet.css';
 
 const tabs = ['Assets', 'Collectibles', 'Activity', 'Receive', 'Send', 'Address book', 'Connections'];
@@ -24,12 +25,17 @@ export function WalletApp() {
   const connection = n.wallet.connection;
   const [tab, setTab] = useState('Assets');
   const [revision, setRevision] = useState(0);
+  const [recipientDraft, setRecipientDraft] = useState(null);
+  const invalidateRecipient = useCallback(contact => setRecipientDraft(current =>
+    current?.contact === contact ? {...current, contact: null} : current), []);
   const action = useAction();
   const ready = !n.recoverySuspended && n.permit('wallet', 'readWallet') &&
     connection?.chainId === 'synergy:1266' && Number(n.endpoint.chainId) === 1266;
   const currentTab = ready ? tab : 'Connections';
   const scope = JSON.stringify([connection?.walletId, connection?.address, n.endpointId, n.endpoint.rpc, n.endpoint.networkKey, ready]);
   const observationKey = `${scope}:${revision}`;
+  const draftScope = JSON.stringify([scope, n.walletConsentSession]);
+  if (recipientDraft && recipientDraft.scope !== draftScope) setRecipientDraft(null);
 
   const tokens = useResource(async signal => {
     if (!ready) throw Error('Connect a chain 1266 account and allow Wallet reads.');
@@ -72,13 +78,19 @@ export function WalletApp() {
       case 'Receive':
         return <Receive account={connection.address} endpoint={n.endpoint}/>;
       case 'Address book':
-        return <><WalletContacts key={scope}/>{!!n.profile.contacts?.length && <Card title="Legacy contacts">
+        return <><WalletContacts key={scope} onDraftRecipient={contact => {
+          if (!n.permit('wallet', 'readWallet')) return false;
+          setRecipientDraft({scope: draftScope, contact});
+          return true;
+        }}/>{!!n.profile.contacts?.length && <Card title="Legacy contacts">
           <p>Existing profile contacts are retained. Review and add them to this network-specific address book when needed.</p>
           <Detail data={{contacts: n.profile.contacts}}/>
         </Card>}</>;
       default:
         return <Card title="Send requires a supported transaction contract">
           <p>Transfers remain unavailable until the network’s authoritative ETDAG transaction preparation and mobile signing contracts are integrated. No nonce, fees, signature algorithm or transaction envelope is guessed.</p>
+          {recipientDraft?.scope === draftScope && <WalletRecipientDraft contact={recipientDraft.contact} endpoint={n.endpoint}
+            onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}/>}
           <WalletFeeMarket endpoint={n.endpoint}/>
           <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
         </Card>;
