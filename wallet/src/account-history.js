@@ -17,12 +17,22 @@ export function validateHistoryPage(value,account,{cursor=null,previous=null}={}
  if(value.items.some(row=>!row||typeof row!=='object'||Array.isArray(row)||!token(row.hash)||!decimal(row.block_number)||!snapshot||BigInt(row.block_number)>BigInt(snapshot.blockNumber)||(row.sender_address!==key&&row.receiver_address!==key)||['amount_nwei','fee_nwei','nonce'].some(key=>row[key]!==null&&(typeof row[key]!=='string'||!/^\d{1,78}$/.test(row[key])))))fail();
  if(new Set(value.items.map(row=>row.hash)).size!==value.items.length)fail();
  if(previous&&(previous.address!==key||value.network!==previous.network||snapshot?.blockNumber!==previous.snapshot?.blockNumber||snapshot?.blockHash!==previous.snapshot?.blockHash))fail();
+ const previousItems=previous?.items;
+ if(previous&&!Array.isArray(previousItems))fail();
+ const previousHeight=previousItems?.[previousItems.length-1]?.block_number;
+ if(previousItems?.length&&!decimal(previousHeight))fail();
+ let lastHeight=previousHeight===undefined?null:BigInt(previousHeight);
+ for(const row of value.items){
+  const height=BigInt(row.block_number);
+  if(lastHeight!==null&&height>lastHeight)fail();
+  lastHeight=height;
+ }
  return {...value,receivedAt:Date.now()};
 }
 export async function readAccountHistory(request,account,{cursor=null,previous=null,signal}={}){
  if(signal?.aborted)throw signal.reason;
  const key=requireAtlasAccountKey(account);
- if(cursor!==null&&(!previous||previous.address!==key||!cursorValue(cursor)))throw Error('Unsupported account-history cursor.');
+ if(cursor!==null&&(previous?.hasMore!==true||previous.address!==key||previous.nextCursor!==cursor||!cursorValue(cursor)))throw Error('Unsupported account-history cursor.');
  const query=new URLSearchParams({limit:String(HISTORY_PAGE_LIMIT)});if(cursor)query.set('cursor',cursor);
  const value=await request(`accounts/${encodeURIComponent(key)}/transactions?${query}`,{signal});
  if(signal?.aborted)throw signal.reason;

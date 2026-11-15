@@ -7,6 +7,7 @@ import './monitor.css';
 import {ValidatorMonitor} from './ValidatorMonitor.jsx';
 import {NodeWatchlist} from './NodeWatchlist.jsx';
 import {validatorLookupObservation, validatorLookupPath} from './validator-lookup.js';
+import {readValidatorActiveListing} from './validator-active-list.js';
 import {useEffect,useRef,useState} from 'react';
 import {useNative} from "@synergy-network/portal-native/dapp-sdk";
 import {atlas,rpc} from "@synergy-network/portal-native/dapp-sdk";
@@ -57,7 +58,7 @@ export function NodeNetworkApp(){
   return readNodeNetwork(rpc,profile,signal);
  },`${profile.id}:${profile.rpc}:${profile.chainId}:${permitted}`);
  const validators=useResource(async signal=>{if(!permitted||Number(profile.chainId)!==1266)throw Error('Public Atlas validator monitoring requires read permission and chain 1266.');if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');const data=await atlas('validators?limit=100',{signal});return {data,updatedAt:Date.now()};},`${profile.id}:${profile.rpc}:${profile.chainId}:${permitted}`);
- const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted]);
+ const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,permitted]);
  async function lookupValidator(address,signal){
   if(!permitted||Number(profile.chainId)!==1266)throw Error('Public validator lookup requires read permission and chain 1266.');
   const path=validatorLookupPath(address);
@@ -67,6 +68,10 @@ export function NodeNetworkApp(){
   const detail=await atlas(path,{signal});
   signal?.throwIfAborted();
   return validatorLookupObservation(detail,address);
+ }
+ function lookupActiveListing(address, signal) {
+  if (!permitted) throw Error('Allow NodeNetwork to read public network data in Security & permissions.');
+  return readValidatorActiveListing(rpc, profile, address, signal);
  }
  const refreshPublic=()=>{live.reload();validators.reload();};
  return <NodeNetworkPanelFrame section={section} onSectionChange={setSection} subtitle="Operator workspace · Enrollment policy has not been verified." statusLabel={live.loading?'Checking observation network':live.error?'Observation network error':'Public network observed'} statusTone={live.data?'blue':'gray'} onRefresh={refreshPublic} refreshing={live.loading||validators.loading} nodeLabel={!targetSettings.snapshot?'Target settings need review':!target?'Host selection deferred':target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} statusItems={[{label:'Target root',value:target?.root||'No target selected'},{label:'Observation network',value:profile.name},{label:'Chain ID',value:profile.chainId},{label:'Enrollment policy',value:'Not verified'}]}>
@@ -93,7 +98,7 @@ export function NodeNetworkApp(){
     <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
    </Card></div>
    {permitted&&Number(profile.chainId)===1266&&<div className="node-read-monitor">
-    <NodeWatchlist key={monitorScope} data={validators.data?.data} updatedAt={validators.data?.updatedAt} readValidator={lookupValidator}/>
+    <NodeWatchlist key={monitorScope} data={validators.data?.data} updatedAt={validators.data?.updatedAt} readValidator={lookupValidator} readActiveListing={lookupActiveListing}/>
    </div>}
    <p className="native-source">Public RPC observations from {profile.rpc}. These observations do not authenticate a provisioning target or approve enrollment.</p>
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>

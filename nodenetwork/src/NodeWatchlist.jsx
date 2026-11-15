@@ -6,6 +6,7 @@ import {validatorSource} from './validator-source.js';
 import {validatorLookupAddress} from './validator-lookup.js';
 import {ValidatorBlockReview} from './ValidatorBlockReview.jsx';
 import {ValidatorRewardSettlements} from './ValidatorRewardSettlements.jsx';
+import {ValidatorActiveList} from './ValidatorActiveList.jsx';
 
 const key = 'portal-node-watchlist-1266-v1';
 const valid = id => typeof id === 'string' && id.length > 0 && id.length <= 160 && !/[\x00-\x1f\x7f]/.test(id);
@@ -28,7 +29,7 @@ function initialWatchlist() {
  catch (error) {return {ids: [], error: String(error?.message || error), readable: false};}
 }
 
-export function NodeWatchlist({data, updatedAt, readValidator}) {
+export function NodeWatchlist({data, updatedAt, readValidator, readActiveListing}) {
  const [watchlist, setWatchlist] = useState(initialWatchlist);
  const {ids, error, readable} = watchlist;
  const [selected, setSelected] = useState('');
@@ -134,6 +135,7 @@ export function NodeWatchlist({data, updatedAt, readValidator}) {
    <ValidatorBlockReview key={`${result.address}:${result.receivedAt}`} observation={result}/>
    <ValidatorRewardSettlements key={`${result.address}:${result.receivedAt}:rewards`} settlements={result.indexedRewards ?? null}/>
   </section>}</Resource>}
+  {lookupAddress && readActiveListing && <ValidatorActiveList key={lookupAddress} address={lookupAddress} readListing={readActiveListing}/>}
 
   {!ids.length && !error && <p>No watched validators.</p>}
   {ids.map(id => {
