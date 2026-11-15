@@ -5,6 +5,7 @@ import {atlasAccountKey} from './atlas-account.js';
 import {canReadWalletAtlas} from './atlas-scope.js';
 import {checkConfiguredReceiptGenesis, rpcReceiptObservation, rpcReceiptReadiness, rpcReceiptSelection} from './rpc-receipt-observation.js';
 import {blockLookupHeight, reportedBlockMembership} from './transaction-observation.js';
+import {WalletAtlasReceiptBlock} from './WalletAtlasReceiptBlock.jsx';
 
 const blockMessages = {
   listed: 'The reported receipt block lists this transaction.',
@@ -70,7 +71,7 @@ function ReceiptBlockLookup({receipt, hash, endpoint, readRpc, canRead}) {
   </section>;
 }
 
-function RpcReceiptLookup({selection, endpoint, readRpc, canRead}) {
+function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead}) {
   const [revision, setRevision] = useState(0);
   const check = () => setRevision(value => value + 1);
   const observation = useResource(async signal => {
@@ -106,6 +107,7 @@ function RpcReceiptLookup({selection, endpoint, readRpc, canRead}) {
         {receipt.tip !== null && BigInt(receipt.height) > BigInt(receipt.tip) &&
           <p role="status">The RPC returned a receipt above its reported chain tip.</p>}
         <ReceiptBlockLookup key={revision} hash={selection.hash} {...{receipt, endpoint, readRpc, canRead}}/>
+        <WalletAtlasReceiptBlock key={`atlas:${revision}`} hash={selection.hash} {...{receipt, native, canRead}}/>
       </> : <p role="status">The selected RPC returned no receipt for this transaction.</p>}
       <p>RPC receipt checked <time dateTime={checkedAt}>{checkedAt}</time></p>
       <button onClick={check}>Check RPC receipt again</button>
@@ -122,5 +124,5 @@ export function WalletRpcReceiptObservation({row, account, endpoint, readRpc}) {
   if (!selection || !canRead()) return null;
   const scope = JSON.stringify([selection, endpoint.id, endpoint.rpc, endpoint.networkKey, endpoint.chainId,
     endpoint.genesisHash, n.walletConsentSession]);
-  return <RpcReceiptLookup key={scope} {...{selection, endpoint, readRpc, canRead}}/>;
+  return <RpcReceiptLookup key={scope} native={n} {...{selection, endpoint, readRpc, canRead}}/>;
 }
