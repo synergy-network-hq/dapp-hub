@@ -1,3 +1,5 @@
+import {controllerOperation} from './nodeNetwork.js';
+
 const boundedToken = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
 const reportedBoolean = value => typeof value === 'boolean' ? value : 'Not reported';
 
@@ -23,16 +25,18 @@ export function targetControllerObservation(value, receivedAt = Date.now()) {
   },
  };
 }
-import {controllerOperation} from './nodeNetwork.js';
-
-
-export function installedControllerRead(controller, operation) {
+export function controllerRead(controller, operation) {
  const capability = controllerOperation(controller, operation);
  if (!capability.available) return capability;
  if (controller.summary?.controllerVersion !== 1 || controller.operations.find(row => row?.operation === operation)?.kind !== 'read') {
   return {available: false, blocker: 'The selected controller did not advertise a supported read.'};
  }
- if (controller.summary.controllerReportedInstalled !== true) {
+ return capability;
+}
+
+export function installedControllerRead(controller, operation) {
+ const capability = controllerRead(controller, operation);
+ if (capability.available && controller.summary.controllerReportedInstalled !== true) {
   return {available: false, blocker: 'A controller-reported node installation is required for this inspection.'};
  }
  return capability;

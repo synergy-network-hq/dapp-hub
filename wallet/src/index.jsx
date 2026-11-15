@@ -81,7 +81,8 @@ export function WalletApp() {
         return <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
           endpoint={n.endpoint} readAtlas={readAtlas} recent={data} recentAt={data?.portalReceivedAt}/> : <p>{atlasEndpointRequired}</p>}</Card>;
       case 'Receive':
-        return <Receive account={connection.address} endpoint={n.endpoint}/>;
+        return <Receive account={connection.address} endpoint={n.endpoint} consentSession={n.walletConsentSession}
+          readRpc={rpc} canUse={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')}/>;
       case 'Address book':
         return <><WalletContacts key={scope} onDraftRecipient={contact => {
           if (!n.permit('wallet', 'readWallet')) return false;

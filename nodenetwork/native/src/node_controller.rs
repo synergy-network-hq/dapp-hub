@@ -153,6 +153,23 @@ pub async fn execute(target: Target, request: Request, control_dir: &Path) -> Re
     execute_pinned(target,request,control_dir,None).await
 }
 
+fn install_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    if reply["ok"] != true {
+        if reply["error"]["code"] == "qualification_required" {
+            return Err("The controller did not confirm package or network policy for this preflight.");
+        }
+        return Err("The selected controller could not provide an installation preflight report.");
+    }
+    let result = &reply["result"];
+    if !result.as_object().is_some_and(|fields| fields.len() == 6)
+        || result["release"] != request.parameters["release_id"] || result["root"] != ROOT
+        || result["packageVerified"] != true || result["networkSelectionApproved"] != true
+        || result["genesisAuthorityVerified"] != false || result["activationAuthorized"] != false {
+        return Err("The selected controller returned unsupported or mismatched installation preflight evidence.");
+    }
+    Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
 fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
     use std::net::IpAddr;
     const UNSUPPORTED: &str = "The selected controller returned unsupported VPN status.";
@@ -258,6 +275,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Controller returned an invalid response.")?;
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
         match request.operation.as_str() {
+            "install_preflight" => install_preflight_reply(&request, &value),
             "vpn_status" => vpn_status_reply(&value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
             _ => Ok(value),
@@ -286,6 +304,29 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert_eq!(request.approval_id(),"9887b763bee52b22d58471c0e0adc4a7753458601c2e23db52437e040cc3c084");
         request.operation="target".into(); assert_eq!(request.validate(),Ok(false));
         request.operation="shell".into(); assert!(request.validate().is_err());
+    }
+    #[test] fn install_preflight_preserves_exact_read_and_rejects_unbound_reply() {
+        let request = Request{version:1,operation:"install_preflight".into(),parameters:json!({
+            "release_id":"fixture-release","manifest_sha256":"a".repeat(64),"network_id":"fixture-network",
+            "chain_id":1266,"node_name":"fixture-validator"
+        })};
+        assert_eq!(request.validate(), Ok(false));
+        let report = json!({"packageVerified":true,"release":"fixture-release","root":ROOT,
+            "networkSelectionApproved":true,"genesisAuthorityVerified":false,"activationAuthorized":false});
+        let wrap = |result| json!({"version":1,"ok":true,"result":result,"unexpected":"fixture"});
+        let returned = install_preflight_reply(&request, &wrap(report.clone())).unwrap();
+        assert_eq!(returned["result"],report);
+        assert!(returned.get("unexpected").is_none());
+        for (key, value) in [("release",json!("another-release")), ("root",json!("/opt/synergy")),
+            ("packageVerified",json!(false)), ("networkSelectionApproved",json!(false)), ("genesisAuthorityVerified",json!(true)),
+            ("activationAuthorized",json!(true)), ("unexpected",json!("fixture"))] {
+            let mut altered = report.clone();
+            altered[key] = value;
+            assert!(install_preflight_reply(&request, &wrap(altered)).is_err(), "{key}");
+        }
+        assert!(install_preflight_reply(&request, &wrap(json!({}))).is_err());
+        let refused = json!({"ok":false,"error":{"code":"qualification_required","message":"fixture detail excluded"}});
+        assert_eq!(install_preflight_reply(&request,&refused),Err("The controller did not confirm package or network policy for this preflight."));
     }
     #[test] fn vpn_status_is_an_empty_parameter_read_and_enrollment_is_unavailable() {
         let mut request = Request{version:1,operation:"vpn_status".into(),parameters:json!({})};

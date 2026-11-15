@@ -2,7 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap} from "./native-services.js";
 import {Card,Detail,ErrorMessage,useResource,Resource} from "@synergy-network/portal-native/dapp-sdk";
 import {controllerOperation,installParameters} from './nodeNetwork.js';
-import {installPreflightChecklist} from './install-preflight.js';
+import {installPreflightChecklist,installPreflightObservation} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {installedControllerRead,targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
@@ -50,19 +50,19 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  async function run(operation,parameters={}){
   const read=statusGates[operation];
-  if(!permitted||busy||(read&&!read.available))return;
+  const isPreflight=operation==='install_preflight';
+  if(!permitted||busy||(read&&!read.available)||(isPreflight&&!preflight.canRun))return;
   setBusy(true);setError('');setResult(null);
   const submitted={...parameters};
-  const isPreflight=operation==='install_preflight';
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
   try{
    const raw=await nodeNetworkController(target,operation,submitted);
-   const response=read?typedStatus[operation](raw):raw;
+   const response=isPreflight?installPreflightObservation(raw,submitted,target):read?typedStatus[operation](raw):raw;
    if(alive.current){
     const receivedAt=Date.now();
-    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt});
-    setResult({operation,submitted,result:response,receivedAt});
-    if(!read)capabilities.reload();
+    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt,observation:response});
+    else setResult({operation,submitted,result:response,receivedAt});
+    if(!read&&!isPreflight)capabilities.reload();
    }
   }
   catch(failure){
@@ -88,6 +88,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
    if(typedStatus[result?.operation])setResult(null);
+   setPreflightAttempt(null);
    capabilities.reload();
   }}>Inspect selected target</button>}>
    <Resource value={capabilities}>{data=><>

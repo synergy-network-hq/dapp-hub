@@ -1,4 +1,20 @@
-import {controllerOperation, installParameters, provisioningChecks, releaseReferenceChecks} from './nodeNetwork.js';
+import {installParameters, provisioningChecks, releaseReferenceChecks} from './nodeNetwork.js';
+import {controllerRead} from './target-observation.js';
+
+// The pinned controller replies with only these six fields after checking
+// the staged manifest and the host's approved release and network policy.
+function supportedReport(value, parameters, target) {
+ return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 6
+  && typeof value.release === 'string' && value.release === parameters?.release_id
+  && value.root === '/opt/Synergy' && value.root === target?.root
+  && value.packageVerified === true && value.networkSelectionApproved === true
+  && value.genesisAuthorityVerified === false && value.activationAuthorized === false;
+}
+
+export function installPreflightObservation(value, parameters, target) {
+ if (!supportedReport(value, parameters, target)) throw Error('The selected controller returned unsupported or mismatched installation preflight evidence.');
+ return value;
+}
 
 export function installPreflightChecklist({form, target, permitted, capabilities, master, attempt}) {
  const fields = provisioningChecks(form);
@@ -35,8 +51,8 @@ export function installPreflightChecklist({form, target, permitted, capabilities
   }
  }
 
- const capabilityAvailable = permitted && !capabilities?.loading && !capabilities?.error
-  && controllerOperation(capabilities?.data, 'install_preflight').available;
+ const capability = controllerRead(capabilities?.data, 'install_preflight');
+ const capabilityAvailable = permitted && !capabilities?.loading && !capabilities?.error && capability.available;
  let access = {
   check: 'Target preflight access',
   status: 'Host selection deferred',
@@ -50,6 +66,8 @@ export function installPreflightChecklist({form, target, permitted, capabilities
    access = {...access, status: 'Inspecting target', detail: 'Wait for controller capabilities.'};
   } else if (capabilityAvailable) {
    access = {...access, status: 'Capability reported', detail: 'The selected controller lists the installation preflight operation.'};
+  } else if (capabilities?.data) {
+   access = {...access, detail: capability.blocker};
   }
  }
 
@@ -58,6 +76,7 @@ export function installPreflightChecklist({form, target, permitted, capabilities
   status: 'Not run',
   detail: 'Run preflight for the current draft on an enrolled target when its controller is available.',
  };
+ let checks = [];
  if (attempt && permitted && target) {
   const current = parameters && Object.keys(parameters).every(key => parameters[key] === attempt.parameters?.[key]);
   if (!current) {
@@ -65,16 +84,26 @@ export function installPreflightChecklist({form, target, permitted, capabilities
   } else if (attempt.state === 'pending') {
    receipt = {...receipt, status: 'Waiting for controller', detail: 'A preflight request for the current draft is pending.'};
   } else if (attempt.state === 'received') {
-   receipt = {...receipt, status: 'Response received',
-    detail: `The controller returned a successful response at ${new Date(attempt.receivedAt).toISOString()}. Review the individual host checks before proceeding.`,
-   };
+   if (supportedReport(attempt.observation, parameters, target)) {
+    receipt = {...receipt, status: 'Checks reported',
+     detail: `The selected controller returned its package and policy checks at ${new Date(attempt.receivedAt).toISOString()}.`,
+    };
+    checks = [
+     {check: 'Staged package inventory', status: 'Reported verified', detail: `The controller verified the staged manifest and inventory for ${parameters.release_id}.`},
+     {check: 'Host network policy', status: 'Reported approved', detail: `The controller reported approval for ${parameters.network_id} on chain ${parameters.chain_id}.`},
+     {check: 'Genesis authority', status: 'Unverified', detail: 'Verify the signed Genesis and its authority before commissioning.'},
+     {check: 'Activation authorization', status: 'Not authorized', detail: 'Activation requires a separate authorized lifecycle review.'},
+    ];
+   } else {
+    receipt = {...receipt, status: 'Unsupported report', detail: 'Run a new preflight with a compatible controller.'};
+   }
   } else {
    receipt = {...receipt, status: 'Check unsuccessful', detail: 'Review the controller connection and approved package references before rerunning preflight.'};
   }
  }
  return {
   canRun: Boolean(target && capabilityAvailable && parameters),
-  rows: [draft, packageReview, access, receipt, {
+  rows: [draft, packageReview, access, receipt, ...checks, {
    check: 'Required host checks',
    status: 'Unverified',
    detail: 'Confirm host capacity, clock, ports, enrollment and release policy through the qualified controller.',
