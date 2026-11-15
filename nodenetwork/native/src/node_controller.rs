@@ -49,7 +49,7 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight" => false,
+            "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight"|"genesis_binding_preflight" => false,
             "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
@@ -219,6 +219,13 @@ fn validator_network_context(result: &Value) -> bool {
     })
 }
 
+fn validator_address(value: &Value) -> bool {
+    value.as_str().and_then(|address| address.strip_prefix("synv1")).is_some_and(|tail| {
+        (10..=90).contains(&tail.len())
+            && tail.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    })
+}
+
 fn preparation_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
     const UNSUPPORTED: &str = "The selected controller returned unsupported validator preparation evidence.";
     if reply["ok"] != true {
@@ -244,6 +251,43 @@ fn preparation_reply(operation: &str, reply: &Value) -> Result<Value, &'static s
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
+fn genesis_binding_reply(reply: &Value) -> Result<Value, &'static str> {
+    const UNSUPPORTED: &str = "The selected controller returned unsupported staged Genesis binding evidence.";
+    if reply["ok"] != true {
+        return Err(match reply["error"]["code"].as_str() {
+            Some("reconciliation_required") => "The controller could not reconcile the Genesis binding. Preserve the existing custody and review it with the node operator.",
+            Some("authorization_required") => "The controller has no confirmed approval for these Genesis inputs. Review the required pins with the node operator.",
+            _ => "The controller could not confirm the staged Genesis binding. Ask the node operator to review the staged inputs and custody.",
+        });
+    }
+    let result = &reply["result"];
+    let bound = result["bound"].as_bool().ok_or(UNSUPPORTED)?;
+    let stage_receipt = result.get("stage_request_sha256");
+    let field_count = 8 + usize::from(stage_receipt.is_some()) + if bound { 3 } else { 0 };
+    if !reply.as_object().is_some_and(|fields| fields.len() == 3) || reply["version"] != 1
+        || !result.as_object().is_some_and(|fields| fields.len() == field_count)
+        || result["schema"] != "nodenetwork-genesis-binding-v1" || !validator_network_context(result)
+        || !lowercase_digest(&result["genesis_sha256"]) || !validator_address(&result["address"])
+        || result["genesis_authority_verified"] != true || result["membership_verified"] != true
+        || stage_receipt.is_some_and(|value| !lowercase_digest(value)) {
+        return Err(UNSUPPORTED);
+    }
+    if bound {
+        let enrollment = result["enrollment_json"].as_str()
+            .filter(|value| (1..=128 * 1024).contains(&value.len())).ok_or(UNSUPPORTED)?;
+        let enrollment_sha256 = format!("{:x}", Sha256::digest(enrollment.as_bytes()));
+        if result["enrollment_sha256"] != enrollment_sha256 || !lowercase_digest(&result["request_sha256"]) {
+            return Err(UNSUPPORTED);
+        }
+    }
+    Ok(json!({"version":1,"ok":true,"result":{
+        "schema":result["schema"],"network_id":result["network_id"],"chain_id":result["chain_id"],
+        "genesis_sha256":result["genesis_sha256"],"genesis_authority_verified":true,
+        "address":result["address"],"membership_verified":true,"bound":bound,
+        "stage_receipt_verified":stage_receipt.is_some()
+    }}))
+}
+
 fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
     const UNSUPPORTED: &str = "The selected controller returned unsupported pending custody evidence.";
     if reply["ok"] != true {
@@ -257,10 +301,7 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
     if result["pending"] == false && fields.len() == 1 {
         return Ok(json!({"version":1,"ok":true,"result":result}));
     }
-    let valid_address = result["address"].as_str().and_then(|value| value.strip_prefix("synv1")).is_some_and(|tail| {
-        (10..=90).contains(&tail.len()) && tail.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-    });
-    if result["pending"] != true || !validator_network_context(result) || !valid_address
+    if result["pending"] != true || !validator_network_context(result) || !validator_address(&result["address"])
         || result["possession_verified"] != true || result["membership_granted"] != false {
         return Err(UNSUPPORTED);
     }
@@ -369,6 +410,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "install_preflight" => install_preflight_reply(&request, &value),
             "vpn_status" => vpn_status_reply(&value),
             "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
+            "genesis_binding_preflight" => genesis_binding_reply(&value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
             _ => Ok(value),
         }
@@ -588,6 +630,63 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             assert!(error.contains(guidance));
             assert!(!error.contains("private fixture"));
         }
+    }
+    fn genesis_binding_fixture(bound: bool) -> Value {
+        let mut value = json!({"version":1,"ok":true,"result":{
+            "schema":"nodenetwork-genesis-binding-v1","network_id":"fixture-network","chain_id":"18446744073709551615",
+            "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true,
+            "address":"synv1".to_string()+&"a".repeat(36),"membership_verified":true,"bound":bound
+        }});
+        if bound {
+            let artifact = r#"{"name":"local synthetic fixture"}"#;
+            value["result"]["enrollment_json"] = json!(artifact);
+            value["result"]["enrollment_sha256"] = json!(format!("{:x}", Sha256::digest(artifact.as_bytes())));
+            value["result"]["request_sha256"] = json!("b".repeat(64));
+        }
+        value
+    }
+    #[test] fn genesis_binding_preflight_is_a_fixed_read() {
+        let mut request = Request {version:1, operation:"genesis_binding_preflight".into(), parameters:json!({})};
+        assert_eq!(request.validate(), Ok(false));
+        request.parameters = json!({"genesis_sha256":"a".repeat(64)});
+        assert!(request.validate().is_err());
+        request.operation = "genesis_bind".into();
+        assert!(request.validate().is_err());
+    }
+    #[test] fn genesis_binding_projects_both_scopes_and_omits_enrollment_and_request_fingerprints() {
+        let unbound = genesis_binding_reply(&genesis_binding_fixture(false)).unwrap();
+        assert_eq!(unbound["result"]["bound"], json!(false));
+        assert_eq!(unbound["result"]["stage_receipt_verified"], json!(false));
+        let mut fixture = genesis_binding_fixture(true);
+        fixture["result"]["stage_request_sha256"] = json!("c".repeat(64));
+        let bound = genesis_binding_reply(&fixture).unwrap();
+        assert_eq!(bound["result"]["bound"], json!(true));
+        assert_eq!(bound["result"]["stage_receipt_verified"], json!(true));
+        assert_eq!(bound["result"]["chain_id"], json!("18446744073709551615"));
+        for omitted in ["enrollment_json","enrollment_sha256","request_sha256","stage_request_sha256"] {
+            assert!(bound["result"].get(omitted).is_none(), "{omitted}");
+        }
+    }
+    #[test] fn genesis_binding_rejects_ambiguous_scope_artifact_and_receipt() {
+        for (fixture,path,data) in [
+            (genesis_binding_fixture(false),"membership_verified",json!(false)),
+            (genesis_binding_fixture(false),"genesis_authority_verified",json!(false)),
+            (genesis_binding_fixture(false),"stage_request_sha256",Value::Null),
+            (genesis_binding_fixture(false),"request_sha256",json!("b".repeat(64))),
+            (genesis_binding_fixture(false),"address",json!("synv1ffffffffffff\n")),
+            (genesis_binding_fixture(true),"enrollment_json",json!("tampered")),
+            (genesis_binding_fixture(true),"enrollment_json",json!("é".repeat(65_537))),
+            (genesis_binding_fixture(true),"request_sha256",Value::Null),
+            (genesis_binding_fixture(true),"bound",json!(false)),
+        ] {
+            let mut changed = fixture;
+            changed["result"][path] = data;
+            assert!(genesis_binding_reply(&changed).is_err(), "{path}");
+        }
+        let refused = json!({"version":1,"ok":false,"error":{"code":"reconciliation_required","message":"fixture secret"}});
+        let guidance = genesis_binding_reply(&refused).unwrap_err();
+        assert!(guidance.contains("Preserve the existing custody"));
+        assert!(!guidance.contains("fixture secret"));
     }
     #[test]
     #[ignore = "Requires an explicitly enrolled disposable Linux VM and its authenticated SSH host pin"]

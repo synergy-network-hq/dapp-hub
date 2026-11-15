@@ -22,6 +22,7 @@ const typedStatus = {
  formation_status: response => custodyStatusObservation('formation_status',response),
  identity_preflight: response => identityPreflightObservation('identity_preflight',response),
  formation_preflight: response => identityPreflightObservation('formation_preflight',response),
+ genesis_binding_preflight: response => identityPreflightObservation('genesis_binding_preflight',response),
 };
 
 const healthColumns = [

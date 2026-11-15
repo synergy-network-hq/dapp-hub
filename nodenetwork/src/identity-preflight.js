@@ -1,6 +1,7 @@
 export const identityPreflightReads = [
  {operation: 'identity_preflight', label: 'Check existing-network inputs', title: 'Existing-network preflight'},
  {operation: 'formation_preflight', label: 'Check formation inputs', title: 'Formation preflight'},
+ {operation: 'genesis_binding_preflight', label: 'Review staged Genesis binding', title: 'Staged Genesis binding'},
 ];
 
 const digest = value => typeof value === 'string' && value.length === 64 && !/[^0-9a-f]/.test(value);
@@ -15,6 +16,15 @@ export function identityPreflightObservation(operation, value) {
   || typeof chainId !== 'string' || !chainId.length || chainId.length > 20 || chainId[0] === '0'
   || /[^0-9]/.test(chainId) || BigInt(chainId) > 18_446_744_073_709_551_615n) throw Error(unsupported);
  const common = {title: read.title, networkId, chainId};
+ if (operation === 'genesis_binding_preflight') {
+  const tail = typeof value.address === 'string' && value.address.startsWith('synv1') ? value.address.slice(5) : '';
+  if (Object.keys(value).length !== 9 || value.schema !== 'nodenetwork-genesis-binding-v1'
+   || value.genesis_authority_verified !== true || value.membership_verified !== true || !digest(value.genesis_sha256)
+   || tail.length < 10 || tail.length > 90 || /[^a-z0-9]/.test(tail)
+   || typeof value.bound !== 'boolean' || typeof value.stage_receipt_verified !== 'boolean') throw Error(unsupported);
+  return {...common, genesisSha256: value.genesis_sha256, validatorAddress: value.address,
+   bound: value.bound, stageReceiptVerified: value.stage_receipt_verified};
+ }
  if (operation === 'identity_preflight') {
   if (Object.keys(value).length !== 4 || value.genesis_authority_verified !== true || !digest(value.genesis_sha256)) {
    throw Error(unsupported);
