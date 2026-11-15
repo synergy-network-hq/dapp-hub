@@ -99,7 +99,7 @@ fn load(path: &Path) -> Result<Vec<Record>, String> {
             "dispatch_intent" => record.observed_at_ms.is_none() && record.response_ok.is_none(),
             "uncertain" => record.observed_at_ms.is_some() && record.response_ok.is_none(),
             "response_received" => record.observed_at_ms.is_some() && record.response_ok.is_some(),
-            "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"formation_prepare"|"genesis_stage"|"genesis_bind"),
+            "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"identity_generate"|"formation_prepare"|"genesis_stage"|"genesis_bind"),
             _ => false,
         };
         if record.version != 1 || name != format!("{}.json", record.id) || !pin(&record.id) || !pin(&record.target_digest) || !pin(&record.request_digest) || !operation || !state { return Err(failure()); }
@@ -164,9 +164,9 @@ impl Dispatch {
 }
 
 /// No retries, clearing, or inferred failure. A target status can reconcile
-/// only the matching original formation preparation, Genesis staging or Genesis bind.
+/// only the matching original custody preparation, Genesis staging or Genesis bind.
 pub(crate) fn reconcile_verified(base:&Path,target:&Value,operation:&str,request_digest:&str)->Result<bool,String>{
-    if !matches!(operation,"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(request_digest){return Err(failure());}
+    if !matches!(operation,"identity_generate"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(request_digest){return Err(failure());}
     let _serial=SERIAL.lock().map_err(|_|failure())?;
     let Some(directory)=directory(base,false)? else{return Ok(false);};
     let _writer=WriterLock::acquire(&directory)?;

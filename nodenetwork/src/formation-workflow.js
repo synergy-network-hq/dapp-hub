@@ -42,3 +42,13 @@ export function genesisStageView(value,prepared){
  const {address:validator,genesis_sha256,authority_sha256,authority_root_sha256,request_sha256}=value;
  return {address:validator,genesis_sha256,authority_sha256,authority_root_sha256,request_sha256,staged:true};
 }
+
+export function existingGenesisStageView(value,form){
+ if(value?.schema!=='nodenetwork-existing-genesis-stage-v1'||value.staged!==true||value.genesis_authority_verified!==true||
+    value.membership_verified!==false||value.membership_granted!==false||value.address!=null||
+    !network(value.network_id)||!chain(value.chain_id)||
+    (form.network_id&&value.network_id!==form.network_id)||(form.chain_id&&value.chain_id!==form.chain_id)||
+    !['genesis_sha256','authority_sha256','authority_root_sha256','request_sha256'].every(field=>pin(value[field])))
+  throw Error('The target did not confirm staging for the selected existing network.');
+ return {network_id:value.network_id,chain_id:value.chain_id,genesis_sha256:value.genesis_sha256,staged:true,membership_granted:false};
+}
