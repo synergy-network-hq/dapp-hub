@@ -15,8 +15,8 @@ const activeBech32mPrefixes = new Set([
 // These exact namespaces were accepted by the old local contact store at 50d9981d588043f7db3a16dc7b5c8ca3e7db80cc.
 const savedOnlyPrefixes = new Set(['synw', 'synm', 'synu', 'synl']);
 
-function isProtectedWalletAddress(address) {
-  if (address.length !== PROTECTED_ADDRESS_LENGTH || !/^synw[0-9a-fA-F]{40}$/.test(address)) return false;
+export function isProtectedWalletAddress(address) {
+  if (typeof address !== 'string' || address.length !== PROTECTED_ADDRESS_LENGTH || !/^synw[0-9a-fA-F]{40}$/.test(address)) return false;
   // SYNW_HEX_EIP55_V1 from the Wallet owner. Keccak hashes the lowercase hex body without its prefix.
   const body = address.slice(4);
   const lower = body.toLowerCase();

@@ -70,7 +70,7 @@ export function WalletApp() {
         return <Card title="Indexed transactions"><WalletHistory key={observationKey} account={connection.address}
           endpoint={n.endpoint} recent={data} recentAt={data?.portalReceivedAt}/></Card>;
       case 'Receive':
-        return <Receive account={connection.address}/>;
+        return <Receive account={connection.address} endpoint={n.endpoint}/>;
       case 'Address book':
         return <><WalletContacts key={scope}/>{!!n.profile.contacts?.length && <Card title="Legacy contacts">
           <p>Existing profile contacts are retained. Review and add them to this network-specific address book when needed.</p>
