@@ -2,13 +2,17 @@ import {sourceRecords} from './source-records.js';
 import {useState} from 'react';
 import {amount,text} from '@synergy-network/dapp-data-view';
 import {comparableTransactionHash} from './transaction-observation.js';
+import {atlasAccountKey} from './atlas-account.js';
 const address=(tx,side)=>tx[side+'_address']??tx[side]??tx[side==='sender'?'from':'to'];
 export function transactionDirection(tx,account){
- const from=address(tx,'sender'),to=address(tx,'receiver');
- if(from===account&&to===account)return 'Self';
- if(from===account)return 'Sent';
- if(to===account)return 'Received';
- return 'Unclassified';
+  const indexed = atlasAccountKey(account);
+  const matches = value => typeof value === 'string' && (value === account || value === indexed);
+  const from = matches(address(tx, 'sender'));
+  const to = matches(address(tx, 'receiver'));
+  if (from && to) return 'Self';
+  if (from) return 'Sent';
+  if (to) return 'Received';
+  return 'Unclassified';
 }
 export function indexedTransactionTime(tx){
  const raw=tx.timestamp_unix;

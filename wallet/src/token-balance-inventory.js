@@ -1,4 +1,5 @@
 import {text} from '@synergy-network/dapp-data-view';
+import {requireAtlasAccountKey} from './atlas-account.js';
 
 const atlasSource = 'atlas_token_balances';
 const unavailable = 'Token balance response is unavailable or unsupported. Inventory coverage is unknown.';
@@ -9,12 +10,20 @@ export const tokenBalanceSources = {
   other: 'Other Atlas response format',
 };
 
-export function tokenBalanceInventory(value, account) {
+export async function readAtlasTokenBalances(request, account, {signal} = {}) {
+  signal?.throwIfAborted();
+  const key = requireAtlasAccountKey(account);
+  const value = await request(`wallets/${encodeURIComponent(key)}/token-balances`, {signal});
+  signal?.throwIfAborted();
+  return tokenBalanceInventory(value, key);
+}
+
+export function tokenBalanceInventory(value, accountKey) {
   if (!value || typeof value !== 'object') throw Error(unavailable);
   if (Array.isArray(value)) return {items: value, accountReported: false};
 
   const accountReported = Object.hasOwn(value, 'address');
-  if (accountReported && value.address !== account) {
+  if (accountReported && value.address !== accountKey) {
     throw Error('Atlas returned token balances for a different account.');
   }
   if (value.source === atlasSource) {

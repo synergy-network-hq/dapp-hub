@@ -9,7 +9,8 @@ import {WalletConnections} from './WalletConnections.jsx';
 import {WalletHistory} from './WalletHistory.jsx';
 import {WalletBalances} from './WalletBalances.jsx';
 import {WalletTokens} from './WalletTokens.jsx';
-import {tokenBalanceInventory} from './token-balance-inventory.js';
+import {readAtlasTokenBalances} from './token-balance-inventory.js';
+import {readAtlasAddress} from './atlas-account.js';
 import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
 import './wallet.css';
@@ -34,9 +35,8 @@ export function WalletApp() {
       throw Error('RPC chain identity does not match Wallet chain 1266.');
     }
     signal.throwIfAborted();
-    const value = await atlas(`wallets/${encodeURIComponent(connection.address)}/token-balances`, {signal});
-    signal.throwIfAborted();
-    return {inventory: tokenBalanceInventory(value, connection.address), receivedAt: Date.now()};
+    const inventory = await readAtlasTokenBalances(atlas, connection.address, {signal});
+    return {inventory, receivedAt: Date.now()};
   }, scope);
 
   const account = useResource(async signal => {
@@ -45,10 +45,7 @@ export function WalletApp() {
       throw Error('RPC chain identity does not match Wallet chain 1266.');
     }
     signal.throwIfAborted();
-    const value = await atlas(`address/${encodeURIComponent(connection.address)}`, {signal});
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw Error('Account response is unavailable or unsupported. History and balance are unknown.');
-    }
+    const value = await readAtlasAddress(atlas, connection.address, {signal});
     return {...value, portalReceivedAt: Date.now()};
   }, scope);
   const data = ready && !account.loading && !account.error ? account.data : null;
