@@ -13,13 +13,20 @@ export function validateHistoryPage(value,account,{cursor=null,previous=null}={}
  if(value.hasMore?(!cursorValue(value.nextCursor)||value.nextCursor===cursor||!value.items.length):value.nextCursor!==null)fail();
  if(value.items.some(row=>!row||typeof row!=='object'||Array.isArray(row)||!token(row.hash)||!decimal(row.block_number)||!snapshot||BigInt(row.block_number)>BigInt(snapshot.blockNumber)||(row.sender_address!==account&&row.receiver_address!==account)||['amount_nwei','fee_nwei','nonce'].some(key=>row[key]!==null&&(typeof row[key]!=='string'||!/^\d{1,78}$/.test(row[key])))))fail();
  if(new Set(value.items.map(row=>row.hash)).size!==value.items.length)fail();
+ const preceding = previous?.items.at(-1);
+ let lastHeight = preceding ? BigInt(preceding.block_number) : null;
+ for (const row of value.items) {
+  const height = BigInt(row.block_number);
+  if (lastHeight !== null && height > lastHeight) fail();
+  lastHeight = height;
+ }
  if(previous&&(previous.address!==account||value.network!==previous.network||snapshot?.blockNumber!==previous.snapshot?.blockNumber||snapshot?.blockHash!==previous.snapshot?.blockHash))fail();
  return {...value,receivedAt:Date.now()};
 }
 export async function readAccountHistory(request,account,{cursor=null,previous=null,signal}={}){
  if(signal?.aborted)throw signal.reason;
  if(typeof account!=='string'||!/^syn[a-z0-9]{17,147}$/.test(account))throw Error('A supported public account is required for history.');
- if(cursor!==null&&(!previous||previous.address!==account||!cursorValue(cursor)))throw Error('Unsupported account-history cursor.');
+ if(cursor!==null&&(!previous?.hasMore||previous.address!==account||previous.nextCursor!==cursor||!cursorValue(cursor)))throw Error('Unsupported account-history cursor.');
  const query=new URLSearchParams({limit:String(HISTORY_PAGE_LIMIT)});if(cursor)query.set('cursor',cursor);
  const value=await request(`accounts/${encodeURIComponent(account)}/transactions?${query}`,{signal});
  if(signal?.aborted)throw signal.reason;
