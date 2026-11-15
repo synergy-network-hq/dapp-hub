@@ -1,3 +1,5 @@
+import {validatorBlockRows} from './validator-blocks.js';
+
 const setupLabels = new Map([
  ['active_consensus', 'Reported active consensus'],
  ['staked_not_active', 'Reported staked and inactive'],
@@ -31,5 +33,6 @@ export function validatorLookupObservation(value, address, receivedAt = Date.now
   hasProfile,
   status: hasProfile ? status : 'Atlas returned account evidence without a validator profile',
   receivedAt,
+  indexedBlocks: validatorBlockRows(value.recentProducedBlocks, expected),
  };
 }

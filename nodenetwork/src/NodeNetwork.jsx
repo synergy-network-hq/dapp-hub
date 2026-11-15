@@ -70,7 +70,11 @@ export function NodeNetworkApp(){
   {section==='settings'&&<TargetSettings selection={targetSettings} local={local}/>}
   <div className="native-actions"><label>Observation network<select aria-label="NodeNetwork observation network" value={profileId} onChange={e=>setProfileId(e.target.value)}>{profiles.map(p=><option key={p.id} value={p.id}>{p.name} · {p.chainId}</option>)}</select></label><button disabled={live.loading||validators.loading} onClick={refreshPublic}>Refresh NodeNetwork</button></div>
   {section==='settings'&&<div className="native-tabs" role="tablist" aria-label="Node settings sections">{['Updates','Installation isolation'].map(name=><button role="tab" key={name} aria-selected={tab===name} onClick={()=>setSettingsTab(name)}>{name}</button>)}</div>}
-  {section==='performance'?<NodeNetworkPanelCard title="Validator performance telemetry"><p>The qualified target controller does not yet expose CPU, memory, disk, network throughput or APQE timing samples. Performance history requires an authenticated, bounded telemetry interface; no synthetic values are displayed.</p></NodeNetworkPanelCard>:section==='logs'?<>
+  {section==='performance'?<NodeNetworkPanelCard title="Validator performance telemetry">
+   <p>Managed CPU, memory, disk and duty timing require an authenticated telemetry interface.</p>
+   <p>Use public validator lookup in Overview to review attributed Atlas blocks and their receipt time.</p>
+   <button onClick={()=>setSection('overview')}>Open public validator observations</button>
+  </NodeNetworkPanelCard>:section==='logs'?<>
    <NodeNetworkPanelCard title="Validator log access"><p>Bounded, redacted log access needs a qualified controller integration. For an enrolled target, open Monitoring to inspect health or inventory.</p></NodeNetworkPanelCard>
    <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>
   </>:tab==='Network'?<>

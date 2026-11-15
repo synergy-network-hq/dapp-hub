@@ -49,9 +49,9 @@ function CollectibleList({items, receivedAt}) {
   </>;
 }
 
-export function WalletCollectibles({account, endpoint, readRpc = rpc, readAtlas = atlas}) {
-  const [revision, setRevision] = useState(0);
-  const {data, loading, error} = useResource(async signal => {
+function useCollectibleObservations({account, endpoint, readRpc = rpc, readAtlas = atlas, revision, requested = true}) {
+  return useResource(async signal => {
+    if (!requested) return null;
     signal.throwIfAborted();
     requireAtlasAccountKey(account);
     if (Number(endpoint.chainId) !== 1266 ||
@@ -62,7 +62,27 @@ export function WalletCollectibles({account, endpoint, readRpc = rpc, readAtlas 
     const result = await readAtlas('tokens', {signal});
     signal.throwIfAborted();
     return {items: collectibleObservations(result, account), receivedAt: Date.now()};
-  }, JSON.stringify([account, endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey, revision]));
+  }, JSON.stringify([account, endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey, revision, requested]));
+}
+
+export function WalletCollectiblesPreview({account, endpoint, revision, onBrowse}) {
+  const [requested, setRequested] = useState(false);
+  const observation = useCollectibleObservations({account, endpoint, revision, requested});
+
+  return <Card title="Collectible preview" action={<button onClick={onBrowse}>View full Collectibles</button>}>
+    <p>Matching records from up to {ATLAS_NFT_LIMIT} recent STS NFTs across accounts in Atlas. Current ownership and coverage remain unverified.</p>
+    {requested ? <Resource value={observation}>{({items, receivedAt}) => <>
+      <SourceAge source="Atlas public token registry" updatedAt={receivedAt}/>
+      {items.length ? <ul>{items.slice(0, 3).map(item => <li key={item.key}>
+        <strong>{item.name}</strong><small>{item.collection} · {item.status} · Media unavailable</small>
+      </li>)}</ul> : <p>No matching NFT records were returned in this limited view.</p>}
+    </>}</Resource> : <button onClick={() => setRequested(true)}>Load collectible preview</button>}
+  </Card>;
+}
+
+export function WalletCollectibles({account, endpoint, readRpc, readAtlas}) {
+  const [revision, setRevision] = useState(0);
+  const {data, loading, error} = useCollectibleObservations({account, endpoint, readRpc, readAtlas, revision});
 
   return <Card title="Collectibles">
     <p>Atlas lists up to {ATLAS_NFT_LIMIT} recent STS NFT records across all accounts. Wallet shows records reporting the selected account as owner.</p>

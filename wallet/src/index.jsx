@@ -14,6 +14,7 @@ import {readAtlasAddress} from './atlas-account.js';
 import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
 import {WalletCollectibles} from './WalletCollectibles.jsx';
+import {WalletOverview} from './WalletOverview.jsx';
 import './wallet.css';
 
 const tabs = ['Assets', 'Collectibles', 'Activity', 'Receive', 'Send', 'Address book', 'Connections'];
@@ -28,6 +29,7 @@ export function WalletApp() {
     connection?.chainId === 'synergy:1266' && Number(n.endpoint.chainId) === 1266;
   const currentTab = ready ? tab : 'Connections';
   const scope = JSON.stringify([connection?.walletId, connection?.address, n.endpointId, n.endpoint.rpc, n.endpoint.networkKey, ready]);
+  const observationKey = `${scope}:${revision}`;
 
   const tokens = useResource(async signal => {
     if (!ready) throw Error('Connect a chain 1266 account and allow Wallet reads.');
@@ -38,7 +40,7 @@ export function WalletApp() {
     signal.throwIfAborted();
     const inventory = await readAtlasTokenBalances(atlas, connection.address, {signal});
     return {inventory, receivedAt: Date.now()};
-  }, scope);
+  }, observationKey);
 
   const account = useResource(async signal => {
     if (!ready) throw Error('Wallet reads unavailable.');
@@ -48,26 +50,24 @@ export function WalletApp() {
     signal.throwIfAborted();
     const value = await readAtlasAddress(atlas, connection.address, {signal});
     return {...value, portalReceivedAt: Date.now()};
-  }, scope);
+  }, observationKey);
   const data = ready && !account.loading && !account.error ? account.data : null;
-
-  function refreshObservations() {
-    account.reload();
-    tokens.reload();
-    setRevision(value => value + 1);
-  }
 
   function tabContent() {
     if (currentTab === 'Connections') return <WalletConnections canRead={ready}/>;
     switch (currentTab) {
       case 'Assets':
-        return <Card title="Live assets"><Resource value={tokens}>{result => <>
-          <SourceAge updatedAt={result.receivedAt}/><WalletTokens inventory={result.inventory}/>
-        </>}</Resource></Card>;
+        return <>
+          <WalletOverview account={connection.address} endpoint={n.endpoint} revision={revision} observation={account}
+            onActivity={() => setTab('Activity')} onCollectibles={() => setTab('Collectibles')}/>
+          <Card title="Live assets"><Resource value={tokens}>{result => <>
+            <SourceAge updatedAt={result.receivedAt}/><WalletTokens inventory={result.inventory}/>
+          </>}</Resource></Card>
+        </>;
       case 'Collectibles':
-        return <WalletCollectibles key={`${scope}:${revision}`} account={connection.address} endpoint={n.endpoint}/>;
+        return <WalletCollectibles key={observationKey} account={connection.address} endpoint={n.endpoint}/>;
       case 'Activity':
-        return <Card title="Indexed transactions"><WalletHistory key={`${scope}:${revision}`} account={connection.address}
+        return <Card title="Indexed transactions"><WalletHistory key={observationKey} account={connection.address}
           endpoint={n.endpoint} recent={data} recentAt={data?.portalReceivedAt}/></Card>;
       case 'Receive':
         return <Receive account={connection.address}/>;
@@ -92,7 +92,7 @@ export function WalletApp() {
       <p>Synergy Wallet · {headerStatus}</p>
       <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
       {currentTab !== 'Connections' && <button onClick={() => n.navigate('wallet-connection')}>Manage connection</button>}
-      <button disabled={!ready || account.loading || tokens.loading} onClick={refreshObservations}>
+      <button disabled={!ready || account.loading || tokens.loading} onClick={() => setRevision(value => value + 1)}>
         Refresh Wallet observations
       </button>
     </div>
