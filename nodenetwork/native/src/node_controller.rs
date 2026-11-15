@@ -170,6 +170,23 @@ fn install_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
+fn upgrade_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    if reply["ok"] != true {
+        if reply["error"]["code"] == "qualification_required" {
+            return Err("The controller could not confirm host approval for the staged update package.");
+        }
+        return Err("The controller could not verify the staged update and installed receipt.");
+    }
+    let result = &reply["result"];
+    if !reply.as_object().is_some_and(|fields| fields.len() == 3) || reply["version"] != 1
+        || !result.as_object().is_some_and(|fields| fields.len() == 3)
+        || result["release"].as_str().is_none() || result["release"] != request.parameters["release_id"]
+        || result["packageVerified"] != true || result["automaticRestart"] != false {
+        return Err("The selected controller returned unsupported or mismatched update preflight evidence.");
+    }
+    Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
 fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
     use std::net::IpAddr;
     const UNSUPPORTED: &str = "The selected controller returned unsupported VPN status.";
@@ -428,6 +445,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "health" => health_reply(&value),
             "diagnostics" => crate::node_diagnostics::reply(&value),
             "install_preflight" => install_preflight_reply(&request, &value),
+            "upgrade_preflight" => upgrade_preflight_reply(&request, &value),
             "vpn_status" => vpn_status_reply(&value),
             "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
             "genesis_binding_preflight" => genesis_binding_reply(&value),
@@ -506,6 +524,29 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             *report.pointer_mut(path).unwrap() = data;
             assert_eq!(health_reply(&report), Err("The selected controller returned unsupported service health evidence."), "{path}");
         }
+    }
+    #[test] fn upgrade_preflight_requires_exact_package_references_and_reply() {
+        let request = Request {version:1, operation:"upgrade_preflight".into(), parameters:json!({
+            "release_id":"fixture-release","manifest_sha256":"a".repeat(64)
+        })};
+        assert_eq!(request.validate(), Ok(false));
+        let reply = json!({"version":1,"ok":true,"result":{
+            "packageVerified":true,"release":"fixture-release","automaticRestart":false
+        }});
+        assert_eq!(upgrade_preflight_reply(&request, &reply), Ok(reply.clone()));
+        for (field, data) in [
+            ("release", json!("different-release")),
+            ("packageVerified", json!(false)),
+            ("automaticRestart", json!(true)),
+            ("extra", json!("private fixture")),
+        ] {
+            let mut invalid = reply.clone();
+            invalid["result"][field] = data;
+            assert!(upgrade_preflight_reply(&request, &invalid).is_err(), "{field}");
+        }
+        let refused = json!({"version":1,"ok":false,"error":{"code":"qualification_required","message":"fixture private path"}});
+        assert_eq!(upgrade_preflight_reply(&request, &refused),
+            Err("The controller could not confirm host approval for the staged update package."));
     }
     #[test] fn install_preflight_preserves_exact_read_and_rejects_unbound_reply() {
         let request = Request{version:1,operation:"install_preflight".into(),parameters:json!({

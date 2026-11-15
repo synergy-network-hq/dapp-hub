@@ -6,6 +6,7 @@ import {installPreflightChecklist,installPreflightObservation} from './install-p
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {installedControllerRead,targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
+import {upgradePreflightObservation} from './upgrade-preflight.js';
 import {ControllerRemoval} from './Offboarding.jsx';
 import {VpnStatus} from './VpnStatus.jsx';
 import {vpnStatusObservation} from './vpn-status.js';
@@ -17,6 +18,7 @@ import {targetHealthObservation} from './target-health.js';
 
 const typedStatus = {
  health: targetHealthObservation,
+ upgrade_preflight: upgradePreflightObservation,
  vpn_status: vpnStatusObservation,
  identity_status: response => custodyStatusObservation('identity_status',response),
  formation_status: response => custodyStatusObservation('formation_status',response),
@@ -82,7 +84,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
   try{
    const raw=await nodeNetworkController(target,operation,submitted);
-   const response=isPreflight?installPreflightObservation(raw,submitted,target):read?typedStatus[operation](raw):raw;
+   const response=isPreflight?installPreflightObservation(raw,submitted,target):read?typedStatus[operation](raw,submitted):raw;
    if(alive.current){
     const receivedAt=Date.now();
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt,observation:response});
@@ -172,7 +174,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    observation={custodyResult?.result}
    receipt={custodyResult&&<ControllerReceipt receivedAt={custodyResult.receivedAt}/>}
    onOpenHistory={onOpenDiagnostics}/>}
-  {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={result} run={run}/>}
+  {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={statusResult} run={run}/>}
   {tab==='Installation isolation'&&<ControllerRemoval target={target} permitted={permitted} busy={busy}
    controller={state} result={result} run={run}
    inventoryAction={button('inventory','Inventory node-owned files')}
