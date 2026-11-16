@@ -182,14 +182,18 @@ mod tests {
  use super::*;
  use crate::node_controller::{GenesisBindingReview,Request,Target,ROOT};
  use serde_json::json;
+ use std::sync::atomic::{AtomicU64,Ordering};
 
  fn genesis_bind_scope_fixture() -> (Target,Request,GenesisBindingReview,PathBuf) {
+  static NEXT_FIXTURE:AtomicU64=AtomicU64::new(0);
   let target=Target{kind:"remote".into(),host:Some("fixture.invalid".into()),port:None,root:ROOT.into()};
   let request=Request{version:1,operation:"genesis_bind".into(),parameters:json!({"genesis_sha256":"a".repeat(64)})};
   let review=serde_json::from_value(json!({"networkId":"fixture-formation","chainId":"99999",
    "validatorAddress":"synv1".to_owned()+&"a".repeat(36)})).unwrap();
   let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-  let journal=std::env::temp_dir().canonicalize().unwrap().join(format!("nodenetwork-reviewed-binding-{}-{stamp}",std::process::id()));
+  let sequence=NEXT_FIXTURE.fetch_add(1,Ordering::Relaxed);
+  let journal=std::env::temp_dir().canonicalize().unwrap()
+   .join(format!("nodenetwork-reviewed-binding-{}-{stamp}-{sequence}",std::process::id()));
   (target,request,review,journal)
  }
 
