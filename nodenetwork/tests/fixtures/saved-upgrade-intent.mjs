@@ -22,3 +22,10 @@ export function savedUpgradeFixture({registered = true,relay = false} = {}) {
   ...(registered?{new_integration:integration(definitions)}:{})};
  return {intent,candidate,references};
 }
+
+export function savedUpgradeCompletionFixture(resumed = true) {
+ const {intent,references} = savedUpgradeFixture();
+ const pins = {priorPin:intent.old_receipt.package_sha256,candidatePin:references.manifest_sha256};
+ return {pins,receipt:{format:'synergy-software-upgrade-completed-v1',root,old_package_sha256:pins.priorPin,
+  new_package_sha256:pins.candidatePin,resumed,consensus_started:false,automatic_restart:false}};
+}

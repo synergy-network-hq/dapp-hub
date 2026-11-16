@@ -3,9 +3,10 @@ import {upgradeParameters,validReleaseId} from './nodeNetwork.js';
 import {parseExactNumbers} from './validator-operations-observation.js';
 
 // Testnet v3 613fa6ab: node-platform/tools/linux-node/lifecycle.py::upgrade.
-export const savedUpgradeLimits = {intent:4 * 1024 * 1024,manifest:1_000_000};
+export const savedUpgradeLimits = {intent:4 * 1024 * 1024,manifest:1_000_000,completion:4096};
 const intentError = 'The file is not a supported saved software upgrade intent.';
 const manifestError = 'The file is not a supported Synergy package manifest.';
+const completionError = 'The file is not a supported saved software upgrade completion receipt.';
 const root = '/opt/Synergy';
 const packageFormat = 'synergy-universal-linux-v1';
 const stages = ['fresh','uncommissioned','commissioned'];
@@ -134,4 +135,23 @@ export async function compareSavedUpgradeManifest(file,intent,references,current
  counts.removed = Object.keys(intent.priorFiles).length - counts.changed - counts.unchanged;
  return {priorRelease:intent.priorRelease,priorPin:intent.priorPin,candidateRelease:candidate.release,candidatePin:pin,
   stage:intent.stage,registered:intent.registered,relay:intent.relay,counts};
+}
+
+export function savedUpgradeCompletionPins(priorPin,candidatePin) {
+ return digest(priorPin) && digest(candidatePin) && priorPin !== candidatePin ? {priorPin,candidatePin} : null;
+}
+
+export async function compareSavedUpgradeCompletion(file,references,current = () => true) {
+ const pins = savedUpgradeCompletionPins(references?.priorPin,references?.candidatePin);
+ if (!pins) throw Error('Enter distinct prior and candidate manifest SHA-256 values before reviewing the completion receipt.');
+ const selected = await fileBytes(file,savedUpgradeLimits.completion,current);
+ if (!current() || !selected) return null;
+ const receipt = json(selected.raw,completionError);
+ const fields = ['format','root','old_package_sha256','new_package_sha256','resumed','consensus_started','automatic_restart'];
+ if (!keysMatch(receipt,fields) || receipt.format !== 'synergy-software-upgrade-completed-v1' || receipt.root !== root
+  || !savedUpgradeCompletionPins(receipt.old_package_sha256,receipt.new_package_sha256)
+  || typeof receipt.resumed !== 'boolean' || receipt.consensus_started !== false || receipt.automatic_restart !== false) throw Error(completionError);
+ return {priorPin:receipt.old_package_sha256,candidatePin:receipt.new_package_sha256,
+  priorMatches:receipt.old_package_sha256===pins.priorPin,candidateMatches:receipt.new_package_sha256===pins.candidatePin,
+  resumed:receipt.resumed,consensusStarted:receipt.consensus_started,automaticRestart:receipt.automatic_restart};
 }

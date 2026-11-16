@@ -4,11 +4,13 @@ import {sourceRecords} from './source-records.js';
 import {reportedTokenDecimals, reportedTokenQuantity, tokenBalanceSource, tokenBalanceSources,
   rpcTokenBalanceSources} from './token-balance-inventory.js';
 import {WalletTokenProvenance} from './WalletTokenProvenance.jsx';
+import {WalletRpcTokenDefinition} from './WalletRpcTokenDefinition.jsx';
 
 const contractAddress = item => item.contractAddress ?? item.contract_address ?? item.contract;
 const tokenAddress = item => item.tokenAddress;
 
-function TokenDetails({item, inventoryKind, sources, accountKey, onClose}) {
+function TokenDetails({item, inventory, sources, accountKey, endpoint, canRead, onClose}) {
+  const inventoryKind = inventory.kind;
   const source = tokenBalanceSource(item, inventoryKind);
   const quantity = reportedTokenQuantity(item, inventoryKind);
   return <aside aria-label="Selected token">
@@ -30,11 +32,13 @@ function TokenDetails({item, inventoryKind, sources, accountKey, onClose}) {
     </dl>
     {source === 'synq' && <p>This entry records the initial allocation. Current holdings require a balance observation.</p>}
     {accountKey && <WalletTokenProvenance item={item} accountKey={accountKey}/>}
+    {source === 'rpcSts' && endpoint && canRead &&
+      <WalletRpcTokenDefinition key={item.tokenId} {...{endpoint, inventory, item, canRead}}/>}
     <button onClick={onClose}>Close token details</button>
   </aside>;
 }
 
-export function WalletTokens({inventory}) {
+export function WalletTokens({inventory, endpoint, canRead}) {
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
   const [selected, setSelected] = useState(null);
@@ -81,6 +85,7 @@ export function WalletTokens({inventory}) {
       </table>
     </div> : <p>{source.items.length ? 'No returned tokens match these filters.' :
       source.notice ? 'No usable token records are available in this source view.' : 'The index returned no token records.'}</p>}
-    {current && <TokenDetails item={current} {...{inventoryKind, sources}} accountKey={uniqueContract ? inventory.accountKey : null} onClose={() => setSelected(null)}/>}
+    {current && <TokenDetails item={current} {...{inventory, sources, endpoint, canRead}}
+      accountKey={uniqueContract ? inventory.accountKey : null} onClose={() => setSelected(null)}/>}
   </>;
 }

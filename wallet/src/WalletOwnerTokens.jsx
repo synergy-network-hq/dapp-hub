@@ -20,7 +20,7 @@ export function WalletOwnerTokens({account, endpoint, canRead}) {
         <Detail data={{reportedStsSnapshotHeight: inventory.snapshotHeight, reportedStsSnapshotHash: inventory.snapshotHash}}/>
         <p>The endpoint reports native SNRG from its ledger and STS balances from the reported snapshot. Spendability remains unverified.</p>
         {inventory.items.length === 1 && <p>The endpoint returned no STS token balances for this snapshot.</p>}
-        <WalletTokens inventory={inventory}/>
+        <WalletTokens {...{inventory, endpoint, canRead}}/>
       </>}</Resource>}
     </> : <p>A current protected Wallet address is required for this check.</p>}
   </Card>;

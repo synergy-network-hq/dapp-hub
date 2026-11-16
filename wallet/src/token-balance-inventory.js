@@ -20,12 +20,16 @@ export const rpcTokenBalanceSources = {
 export const RPC_TOKEN_INVENTORY_LIMIT = 50;
 const rpcSnapshotSources = new Set(['finalized_chain1266_execution_state', 'finalized_sts_snapshot']);
 
+export function matchesTokenReadiness(chainContext, readiness) {
+  const chain = readiness.chain;
+  return chainContext?.chainId === chain.chainId && String(chainContext.incarnation) === chain.incarnation &&
+    chainContext.genesis === chain.genesis.toLowerCase();
+}
+
 // The chain-1266 owner RPC returns the native ledger row and an exact-owner STS execution snapshot.
 export function rpcTokenBalanceInventory(response, account, readiness) {
   const {value, chainContext} = response;
-  const chain = readiness.chain;
-  if (chainContext?.chainId !== chain.chainId || String(chainContext.incarnation) !== chain.incarnation ||
-      chainContext.genesis !== chain.genesis.toLowerCase()) {
+  if (!matchesTokenReadiness(chainContext, readiness)) {
     throw Error('The token response does not match the selected RPC readiness identity.');
   }
   if (value?.owner !== account) throw Error('The selected RPC did not return the exact Wallet owner.');
@@ -63,7 +67,42 @@ export function rpcTokenBalanceInventory(response, account, readiness) {
       tokenAddress: row.token_address, tokenStandard: 'Native STS fungible', raw: balance, decimals: row.decimals, frozen: row.frozen};
   });
   items.unshift({source: 'rpc_native_token_balance', symbol: 'SNRG', raw: nativeAmount, decimals: 9, tokenStandard: 'Native SNRG'});
-  return {kind: 'rpc', items, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+  return {kind: 'rpc', items, chainContext, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+}
+
+// Pinned owner's STS definition, with only the reviewed public fields in the host projection.
+export function rpcTokenDefinition(response, selected, inventory, readiness) {
+  const {value, chainContext} = response;
+  if (!matchesTokenReadiness(chainContext, readiness)) {
+    throw Error('The token definition does not match the selected RPC readiness identity.');
+  }
+  const replay = value?.replay;
+  const height = blockHeight(replay?.latest_height);
+  const digest = value => typeof value === 'string' && value.length === 64 && /^[0-9a-f]{64}$/.test(value);
+  if (value?.success !== true || !rpcSnapshotSources.has(value.source) || replay?.source !== value.source ||
+      replay.complete !== true || height === null || !digest(replay.snapshot_block_hash)) {
+    throw Error('The selected RPC did not return a supported token definition snapshot.');
+  }
+  if (BigInt(height) < BigInt(inventory.snapshotHeight) ||
+      (height === inventory.snapshotHeight && replay.snapshot_block_hash !== inventory.snapshotHash)) {
+    throw Error('The token definition snapshot conflicts with the selected balance. Check the owner inventory again.');
+  }
+  const item = value.item;
+  if (item?.asset_kind !== 'sts' || item.token_id !== selected.tokenId || item.token_address !== selected.tokenAddress ||
+      item.token_address !== item.token_id || !isStsFungibleObjectId(item.token_id) || !['b1','b2','b3'].includes(item.class) ||
+      !item.token_id.startsWith(`syn${item.class}1`) || item.symbol !== selected.symbol || item.decimals !== selected.decimals) {
+    throw Error('The selected RPC definition does not match this token identity and precision.');
+  }
+  const total = exactRpcAmount(item.total_supply, maxU128);
+  const maximum = exactRpcAmount(item.max_supply, maxU128);
+  if (total === null || (item.max_supply !== null && (maximum === null || BigInt(maximum) < BigInt(total))) ||
+      typeof item.verified !== 'boolean' || typeof item.paused !== 'boolean' ||
+      (item.metadata_hash !== null && !digest(item.metadata_hash)) || (item.image_hash !== null && !digest(item.image_hash))) {
+    throw Error('The selected RPC returned unsupported token definition fields.');
+  }
+  return {tokenClass: item.class, total, maximum, verified: item.verified, paused: item.paused,
+    metadataHash: item.metadata_hash, imageHash: item.image_hash, snapshotHeight: height,
+    snapshotHash: replay.snapshot_block_hash, receivedAt: Date.now()};
 }
 
 export async function readAtlasTokenBalances(request, account, {signal} = {}) {

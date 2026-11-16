@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {compareSavedUpgradeManifest,readSavedUpgradeIntent,savedUpgradeLimits} from '../src/saved-upgrade-intent.js';
-import {savedUpgradeFixture} from './fixtures/saved-upgrade-intent.mjs';
+import {compareSavedUpgradeCompletion,compareSavedUpgradeManifest,readSavedUpgradeIntent,savedUpgradeLimits} from '../src/saved-upgrade-intent.js';
+import {savedUpgradeCompletionFixture,savedUpgradeFixture} from './fixtures/saved-upgrade-intent.mjs';
 
 const bytes = value => new Blob([typeof value==='string'?value:JSON.stringify(value)]);
 const badIntent = /not a supported saved software upgrade intent/;
@@ -55,6 +55,32 @@ test('separates draft and recorded candidate mismatch and retires pending or ove
  assert.equal(await compareSavedUpgradeManifest({size:file.size,arrayBuffer:()=>{live=false;return file.arrayBuffer();}},intent,fixture.references,()=>live),null);
 });
 
+test('compares a completion receipt independently of an intent and reports distinct package mismatches',async()=>{
+ for (const resumed of [false,true]) {
+  const {receipt,pins} = savedUpgradeCompletionFixture(resumed);
+  const summary = await compareSavedUpgradeCompletion(bytes(receipt),pins);
+  assert.deepEqual(summary,{...pins,priorMatches:true,candidateMatches:true,resumed,consensusStarted:false,automaticRestart:false});
+  assert.doesNotMatch(JSON.stringify(summary),/\/opt\/Synergy/);
+  assert.equal((await compareSavedUpgradeCompletion(bytes(receipt),{...pins,priorPin:'9'.repeat(64)})).priorMatches,false);
+  assert.equal((await compareSavedUpgradeCompletion(bytes(receipt),{...pins,candidatePin:'9'.repeat(64)})).candidateMatches,false);
+ }
+});
+
+test('refuses transient responses, contradictory flags, wrong root, duplicate keys and expired completion reads',async()=>{
+ const {receipt,pins} = savedUpgradeCompletionFixture();
+ for (const value of [{...receipt,package_sha256:pins.candidatePin},{already_current:true,package_sha256:pins.candidatePin},
+  {...receipt,automatic_restart:true},{...receipt,consensus_started:true},{...receipt,resumed:'true'},
+  {...receipt,root:'/other/Synergy'},{...receipt,old_package_sha256:receipt.new_package_sha256},
+  JSON.stringify(receipt).replace('"resumed":true','"resumed":true,"resu\\u006ded":false')]) {
+  await assert.rejects(compareSavedUpgradeCompletion(bytes(value),pins),/not a supported saved software upgrade completion receipt/);
+ }
+ await assert.rejects(compareSavedUpgradeCompletion({size:savedUpgradeLimits.completion+1,arrayBuffer:()=>assert.fail('oversize read')},pins),/at most/);
+ await assert.rejects(compareSavedUpgradeCompletion(bytes(receipt),{...pins,candidatePin:pins.priorPin}),/distinct/);
+ const file=bytes(receipt);
+ let live=true;
+ assert.equal(await compareSavedUpgradeCompletion({size:file.size,arrayBuffer:()=>{live=false;return file.arrayBuffer();}},pins,()=>live),null);
+});
+
 const ownerDirectory=process.env.SYNERGY_SAVED_UPGRADE_OWNER_FIXTURES;
 test('compares the pinned owner upgrade writer with the fixture candidate',{skip:!ownerDirectory},async()=>{
  const intent=await readSavedUpgradeIntent(bytes(readFileSync(`${ownerDirectory}/upgrade-intent.json`,'utf8')));
@@ -62,4 +88,12 @@ test('compares the pinned owner upgrade writer with the fixture candidate',{skip
  const result=await compareSavedUpgradeManifest(bytes(readFileSync(`${ownerDirectory}/candidate-package.json`,'utf8')),intent,fixture.references);
  assert.deepEqual(result.counts,{added:1,changed:1,removed:1,unchanged:1});
  assert.equal(result.registered,true);
+});
+
+const ownerCompletion = process.env.SYNERGY_SAVED_UPGRADE_COMPLETION_OWNER_FIXTURE;
+test('compares the pinned owner completion writer',{skip:!ownerCompletion},async()=>{
+ const {pins} = savedUpgradeCompletionFixture();
+ const receipt = bytes(readFileSync(ownerCompletion,'utf8'));
+ assert.deepEqual(await compareSavedUpgradeCompletion(receipt,pins),
+  {...pins,priorMatches:true,candidateMatches:true,resumed:true,consensusStarted:false,automaticRestart:false});
 });

@@ -1,6 +1,7 @@
+import {useState} from 'react';
 import {Card, Detail, ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {releaseReferenceChecks,upgradeParameters} from './nodeNetwork.js';
-import {compareSavedUpgradeManifest,readSavedUpgradeIntent} from './saved-upgrade-intent.js';
+import {compareSavedUpgradeCompletion,compareSavedUpgradeManifest,readSavedUpgradeIntent,savedUpgradeCompletionPins} from './saved-upgrade-intent.js';
 import {useObservationFile} from './useObservationFile.js';
 
 function UpgradeCandidate({intent,references,canRead}) {
@@ -37,12 +38,47 @@ function IntentFiles({references,canRead}) {
  </>;
 }
 
+function CompletionFile({pins,canRead}) {
+ const {result,error,reading,clear,select} = useObservationFile((file,current)=>
+  compareSavedUpgradeCompletion(file,pins,()=>current() && canRead()));
+ const matches = result?.priorMatches && result.candidateMatches;
+ return <>
+  <label>Saved software upgrade completion JSON <input type="file" accept=".json,application/json" onChange={select}/></label>
+  {(reading || error || result) && <button onClick={clear}>Clear completion receipt</button>}
+  {reading && <p role="status">Checking the saved completion receipt…</p>}
+  <ErrorMessage error={error}/>
+  {result && <section aria-label="Saved upgrade completion comparison">
+   <p role="status">{matches ? 'The saved completion receipt matches both package references.'
+    : 'The saved completion receipt differs from the package references.'}</p>
+   <Detail data={{reportedPriorManifestSha256:result.priorPin,priorReference:result.priorMatches?'Matches':'Differs',
+    reportedCandidateManifestSha256:result.candidatePin,candidateReference:result.candidateMatches?'Matches':'Differs'}}/>
+   {matches && <Detail data={{recordedPath:result.resumed?'Resumed a recorded upgrade':'Started a new upgrade',
+    consensusStarted:result.consensusStarted?'Yes':'No',automaticRestart:result.automaticRestart?'Yes':'No'}}/>}
+  </section>}
+ </>;
+}
+
+function SavedCompletion({references,canRead}) {
+ const [prior,setPrior] = useState('');
+ const pins = savedUpgradeCompletionPins(prior,references.manifest_sha256);
+ return <details>
+  <summary>Review a saved upgrade completion receipt</summary>
+  <p>Use the owner’s upgrade-completed.json and an independently supplied prior manifest digest. Confirm the originating host and current service state with the node operator.</p>
+  <label>Expected prior manifest SHA-256 <input value={prior} onChange={event=>setPrior(event.target.value)} maxLength={64} autoComplete="off"/></label>
+  {pins ? <CompletionFile key={prior} pins={pins} canRead={canRead}/>
+   : <p>Enter the previous manifest’s 64-character lowercase SHA-256, distinct from the candidate digest.</p>}
+ </details>;
+}
+
 export function SavedUpgradeIntent({form,permitted,canRead = () => permitted}) {
  const references = releaseReferenceChecks(form).every(check=>check.valid) ? upgradeParameters(form) : null;
  return <Card title="Saved interrupted upgrade">
   <p>Use the release references above, the owner’s saved upgrade-intent.json and the candidate package.json to compare the recorded software changes locally.</p>
   {!permitted ? <p>Allow NodeNetwork inspection in Security &amp; permissions to review saved upgrade evidence.</p>
-   : references ? <IntentFiles key={JSON.stringify(references)} references={references} canRead={canRead}/>
+   : references ? <div key={JSON.stringify(references)}>
+    <IntentFiles references={references} canRead={canRead}/>
+    <SavedCompletion references={references} canRead={canRead}/>
+   </div>
    : <p>Enter an approved release ID and manifest SHA-256 above to open a saved upgrade intent.</p>}
   <p>Managed recovery requires the enrolled controller, current host evidence and native authorization.</p>
  </Card>;

@@ -167,6 +167,8 @@ Settings → Updates can review a saved interrupted software-upgrade intent with
 
 The owner serializer and unit renderer generated a synthetic temporary fixture. Default model cases and the Portal Updates flow also passed. The result reflects the saved intent. The current host checkpoint and authority to resume or roll back remain open. Host selection stays deferred.
 
+Updates can also review the saved `evidence/upgrade-completed.json` from the pinned Testnet v3 owner lifecycle. The reader checks the canonical root, exact record schema and both independently reviewed manifest digests. It shows the recorded new or resumed path and restart and consensus flags only when both digests match. The pinned owner writer generated a matching fixture. The receipt records the prior operation and leaves the current boot, service health and authenticated job status open.
+
 Logs can review a selected saved validator-management audit JSONL from the pinned owner. Its bounded reader validates UTC timestamps and the recorded action and outcome combinations. UTC day, action and outcome filters scope the selected preview and exact redacted export bytes. The projection drops operator names, addresses and validator identifiers. Authorization and action results stay distinct because the source lacks a shared request ID.
 
 The pinned owner's offline writer generated a synthetic fixture. Model and desktop regressions exercised parsing, filtering, scope retirement and export. No target or management agent was contacted. Native download, live alerting and authenticated event correlation remain open.
