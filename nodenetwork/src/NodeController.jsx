@@ -14,7 +14,8 @@ import {validatorStartupBlocker,vpnEnrollmentBlocker,vpnEnrollmentObservation,vp
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
-import {identityGenerationInputs,identityGenerationObservation,identityPreflightObservation,identityPreflightReads} from './identity-preflight.js';
+import {formationPreparationInputs,formationPreparationObservation,identityGenerationInputs,identityGenerationObservation,
+ identityPreflightObservation,identityPreflightReads} from './identity-preflight.js';
 import {nodeServiceActions,nodeServiceActionObservation,targetHealthObservation} from './target-health.js';
 import {recoveryPreflightObservation} from './recovery-handoff.js';
 
@@ -39,6 +40,12 @@ const healthColumns = [
  })),
 ];
 const serviceLabels = {start:'Start node',stop:'Stop node',restart:'Restart node'};
+const custodyPreparations = [
+ {operation:'identity_generate',preflight:'identity_preflight',label:'Prepare existing-network identity',
+  prompt:'Check existing-network inputs before preparing an identity.',parameters:identityGenerationInputs,observe:identityGenerationObservation},
+ {operation:'formation_prepare',preflight:'formation_preflight',label:'Prepare formation identity',
+  prompt:'Check formation inputs before preparing an identity.',parameters:formationPreparationInputs,observe:formationPreparationObservation},
+];
 
 function TargetHealth({report}) {
  return <div>
@@ -90,24 +97,27 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const enrollmentBlocker=vpnEnrollmentBlocker(vpnResult?.result);
  const startupBlocker=validatorStartupBlocker(vpnResult?.operation==='vpn_status'?vpnResult.result:null);
  const serviceGates=Object.fromEntries(nodeServiceActions.map(operation=>[operation,installedControllerMutation(state,operation)]));
- const preparedIdentity=permitted&&identityContextCurrent&&result?.operation==='identity_generate'?result:null;
+ const resultIsPreparation=custodyPreparations.some(action=>action.operation===result?.operation);
+ const preparedIdentity=permitted&&identityContextCurrent&&resultIsPreparation?result:null;
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:preparedIdentity;
  const preparationResult=identityPreflightReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
- const identityGate=installedControllerMutation(state,'identity_generate');
- const identityReview=preparationResult?.operation==='identity_preflight'?preparationResult.result:null;
- const identityInputs=identityGenerationInputs(identityReview,form);
+ const preparationActions=custodyPreparations.map(action=>{
+  const review=preparationResult?.operation===action.preflight?preparationResult.result:null;
+  return {...action,review,inputs:action.parameters(review,form),available:installedControllerMutation(state,action.operation).available};
+ });
  async function run(operation,parameters={}){
   const read=statusGates[operation];
   const isPreflight=operation==='install_preflight';
   const isEnrollment=operation==='vpn_enroll';
   const isServiceAction=nodeServiceActions.includes(operation);
-  const isIdentityGeneration=operation==='identity_generate';
-  const reviewedIdentityContext=isIdentityGeneration||operation==='identity_preflight'?identityContext.current:null;
-  const scopeSensitive=isEnrollment||isServiceAction||reviewedIdentityContext||['health','vpn_status','identity_status'].includes(operation);
+  const preparesCustody=preparationActions.find(action=>action.operation===operation);
+  const reviewsCustody=Boolean(preparesCustody)||custodyPreparations.some(action=>action.preflight===operation);
+  const reviewedIdentityContext=reviewsCustody?identityContext.current:null;
+  const scopeSensitive=isEnrollment||isServiceAction||reviewsCustody||['health','vpn_status','identity_status','formation_status'].includes(operation);
   if(!permitted||busy||(read&&!read.available)||(isPreflight&&!preflight.canRun))return;
   if(isEnrollment&&(!enrollmentSupported||enrollmentBlocker||vpnResult?.operation!=='vpn_status'))return;
   if(isServiceAction&&(!serviceGates[operation].available||(operation!=='stop'&&startupBlocker)))return;
-  if(isIdentityGeneration&&(!identityGate.available||!identityInputs))return;
+  if(preparesCustody&&(!preparesCustody.available||!preparesCustody.inputs))return;
   if(scopeSensitive&&!targetScopeCurrent()){
    setResult(null);setServiceAcknowledgement(null);
    setError('The target, recovery state or permission changed. Review the selected controller again.');
@@ -115,7 +125,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   }
   setBusy(true);setError('');setResult(null);
   if(operation!=='health')setServiceAcknowledgement(null);
-  const submitted=isIdentityGeneration?identityInputs:{...parameters};
+  const submitted=preparesCustody?preparesCustody.inputs:{...parameters};
   const scopeCurrent=()=>alive.current&&(!scopeSensitive||targetScopeCurrent())
    &&(!reviewedIdentityContext||identityContext.current===reviewedIdentityContext);
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
@@ -125,7 +135,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    if(isPreflight)response=installPreflightObservation(raw,submitted,target);
    else if(isEnrollment)response=vpnEnrollmentObservation(raw);
    else if(isServiceAction)response=nodeServiceActionObservation(operation,raw);
-   else if(isIdentityGeneration)response=identityGenerationObservation(raw,identityReview);
+   else if(preparesCustody)response=preparesCustody.observe(raw,preparesCustody.review);
    else if(read)response=typedStatus[operation](raw,submitted);
    if(scopeCurrent()){
     const receivedAt=Date.now();
@@ -182,7 +192,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  </>;
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
-   if(typedStatus[result?.operation]||['vpn_enroll','identity_generate'].includes(result?.operation))setResult(null);
+   if(typedStatus[result?.operation]||result?.operation==='vpn_enroll'||resultIsPreparation)setResult(null);
    setPreflightAttempt(null);setServiceAcknowledgement(null);
    capabilities.reload();
   }}>Inspect selected target</button>}>
@@ -216,12 +226,13 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <IdentityPreflight permitted={permitted}
     actions={<>
      <div className="native-actions">{identityPreflightReads.map(({operation,label})=>statusAction(operation,label))}</div>
-     {permitted&&identityGate.available&&<div className="native-controller-action">
-      <button disabled={busy||!identityInputs} onClick={()=>run('identity_generate')}>Prepare existing-network identity</button>
-      {!identityInputs&&<small>{identityReview?'The reviewed network or chain differs from the provisioning draft.'
-       :'Check existing-network inputs before preparing an identity.'}</small>}
+     {permitted&&preparationActions.some(action=>action.available)&&<>
+      {preparationActions.filter(action=>action.available).map(({operation,label,inputs,review,prompt})=><div className="native-controller-action" key={operation}>
+       <button disabled={busy||!inputs} onClick={()=>run(operation)}>{label}</button>
+       {!inputs&&<small>{review?'The reviewed network or chain differs from the provisioning draft.':prompt}</small>}
+      </div>)}
       <p>Native confirmation is required. Validator keys remain on the selected host.</p>
-     </div>}
+     </>}
     </>}
     observation={preparationResult?.result}
     receipt={preparationResult&&<ControllerReceipt receivedAt={preparationResult.receivedAt}/>}/>
@@ -250,10 +261,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    </div>}
    onOpenDiagnostics={onOpenDiagnostics}/>}
   {['Management','Validator setup'].includes(tab)&&<CustodyStatus
-   actions={<div className="native-actions">{custodyStatusReads.filter(({operation})=>tab==='Management'||operation==='identity_status')
-    .map(({operation,label})=>statusAction(operation,label))}</div>}
+   actions={<div className="native-actions">{custodyStatusReads.map(({operation,label})=>statusAction(operation,label))}</div>}
    observation={custodyResult?.result}
-   prepared={custodyResult?.operation==='identity_generate'}
+   prepared={Boolean(preparedIdentity)}
    receipt={custodyResult&&<ControllerReceipt receivedAt={custodyResult.receivedAt}/>}
    onOpenHistory={onOpenDiagnostics}/>}
   {tab==='Updates'&&<ControllerUpdate form={form} target={target} permitted={permitted} busy={busy} controller={state} result={statusResult} run={run}/>}
@@ -262,6 +272,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    inventoryAction={button('inventory','Inventory node-owned files')}
    preflightAction={statusAction('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&!['vpn_enroll','identity_generate'].includes(result.operation)&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&result.operation!=='vpn_enroll'&&!resultIsPreparation&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }

@@ -14,11 +14,17 @@ const validatorAddress = address => {
  return tail.length >= 10 && tail.length <= 90 && !/[^a-z0-9]/.test(tail);
 };
 
+function matchesDraft(review,form) {
+ return Boolean(review && (!form.network_id || form.network_id === review.networkId)
+  && (!form.chain_id || form.chain_id === review.chainId));
+}
+
 export function identityGenerationInputs(review,form) {
- if (!digest(review?.genesisSha256)
-  || (form.network_id && form.network_id !== review.networkId)
-  || (form.chain_id && form.chain_id !== review.chainId)) return null;
- return {genesis_sha256:review.genesisSha256};
+ return matchesDraft(review,form) && digest(review.genesisSha256) ? {genesis_sha256:review.genesisSha256} : null;
+}
+
+export function formationPreparationInputs(review,form) {
+ return matchesDraft(review,form) && digest(review.formationSha256) ? {formation_sha256:review.formationSha256} : null;
 }
 
 export function identityGenerationObservation(value,review) {
@@ -27,6 +33,16 @@ export function identityGenerationObservation(value,review) {
   || value.network_id !== review?.networkId || value.chain_id !== review?.chainId || value.genesis_sha256 !== review?.genesisSha256
   || !validatorAddress(value.address)) throw Error(uncertain);
  try {return custodyStatusObservation('identity_status',{...value,pending:true});}
+ catch {throw Error(uncertain);}
+}
+
+export function formationPreparationObservation(value,review) {
+ const uncertain = 'Formation preparation outcome is uncertain. Preserve pending custody and read its status before another change.';
+ if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 10 || value.pending !== true
+  || value.network_id !== review?.networkId || value.chain_id !== review?.chainId
+  || value.formation_sha256 !== review?.formationSha256 || value.formation_id !== review?.formationId
+  || !validatorAddress(value.address)) throw Error(uncertain);
+ try {return custodyStatusObservation('formation_status',value);}
  catch {throw Error(uncertain);}
 }
 

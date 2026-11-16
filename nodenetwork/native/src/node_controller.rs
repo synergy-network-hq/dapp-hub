@@ -50,7 +50,7 @@ impl Request {
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
             "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight"|"genesis_binding_preflight"|"genesis_stage_preflight" => false,
-            "install"|"identity_generate"|"commission"|"register"|"vpn_enroll"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
+            "install"|"identity_generate"|"formation_prepare"|"commission"|"register"|"vpn_enroll"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
@@ -58,6 +58,7 @@ impl Request {
             "upgrade"|"upgrade_preflight" => &["release_id","manifest_sha256"],
             "uninstall" => &["confirmation"],
             "identity_generate" => &["genesis_sha256"],
+            "formation_prepare" => &["formation_sha256"],
             _ => &[],
         };
         if p.len() != expected.len() || expected.iter().any(|k| !p.contains_key(*k)) {
@@ -81,6 +82,7 @@ impl Request {
         }
         if self.operation=="uninstall" && p["confirmation"]!=ROOT { return Err("Confirm the exact Synergy root before uninstalling.".into()); }
         if self.operation=="identity_generate" && !lowercase_digest(&p["genesis_sha256"]) { return Err("An exact reviewed Genesis SHA-256 is required.".into()); }
+        if self.operation=="formation_prepare" && !lowercase_digest(&p["formation_sha256"]) { return Err("An exact reviewed formation SHA-256 is required.".into()); }
         Ok(mutation)
     }
     pub fn canonical(&self) -> Value { json!({"version":self.version,"operation":self.operation,"parameters":self.parameters}) }
@@ -389,6 +391,11 @@ fn genesis_stage_policy_reply(reply: &Value) -> Result<Value, &'static str> {
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
+fn formation_request_digest(pin: &Value) -> String {
+    // Same restricted ASCII request used by owner canonical(), host grant and local journal.
+    Request {version:1, operation:"formation_prepare".into(), parameters:json!({"formation_sha256":pin})}.approval_id()
+}
+
 fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
     const UNSUPPORTED: &str = "The selected controller returned unsupported pending custody evidence.";
     if reply["ok"] != true {
@@ -410,6 +417,7 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
         "identity_status" => fields.len() == 8 && result["genesis_authority_verified"] == true && lowercase_digest(&result["genesis_sha256"]),
         "formation_status" => fields.len() == 10 && result["schema"] == "nodenetwork-formation-v1"
             && ["formation_sha256", "formation_id", "request_sha256"].iter().all(|key| lowercase_digest(&result[*key]))
+            && result["request_sha256"] == formation_request_digest(&result["formation_sha256"])
             && result["formation_id"].as_str().is_some_and(|id| id.bytes().any(|byte| byte != b'0')),
         _ => false,
     };
@@ -440,6 +448,28 @@ fn identity_generation_reply(request: &Request, reply: &Value) -> Result<Value, 
         return Err(UNCERTAIN);
     }
     Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
+fn formation_preparation_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    const UNCERTAIN: &str = "Formation preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
+    if reply["ok"] == false {
+        let error = &reply["error"];
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("operation_refused"), Some("Reviewed formation context changed")) =>
+                ("operation_refused", "The formation context differs from the reviewed input. Check formation inputs again."),
+            (Some("qualification_required"), Some("Operation has not passed host qualification")) =>
+                ("qualification_required", "The host policy does not qualify this formation preparation."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "A matching one-use host grant is required for formation preparation."),
+            _ => return Err(UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    let result = &reply["result"];
+    if result["pending"] != true || result["formation_sha256"] != request.parameters["formation_sha256"] {
+        return Err(UNCERTAIN);
+    }
+    custody_status_reply("formation_status", reply).map_err(|_| UNCERTAIN)
 }
 
 fn health_reply(reply: &Value) -> Result<Value, &'static str> {
@@ -546,6 +576,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
             "identity_generate" => identity_generation_reply(&request, &value),
+            "formation_prepare" => formation_preparation_reply(&request, &value),
             _ => Ok(value),
         }
     }).await;
@@ -880,10 +911,13 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert!(custody_status_reply("identity_status", &reply).is_err());
         reply["result"] = json!({"pending":true,"network_id":"fixture-network","chain_id":"1266",
             "schema":"nodenetwork-formation-v1","formation_sha256":"a".repeat(64),"formation_id":"b".repeat(64),
-            "request_sha256":"c".repeat(64),"address":"synv1".to_string()+&"a".repeat(36),
+            "request_sha256":"3d1a736fbc86a3e25a10764739cb3b53e31e4d070c3dfe546b648e73c8b7979d","address":"synv1".to_string()+&"a".repeat(36),
             "possession_verified":true,"membership_granted":false});
         assert!(custody_status_reply("formation_status", &reply).is_ok());
         assert!(custody_status_reply("identity_status", &reply).is_err());
+        reply["result"]["request_sha256"] = json!("c".repeat(64));
+        assert!(custody_status_reply("formation_status", &reply).is_err());
+        reply["result"]["request_sha256"] = json!("3d1a736fbc86a3e25a10764739cb3b53e31e4d070c3dfe546b648e73c8b7979d");
         reply["result"]["chain_id"] = json!("18446744073709551616");
         assert!(custody_status_reply("formation_status", &reply).is_err());
         reply["result"] = json!({"pending":false});
@@ -930,6 +964,64 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         let mut changed = identity;
         changed["result"]["private_metadata"] = json!("fixture");
         assert!(preparation_reply("identity_preflight", &changed).is_err());
+    }
+
+    #[test] fn formation_preparation_requires_the_owner_canonical_digest_and_public_custody() {
+        let pin="a".repeat(64);
+        let sha="3d1a736fbc86a3e25a10764739cb3b53e31e4d070c3dfe546b648e73c8b7979d";
+        let mut request=Request{version:1,operation:"formation_prepare".into(),parameters:json!({"formation_sha256":pin})};
+        assert_eq!(request.validate(),Ok(true));
+        assert_eq!(request.canonical().to_string(),format!(r#"{{"operation":"formation_prepare","parameters":{{"formation_sha256":"{pin}"}},"version":1}}"#));
+        assert_eq!(request.approval_id(),sha);
+        for invalid in [json!({}),json!({"formation_sha256":"a".repeat(63)+"\n"}),
+                        json!({"formation_sha256":pin,"registration_json":"fixture"}),json!({"genesis_sha256":pin})] {
+            request.parameters=invalid;
+            assert!(request.validate().is_err());
+        }
+        request.parameters=json!({"formation_sha256":pin});
+        let result=json!({"schema":"nodenetwork-formation-v1","pending":true,"network_id":"fixture-formation","chain_id":"1266",
+            "formation_sha256":pin,"formation_id":"b".repeat(64),"request_sha256":sha,"address":"synv1".to_owned()+&"a".repeat(36),
+            "possession_verified":true,"membership_granted":false});
+        let wrap=|result|json!({"version":1,"ok":true,"result":result,"private":"fixture outer detail"});
+        assert_eq!(formation_preparation_reply(&request,&wrap(result.clone())),Ok(json!({"version":1,"ok":true,"result":result})));
+        for (key,value) in [("formation_sha256",json!("e".repeat(64))),("request_sha256",json!("b".repeat(64))),
+            ("pending",json!(false)),("membership_granted",json!(true)),("possession_verified",json!(false)),("registration_json",json!("fixture"))] {
+            let mut altered=result.clone();
+            altered[key]=value;
+            assert!(formation_preparation_reply(&request,&wrap(altered)).unwrap_err().contains("outcome is uncertain"));
+        }
+        let mut other=result;
+        other["formation_sha256"]=json!("b".repeat(64));
+        other["request_sha256"]=json!(formation_request_digest(&other["formation_sha256"]));
+        assert!(custody_status_reply("formation_status",&wrap(other.clone())).is_ok());
+        assert!(formation_preparation_reply(&request,&wrap(other)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test] fn formation_reconciliation_read_does_not_clear_the_dispatch_fence() {
+        use crate::request_journal::{inspect,Dispatch};
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base=std::env::temp_dir().canonicalize().unwrap().join(format!("nodenetwork-formation-journal-{}-{stamp}",std::process::id()));
+        let target=json!({"kind":"remote","host":"fixture.invalid","port":22,"root":ROOT});
+        let request=Request{version:1,operation:"formation_prepare".into(),parameters:json!({"formation_sha256":"a".repeat(64)})};
+        let response=|message|json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":message}});
+        for message in ["Reviewed formation context changed","fixture unknown custody failure"] {
+            Dispatch::begin(&base,&target,&request.operation,&request.canonical()).unwrap()
+                .finish(&formation_preparation_reply(&request,&response(message)).map_err(String::from)).unwrap();
+        }
+        let history=inspect(&base).unwrap();
+        let records=history["records"].as_array().unwrap();
+        assert!(records.iter().any(|row| row["operation"] == "formation_prepare" && row["request_digest"] == request.approval_id()
+            && row["state"] == "uncertain" && row["response_ok"].is_null()));
+        assert!(records.iter().any(|row| row["operation"] == "formation_prepare" && row["state"] == "response_received" && row["response_ok"] == false));
+        let status=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-formation-v1","pending":true,
+            "network_id":"fixture-formation","chain_id":"1266","formation_sha256":"a".repeat(64),"formation_id":"b".repeat(64),
+            "request_sha256":request.approval_id(),"address":"synv1".to_owned()+&"a".repeat(36),
+            "possession_verified":true,"membership_granted":false}});
+        assert!(custody_status_reply("formation_status",&status).is_ok());
+        assert_eq!(inspect(&base).unwrap(),history);
+        assert!(Dispatch::begin(&base,&target,&request.operation,&request.canonical()).is_err());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test] fn identity_generation_requires_only_exact_genesis_sha256_and_projects_public_custody() {

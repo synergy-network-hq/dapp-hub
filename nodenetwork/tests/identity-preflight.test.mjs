@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {identityGenerationInputs,identityGenerationObservation,identityPreflightObservation} from '../src/identity-preflight.js';
+import {formationPreparationInputs,formationPreparationObservation,identityGenerationInputs,identityGenerationObservation,
+ identityPreflightObservation} from '../src/identity-preflight.js';
 
 const common = {network_id: 'fixture-network', chain_id: '18446744073709551615'};
 const genesis = {...common, genesis_authority_verified: true, genesis_sha256: 'a'.repeat(64)};
@@ -21,6 +22,22 @@ test('uses only the reviewed existing-network Genesis digest and validates the c
   {...result,chain_id:'1266'},{...result,membership_granted:true},{...result,possession_verified:false},
   {...result,address:binding.address+'\n'},{...result,unlock:'private fixture'}]) {
   assert.throws(()=>identityGenerationObservation(invalid,reviewed),/outcome is uncertain/);
+ }
+});
+
+test('binds preparation to the reviewed formation, network and exact chain context', () => {
+ const review=identityPreflightObservation('formation_preflight',formation);
+ assert.deepEqual(formationPreparationInputs(review,{network_id:common.network_id,chain_id:common.chain_id}),{formation_sha256:formation.formation_sha256});
+ assert.equal(formationPreparationInputs(review,{chain_id:'1266'}),null);
+ assert.equal(formationPreparationInputs(review,{network_id:'other-network'}),null);
+ assert.equal(formationPreparationInputs(identityPreflightObservation('identity_preflight',genesis),{}),null);
+ const result={...formation,address:binding.address,pending:true,possession_verified:true,membership_granted:false,request_sha256:'d'.repeat(64)};
+ assert.deepEqual(formationPreparationObservation(result,review),{kind:'Formation custody',pending:true,
+  validatorAddress:binding.address,networkId:common.network_id,chainId:common.chain_id,formationSha256:formation.formation_sha256});
+ for (const change of [{formation_id:'e'.repeat(64)},{formation_sha256:'e'.repeat(64)},{network_id:'other-network'},{chain_id:'1266'},
+  {pending:false},{membership_granted:true},{possession_verified:false},{address:binding.address+'\n'},
+  {request_sha256:'e'.repeat(63)+'\n'},{registration_json:'excluded'}]) {
+  assert.throws(()=>formationPreparationObservation({...result,...change},review),/outcome is uncertain/);
  }
 });
 

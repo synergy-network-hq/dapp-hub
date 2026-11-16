@@ -3,7 +3,7 @@ export const custodyStatusReads = [
  {operation:'formation_status', label:'Read formation custody status', title:'Formation custody'},
 ];
 
-const digest = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+const digest = value => typeof value === 'string' && value.length === 64 && !/[^0-9a-f]/.test(value);
 
 export function custodyStatusObservation(operation, value) {
  const read = custodyStatusReads.find(item => item.operation === operation);
