@@ -1,12 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {identityPreflightObservation} from '../src/identity-preflight.js';
+import {identityGenerationInputs,identityGenerationObservation,identityPreflightObservation} from '../src/identity-preflight.js';
 
 const common = {network_id: 'fixture-network', chain_id: '18446744073709551615'};
 const genesis = {...common, genesis_authority_verified: true, genesis_sha256: 'a'.repeat(64)};
 const formation = {...common, schema: 'nodenetwork-formation-v1', formation_sha256: 'b'.repeat(64), formation_id: 'c'.repeat(64)};
 const binding = {...genesis, schema: 'nodenetwork-genesis-binding-v1', address: 'synv1' + 'a'.repeat(36),
  membership_verified: true, bound: false, stage_receipt_verified: false};
+
+test('uses only the reviewed existing-network Genesis digest and validates the correlated public reply', () => {
+ const reviewed=identityPreflightObservation('identity_preflight',genesis);
+ assert.deepEqual(identityGenerationInputs(reviewed,{network_id:common.network_id,chain_id:common.chain_id}),{genesis_sha256:genesis.genesis_sha256});
+ assert.equal(identityGenerationInputs(reviewed,{chain_id:'1266'}),null);
+ assert.equal(identityGenerationInputs(reviewed,{network_id:'other-network'}),null);
+ assert.equal(identityGenerationInputs(null,{}),null);
+ const result={...genesis,address:binding.address,possession_verified:true,membership_granted:false};
+ assert.deepEqual(identityGenerationObservation(result,reviewed),{kind:'Existing-network custody',pending:true,
+  validatorAddress:binding.address,networkId:common.network_id,chainId:common.chain_id,genesisSha256:genesis.genesis_sha256});
+ for (const invalid of [{...result,genesis_sha256:'b'.repeat(64)},{...result,network_id:'other-network'},
+  {...result,chain_id:'1266'},{...result,membership_granted:true},{...result,possession_verified:false},
+  {...result,address:binding.address+'\n'},{...result,unlock:'private fixture'}]) {
+  assert.throws(()=>identityGenerationObservation(invalid,reviewed),/outcome is uncertain/);
+ }
+});
 
 test('keeps reviewed Genesis and formation context distinct with exact chain IDs', () => {
  assert.deepEqual(identityPreflightObservation('identity_preflight', genesis), {

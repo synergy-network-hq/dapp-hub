@@ -25,7 +25,7 @@ struct Record {
 fn digest(value: &Value) -> String { format!("{:x}", Sha256::digest(value.to_string().as_bytes())) }
 fn pin(value: &str) -> bool { value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
 fn journaled_operation(operation: &str) -> bool {
-    matches!(operation, "bootstrap" | "install" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall")
+    matches!(operation, "bootstrap" | "install" | "identity_generate" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall")
 }
 fn now() -> Result<u64, String> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok())

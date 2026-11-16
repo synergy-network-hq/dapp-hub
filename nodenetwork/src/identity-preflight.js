@@ -1,4 +1,5 @@
 import {genesisStageFiles} from './genesis-stage-files.js';
+import {custodyStatusObservation} from './custody-status.js';
 
 export const identityPreflightReads = [
  {operation: 'identity_preflight', label: 'Check existing-network inputs', title: 'Existing-network preflight'},
@@ -12,6 +13,22 @@ const validatorAddress = address => {
  const tail = typeof address === 'string' && address.startsWith('synv1') ? address.slice(5) : '';
  return tail.length >= 10 && tail.length <= 90 && !/[^a-z0-9]/.test(tail);
 };
+
+export function identityGenerationInputs(review,form) {
+ if (!digest(review?.genesisSha256)
+  || (form.network_id && form.network_id !== review.networkId)
+  || (form.chain_id && form.chain_id !== review.chainId)) return null;
+ return {genesis_sha256:review.genesisSha256};
+}
+
+export function identityGenerationObservation(value,review) {
+ const uncertain = 'Validator identity preparation outcome is uncertain. Preserve pending custody and read its status before another change.';
+ if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 7
+  || value.network_id !== review?.networkId || value.chain_id !== review?.chainId || value.genesis_sha256 !== review?.genesisSha256
+  || !validatorAddress(value.address)) throw Error(uncertain);
+ try {return custodyStatusObservation('identity_status',{...value,pending:true});}
+ catch {throw Error(uncertain);}
+}
 
 export function identityPreflightObservation(operation, value) {
  const read = identityPreflightReads.find(item => item.operation === operation);

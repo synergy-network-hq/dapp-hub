@@ -50,13 +50,14 @@ impl Request {
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
             "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight"|"genesis_binding_preflight"|"genesis_stage_preflight" => false,
-            "install"|"commission"|"register"|"vpn_enroll"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
+            "install"|"identity_generate"|"commission"|"register"|"vpn_enroll"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
             "install"|"install_preflight" => &["release_id","manifest_sha256","network_id","chain_id","node_name"],
             "upgrade"|"upgrade_preflight" => &["release_id","manifest_sha256"],
             "uninstall" => &["confirmation"],
+            "identity_generate" => &["genesis_sha256"],
             _ => &[],
         };
         if p.len() != expected.len() || expected.iter().any(|k| !p.contains_key(*k)) {
@@ -79,6 +80,7 @@ impl Request {
             }
         }
         if self.operation=="uninstall" && p["confirmation"]!=ROOT { return Err("Confirm the exact Synergy root before uninstalling.".into()); }
+        if self.operation=="identity_generate" && !lowercase_digest(&p["genesis_sha256"]) { return Err("An exact reviewed Genesis SHA-256 is required.".into()); }
         Ok(mutation)
     }
     pub fn canonical(&self) -> Value { json!({"version":self.version,"operation":self.operation,"parameters":self.parameters}) }
@@ -415,6 +417,31 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
+fn identity_generation_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    const UNCERTAIN: &str = "Validator identity preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
+    if reply["ok"] == false {
+        let error = &reply["error"];
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("operation_refused"), Some("The reviewed Genesis artifact changed; inspect it again")) =>
+                ("operation_refused", "The signed Genesis differs from the reviewed input. Check existing-network inputs again."),
+            (Some("qualification_required"), Some("Operation has not passed host qualification")) =>
+                ("qualification_required", "The host policy does not qualify this identity preparation."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "A matching one-use host grant is required for this identity preparation."),
+            _ => return Err(UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    let result = &reply["result"];
+    if reply["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 7)
+        || !validator_network_context(result) || !validator_address(&result["address"])
+        || result["genesis_authority_verified"] != true || result["possession_verified"] != true || result["membership_granted"] != false
+        || !lowercase_digest(&result["genesis_sha256"]) || result["genesis_sha256"] != request.parameters["genesis_sha256"] {
+        return Err(UNCERTAIN);
+    }
+    Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
 fn health_reply(reply: &Value) -> Result<Value, &'static str> {
     use std::collections::HashSet;
     const UNSUPPORTED: &str = "The selected controller returned unsupported service health evidence.";
@@ -518,6 +545,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "genesis_binding_preflight" => genesis_binding_reply(&value),
             "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
             "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
+            "identity_generate" => identity_generation_reply(&request, &value),
             _ => Ok(value),
         }
     }).await;
@@ -831,7 +859,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             request.parameters = json!({"path":"fixture"});
             assert!(request.validate().is_err());
         }
-        for operation in ["identity_generate", "formation_prepare", "formation_export", "genesis_bind"] {
+        for operation in ["formation_prepare", "formation_export", "genesis_bind"] {
             let request = Request{version:1,operation:operation.into(),parameters:json!({})};
             assert!(request.validate().is_err());
         }
@@ -871,7 +899,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             request.parameters = json!({"genesis_sha256":"a".repeat(64)});
             assert!(request.validate().is_err());
         }
-        for operation in ["identity_generate", "formation_prepare", "genesis_stage", "genesis_bind"] {
+        for operation in ["formation_prepare", "genesis_stage", "genesis_bind"] {
             let request = Request {version:1, operation:operation.into(), parameters:json!({})};
             assert!(request.validate().is_err());
         }
@@ -902,6 +930,50 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         let mut changed = identity;
         changed["result"]["private_metadata"] = json!("fixture");
         assert!(preparation_reply("identity_preflight", &changed).is_err());
+    }
+
+    #[test] fn identity_generation_requires_only_exact_genesis_sha256_and_projects_public_custody() {
+        let pin="a".repeat(64);
+        let mut request=Request{version:1,operation:"identity_generate".into(),parameters:json!({"genesis_sha256":pin})};
+        assert_eq!(request.validate(),Ok(true));
+        for invalid in [json!({}),json!({"genesis_sha256":"a".repeat(63)+"\n"}),json!({"genesis_sha256":"A".repeat(64)}),
+                        json!({"genesis_sha256":pin,"unlock":"fixture"})] {
+            request.parameters=invalid;
+            assert!(request.validate().is_err());
+        }
+        request.parameters=json!({"genesis_sha256":pin});
+        let public=json!({"network_id":"fixture-testnet","chain_id":"1266","genesis_sha256":pin,
+            "genesis_authority_verified":true,"address":"synv1".to_owned()+&"a".repeat(36),
+            "possession_verified":true,"membership_granted":false});
+        let wrap=|result| json!({"version":1,"ok":true,"result":result,"private":"fixture outer detail"});
+        assert_eq!(identity_generation_reply(&request,&wrap(public.clone())),Ok(json!({"version":1,"ok":true,"result":public})));
+        for (key,value) in [("genesis_sha256",json!("b".repeat(64))),("chain_id",json!("1266\n")),("possession_verified",json!(false)),
+            ("genesis_authority_verified",json!(false)),("membership_granted",json!(true)),("unlock",json!("fixture"))] {
+            let mut altered=public.clone();
+            altered[key]=value;
+            assert!(identity_generation_reply(&request,&wrap(altered)).unwrap_err().contains("outcome is uncertain"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test] fn identity_generation_known_refusal_and_ambiguous_reply_preserve_journal_scope() {
+        use crate::request_journal::{inspect,Dispatch};
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base=std::env::temp_dir().canonicalize().unwrap().join(format!("nodenetwork-identity-journal-{}-{stamp}",std::process::id()));
+        let target=json!({"kind":"remote","host":"fixture.invalid","port":22,"root":ROOT});
+        let request=Request{version:1,operation:"identity_generate".into(),parameters:json!({"genesis_sha256":"a".repeat(64)})};
+        let response=|message|json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":message}});
+        for message in ["The reviewed Genesis artifact changed; inspect it again","fixture unknown custody failure"] {
+            let dispatch=Dispatch::begin(&base,&target,&request.operation,&request.canonical()).unwrap();
+            dispatch.finish(&identity_generation_reply(&request,&response(message)).map_err(String::from)).unwrap();
+        }
+        let history=inspect(&base).unwrap();
+        let records=history["records"].as_array().unwrap();
+        assert!(records.iter().any(|row| row["operation"] == "identity_generate" && row["state"] == "response_received" && row["response_ok"] == false));
+        assert!(records.iter().any(|row| row["operation"] == "identity_generate" && row["state"] == "uncertain" && row["response_ok"].is_null()));
+        assert!(Dispatch::begin(&base,&target,&request.operation,&request.canonical()).is_err());
+        assert!(!history.to_string().contains("fixture"));
+        std::fs::remove_dir_all(base).unwrap();
     }
     #[test] fn preparation_refuses_with_fixed_guidance_without_host_details() {
         for (code,guidance) in [
