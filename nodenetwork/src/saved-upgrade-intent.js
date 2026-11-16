@@ -52,7 +52,7 @@ function packageManifest(raw,error) {
  return {release:value.release_id,files:inventory(value.files,error)};
 }
 
-async function fileBytes(file,limit,current) {
+export async function readUpgradeJsonFile(file,limit,current) {
  if (!Number.isSafeInteger(file?.size) || file.size < 1 || file.size > limit) {
   throw Error(`Choose a nonempty JSON file of at most ${limit.toLocaleString('en-US')} bytes.`);
  }
@@ -88,7 +88,7 @@ async function serviceReview(value,current) {
 }
 
 export async function readSavedUpgradeIntent(file,current = () => true) {
- const selected = await fileBytes(file,savedUpgradeLimits.intent,current);
+ const selected = await readUpgradeJsonFile(file,savedUpgradeLimits.intent,current);
  if (!current() || !selected) return null;
  const value = json(selected.raw,intentError);
  const fields = ['format','root','old_receipt','old_manifest_json','new_package_sha256','new_files',
@@ -113,9 +113,9 @@ export async function readSavedUpgradeIntent(file,current = () => true) {
   stage:value.stage,registered:value.registered,relay};
 }
 
-export async function compareSavedUpgradeManifest(file,intent,references,current = () => true) {
+export async function readDraftPackageManifest(file,references,current = () => true) {
  const approved = upgradeParameters(references);
- const selected = await fileBytes(file,savedUpgradeLimits.manifest,current);
+ const selected = await readUpgradeJsonFile(file,savedUpgradeLimits.manifest,current);
  if (!current() || !selected) return null;
  const candidate = packageManifest(selected.raw,manifestError);
  const pin = await localSha256(selected.bytes);
@@ -123,6 +123,13 @@ export async function compareSavedUpgradeManifest(file,intent,references,current
  if (pin !== approved.manifest_sha256 || candidate.release !== approved.release_id) {
   throw Error('The selected package manifest differs from the approved release references in the update draft.');
  }
+ return {...candidate,pin};
+}
+
+export async function compareSavedUpgradeManifest(file,intent,references,current = () => true) {
+ const candidate = await readDraftPackageManifest(file,references,current);
+ if (!current() || !candidate) return null;
+ const {pin} = candidate;
  if (pin !== intent.nextPin || !sameFiles(intent.nextFiles,candidate.files)) {
   throw Error('The selected package manifest differs from the candidate recorded in the saved intent.');
  }
@@ -144,7 +151,7 @@ export function savedUpgradeCompletionPins(priorPin,candidatePin) {
 export async function compareSavedUpgradeCompletion(file,references,current = () => true) {
  const pins = savedUpgradeCompletionPins(references?.priorPin,references?.candidatePin);
  if (!pins) throw Error('Enter distinct prior and candidate manifest SHA-256 values before reviewing the completion receipt.');
- const selected = await fileBytes(file,savedUpgradeLimits.completion,current);
+ const selected = await readUpgradeJsonFile(file,savedUpgradeLimits.completion,current);
  if (!current() || !selected) return null;
  const receipt = json(selected.raw,completionError);
  const fields = ['format','root','old_package_sha256','new_package_sha256','resumed','consensus_started','automatic_restart'];

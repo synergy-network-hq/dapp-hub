@@ -1,9 +1,10 @@
 import {useEffect, useId, useRef, useState} from 'react';
 import {amount} from '@synergy-network/dapp-data-view';
 import {CONTACT_KEY, matchesReviewedContact, readContacts} from './wallet-contacts.js';
-import {canSaveContactAddress, contactAddressProfile} from './wallet-address.js';
+import {canSaveContactAddress, contactAddressProfile, isProtectedWalletAddress} from './wallet-address.js';
 import {parseSnrgDraftAmount} from './send-draft-amount.js';
 import {WalletDraftBalanceComparison} from './WalletDraftBalanceComparison.jsx';
+import {WalletDraftAccountObservation} from './WalletDraftAccountObservation.jsx';
 import {WalletDraftFeeSchedule} from './WalletDraftFeeSchedule.jsx';
 
 function contactStillSaved(contact) {
@@ -77,6 +78,8 @@ function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
       <p>Input checks are local. Fees, spendable balance and simulation remain unverified.</p>
       <WalletDraftBalanceComparison key={review.revision} account={account} endpoint={endpoint} draftNwei={review.nwei}
         canCompare={canUseReview}/>
+      {isProtectedWalletAddress(account) && <WalletDraftAccountObservation key={`account:${review.revision}`}
+        account={account} endpoint={endpoint} canCheck={canUseReview}/>}
       {contactAddressProfile(review.recipient) !== 'burn' && <WalletDraftFeeSchedule key={`fee:${review.revision}`} endpoint={endpoint}
         draftNwei={review.nwei} canCheck={canUseReview}/>}
     </section>}

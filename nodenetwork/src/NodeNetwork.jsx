@@ -32,6 +32,7 @@ import {SavedValidatorAudit} from './SavedValidatorAudit.jsx';
 import {SavedValidatorFleet} from './SavedValidatorFleet.jsx';
 import {ReplacementRecoveryReview} from './ReplacementRecoveryReview.jsx';
 import {SavedUpgradeIntent} from './SavedUpgradeIntent.jsx';
+import {UpgradeConfiguration} from './UpgradeConfiguration.jsx';
 import {SavedValidatorPerformance} from './SavedValidatorPerformance.jsx';
 import {UpdatePackage} from './UpdatePackage.jsx';
 import {MaintenanceComparison} from './MaintenanceComparison.jsx';
@@ -157,6 +158,7 @@ export function NodeNetworkApp(){
    <UpdatePackage form={form} setForm={setForm}/>
    <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster} updateDraft={form}/>
    <SavedUpgradeIntent form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
+   <UpgradeConfiguration form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <ReplacementRecoveryReview permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <MaintenanceComparison permitted={permitted}/>
   </>:<div className="native-grid">

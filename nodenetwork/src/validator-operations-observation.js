@@ -41,6 +41,7 @@ const nonempty = value => text(value) && Boolean(value.trim());
 const boolean = value => typeof value === 'boolean';
 const oneOf = (...values) => value => values.includes(value);
 const numberSource = value => typeof value === 'string' && value.startsWith(integerMarker) ? value.slice(1) : '';
+export {numberSource as exactJsonNumber};
 const uint = limit => value => {
  const source = numberSource(value);
  return /^(0|[1-9]\d{0,19})$/.test(source) && BigInt(source) <= limit;
