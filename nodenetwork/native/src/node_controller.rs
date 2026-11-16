@@ -12,6 +12,7 @@ const IDENTITY_GENERATION_UNCERTAIN: &str = "Validator identity preparation outc
 const FORMATION_PREPARATION_UNCERTAIN: &str = "Formation preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
 pub(super) const GENESIS_STAGE_WIRE_LIMIT: usize = 12 * 1024 * 1024;
 pub(super) const COMMISSION_UNCERTAIN: &str = "Validator commissioning outcome is uncertain. Inspect the selected target and its request history before another change.";
+pub(super) const NODE_SERVICE_UNCERTAIN: &str = "Node service action outcome is uncertain. Inspect the selected controller before another change.";
 pub(super) const REGISTER_UNCERTAIN: &str = "Service registration outcome is uncertain. Inspect the selected target before another change.";
 pub(super) const UPGRADE_UNCERTAIN: &str = "Software upgrade outcome is uncertain. Review the selected installation and its pending upgrade evidence before another change.";
 pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -327,6 +328,11 @@ pub(super) fn require_custody_preparation_target(request: &Request, review: &Cus
         .ok_or("The controller no longer reports an installed Linux x86-64 target with the qualified preparation and preflight operations.")
 }
 
+pub(super) fn require_service_start_target(operation: &str, reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, true, &[(operation, "mutation"), ("vpn_status", "read")]).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with the qualified service action and VPN status read.")
+}
+
 pub(super) fn require_service_registration_target(reply: &Value) -> Result<(), &'static str> {
     qualified_software_target(reply, true, &[("register", "mutation")]).then_some(())
         .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified service registration.")
@@ -565,8 +571,29 @@ fn vpn_enrollment_reply(reply: &Value) -> Result<Value, &'static str> {
     Ok(result)
 }
 
+pub(super) fn require_service_start_vpn(reply: &Value) -> Result<(), &'static str> {
+    // invoke uses the native projection after validating the owner's overlay field.
+    let status = &reply["result"];
+    if reply["version"] == 1 && reply["ok"] == true && reply.as_object().is_some_and(|fields| fields.len() == 3)
+        && status.as_object().is_some_and(|fields| fields.len() == 7) && status["schema"] == "nodenetwork-vpn-status-v1"
+        && status["enrollment_staged"].is_boolean() && status["service_registered"] == true
+        && status["enrollment_recorded"] == true && status["reconciliation_required"] == false
+        && status["server_bound"] == true && status["connected"] == true {
+        return Ok(());
+    }
+    Err("The current controller VPN report could not confirm the startup prerequisites. Read VPN status again before starting or restarting.")
+}
+
+pub(super) fn service_start_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3)
+        || (reply["ok"] == false && !reply["error"].as_object().is_some_and(|fields| fields.len() == 2)) {
+        return Err(NODE_SERVICE_UNCERTAIN);
+    }
+    node_service_reply(operation, reply)
+}
+
 fn node_service_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
-    const UNCERTAIN: &str = "Node service action outcome is uncertain. Inspect the selected controller before another change.";
+    const UNCERTAIN: &str = NODE_SERVICE_UNCERTAIN;
     if reply["ok"] == false {
         // Only the pinned controller's exact pre-dispatch refusals release the local journal fence.
         let error = &reply["error"];
@@ -878,6 +905,9 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
     if matches!(request.operation.as_str(), "identity_generate" | "formation_prepare") {
         return Err("Use the reviewed native custody preparation operation.".into());
     }
+    if matches!(request.operation.as_str(), "start" | "restart") {
+        return Err("Use the reviewed native service startup operation.".into());
+    }
     let serial=SERIAL.lock().await;
     execute_locked(&target,&request,control_dir,known_hosts,&serial).await
 }
@@ -901,7 +931,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "uninstall" => crate::node_removal_scope::removal_reply(&value),
         "vpn_status" => vpn_status_reply(&value),
         "vpn_enroll" => vpn_enrollment_reply(&value),
-        "start" | "stop" | "restart" => node_service_reply(&request.operation, &value),
+        "stop" => node_service_reply(&request.operation, &value),
         "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
         "genesis_binding_preflight" => genesis_binding_reply(&value),
         "genesis_bind" => genesis_bind_reply(request, &value),

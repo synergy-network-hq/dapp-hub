@@ -55,6 +55,23 @@ export function checkConfiguredReceiptGenesis(chain, configuredGenesis) {
   }
 }
 
+export function sameReceiptChainContext(left, right) {
+  return left.chainId === right.chainId && left.network === right.network &&
+    left.incarnation === right.incarnation && left.genesis === right.genesis;
+}
+
+export function reconcileRpcReceipt(previous, receipt, chain, checkedAt) {
+  // A miss in the owner's bounded receipt cache leaves the last anchor historical.
+  const comparable = previous && sameReceiptChainContext(previous.chain, chain) ? previous : null;
+  if (receipt === null) return {anchor: comparable, prior: comparable};
+
+  const {height, blockHash, index, status} = receipt;
+  const anchor = {chain, height, blockHash, index, status, checkedAt};
+  const conflict = comparable && (comparable.height !== height || comparable.blockHash.toLowerCase() !== blockHash.toLowerCase() ||
+    comparable.status !== status || (comparable.index !== null && index !== null && comparable.index !== index));
+  return {anchor, prior: conflict ? comparable : null};
+}
+
 export function rpcReceiptObservation(value, selection, readiness) {
   if (value === null) return null;
 
