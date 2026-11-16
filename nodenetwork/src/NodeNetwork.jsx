@@ -34,6 +34,7 @@ import {SavedValidatorLogs} from './SavedValidatorLogs.jsx';
 import {SavedValidatorAudit} from './SavedValidatorAudit.jsx';
 import {SavedValidatorFleet} from './SavedValidatorFleet.jsx';
 import {ReplacementRecoveryReview} from './ReplacementRecoveryReview.jsx';
+import {AuthorityRecoveryReview} from './AuthorityRecoveryReview.jsx';
 import {SavedUpgradeIntent} from './SavedUpgradeIntent.jsx';
 import {UpgradeConfiguration} from './UpgradeConfiguration.jsx';
 import {SavedValidatorPerformance} from './SavedValidatorPerformance.jsx';
@@ -129,6 +130,7 @@ export function NodeNetworkApp(){
    <SavedValidatorLogs permitted={permitted}/>
    <SavedValidatorAudit permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <ReplacementRecoveryReview form={form} permitted={inspectMasterPermitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
+   <AuthorityRecoveryReview form={form} permitted={inspectMasterPermitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>
   </>:tab==='Network'?<>
    <Card title="Observation sources">
@@ -169,6 +171,7 @@ export function NodeNetworkApp(){
    <SavedUpgradeIntent form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <UpgradeConfiguration form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <ReplacementRecoveryReview form={form} permitted={inspectMasterPermitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
+   <AuthorityRecoveryReview form={form} permitted={inspectMasterPermitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <MaintenanceComparison permitted={permitted}/>
   </>:<div className="native-grid">
    <Card title="Single-root contract"><Detail data={{installationRoot:'/opt/Synergy',software:'/opt/Synergy/bin',configuration:'/opt/Synergy/config',custody:'/opt/Synergy/keys/apqe',network:'/opt/Synergy/network',vpnState:'/opt/Synergy/vpn',blockchainState:'/opt/Synergy/data',recovery:'/opt/Synergy/recovery',updateStaging:'/opt/Synergy/tmp',temporaryFiles:'/opt/Synergy/tmp',runtime:'/opt/Synergy/run',serviceDefinitions:'/opt/Synergy/systemd',logs:'/opt/Synergy/logs'}}/><p>Every node-owned file and directory must stay inside this root on both local and remote targets. External release, custody, VPN, checkpoint, staging or diagnostic files fail installation qualification. Any operating-system registration must reference definitions inside this root and be included in the isolation audit.</p></Card>

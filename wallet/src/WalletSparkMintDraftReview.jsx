@@ -1,9 +1,8 @@
 import {useId, useLayoutEffect, useRef, useState} from 'react';
 import {Card, useNative} from '@synergy-network/portal-native/dapp-sdk';
 import {inspectSparkNf1MintDraft, isSparkNf1WalletAddress, MAX_SPARK_MINT_DRAFT_BYTES} from './spark-nf1-draft.js';
-
-// Wallet owner 134cfa2, tools/chain1266-sts/src/protocol.rs.
-const STS_GENESIS_HASH = '2272fe2b48c6e2019b27223f61ba8d8a82b58656fe9daab50c81f224a301ca74';
+import {STS_TESTNET_GENESIS} from './wallet-address.js';
+import {WalletSparkMintAuthorityCheck} from './WalletSparkMintAuthorityCheck.jsx';
 
 export function WalletSparkMintDraftReview() {
   const [review, setReview] = useState({status: 'empty'});
@@ -31,7 +30,7 @@ export function WalletSparkMintDraftReview() {
     }
     if (current !== revision.current) return;
     try {
-      setReview({status: 'checked', value: inspectSparkNf1MintDraft(bytes)});
+      setReview({status: 'checked', value: inspectSparkNf1MintDraft(bytes), revision: current});
     } catch (error) {
       setReview({status: 'failed', message: error.message});
     }
@@ -51,11 +50,11 @@ export function WalletSparkMintDraftReview() {
     {review.status !== 'empty' && <button type="button" onClick={clearFile}>Clear mint draft file</button>}
     {review.status === 'reading' && <p role="status">Reading mint draft…</p>}
     {review.status === 'failed' && <p role="alert" className="native-error">{review.message}</p>}
-    {review.status === 'checked' && <MintDraftSummary value={review.value}/>}
+    {review.status === 'checked' && <MintDraftSummary value={review.value} isCurrent={() => revision.current === review.revision}/>}
   </Card>;
 }
 
-function MintDraftSummary({value}) {
+function MintDraftSummary({value, isCurrent}) {
   return <section aria-label="Unsigned NF1 mint review">
     <p role="status">Unsigned NF1 mint draft</p>
     <dl className="native-details">
@@ -72,7 +71,8 @@ function MintDraftSummary({value}) {
       <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
     </dl>
     <SparkMintPairingComparison draft={value}/>
-    <p>Mint authority and transaction approval require separate verification.</p>
+    <WalletSparkMintAuthorityCheck draft={value} isCurrent={isCurrent}/>
+    <p>Signer identity, fees and transaction approval still require independent verification.</p>
   </section>;
 }
 
@@ -84,7 +84,7 @@ function SparkMintPairingComparison({draft}) {
   const configuredGenesis = endpoint?.genesisHash;
   const chainMatches = connection?.chainId === 'synergy:' + draft.chainId && Number(endpoint?.chainId) === draft.chainId;
   const genesisMatches = configuredGenesis == null ||
-    (typeof configuredGenesis === 'string' && configuredGenesis.toLowerCase() === STS_GENESIS_HASH);
+    (typeof configuredGenesis === 'string' && configuredGenesis.toLowerCase() === STS_TESTNET_GENESIS);
   const matchesWalletAuthorization = () => !native.recoverySuspended && native.permit('wallet', 'readWallet') &&
     isCurrentConnection(connectionRevision, connection.address, connection.chainId);
 
