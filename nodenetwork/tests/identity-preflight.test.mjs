@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {formationPreparationInputs,formationPreparationObservation,identityGenerationInputs,identityGenerationObservation,
+import {formationPreparationInputs,formationPreparationObservation,genesisBindingInputs,genesisBindingObservation,identityGenerationInputs,identityGenerationObservation,
  identityPreflightObservation} from '../src/identity-preflight.js';
 
 const common = {network_id: 'fixture-network', chain_id: '18446744073709551615'};
@@ -76,4 +76,26 @@ test('decodes typed binding evidence with independent bound and stage-receipt st
  for (const input of [genesis, {...binding, membership_verified: false}, {...binding, bound: 'yes'},
   {...binding, stage_receipt_verified: null}, {...binding, enrollment_json: 'unexpected artifact'},
  ]) assert.throws(() => identityPreflightObservation('genesis_binding_preflight', input), /unsupported validator preparation/);
+});
+
+test('binds only the unbound Genesis review with the same retained formation and returns scoped public acknowledgement', () => {
+ const reviewed=identityPreflightObservation('genesis_binding_preflight',binding);
+ const retained={kind:'Formation custody',pending:true,networkId:common.network_id,chainId:common.chain_id,
+  validatorAddress:binding.address,formationSha256:formation.formation_sha256};
+ assert.deepEqual(genesisBindingInputs(reviewed,retained,{chain_id:common.chain_id,network_id:common.network_id}),
+  {genesis_sha256:genesis.genesis_sha256});
+ assert.equal(genesisBindingInputs(reviewed,retained,{chain_id:'99999'}),null);
+ assert.equal(genesisBindingInputs({...reviewed,bound:true},retained,{}),null);
+ assert.equal(genesisBindingInputs(reviewed,null,{}),null);
+ for (const change of [{kind:'Existing-network custody'},{pending:false},{validatorAddress:'synv1'+'b'.repeat(36)},
+  {chainId:'99999'},{networkId:'other-network'},{formationSha256:null}]) {
+  assert.equal(genesisBindingInputs(reviewed,{...retained,...change},{}),null);
+ }
+ const result={...binding,bound:true};
+ assert.deepEqual(genesisBindingObservation(result,reviewed),{...reviewed,bound:true,stageReceiptVerified:false});
+ assert.equal(genesisBindingObservation({...result,stage_receipt_verified:true},reviewed).stageReceiptVerified,true);
+ for (const change of [{bound:false},{genesis_sha256:'e'.repeat(64)},{chain_id:'99999'},{network_id:'another-network'},
+  {address:'synv1'+'e'.repeat(36)},{enrollment_json:'excluded'},{membership_verified:false}]) {
+  assert.throws(()=>genesisBindingObservation({...result,...change},reviewed),/Genesis binding outcome is uncertain/);
+ }
 });

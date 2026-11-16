@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::path::PathBuf;
+use std::{future::Future, path::{Path, PathBuf}};
 use tauri::Manager;
 use crate::{node_network,node_controller,node_bootstrap,request_journal};
 #[tauri::command]
@@ -39,23 +39,49 @@ pub async fn portal_nodenetwork_review_operator_key(window:tauri::WebviewWindow)
  }).await.map_err(|_|"Public key inspection did not finish.")?
 }
 #[tauri::command]
-pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,request:node_controller::Request)->Result<Value,String>{
+pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,request:node_controller::Request,
+ binding_review:Option<node_controller::GenesisBindingReview>)->Result<Value,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;
  target.validate()?;
  let mutation=request.validate()?;
+ let binding_review=node_controller::GenesisBindingReview::for_request(&request,binding_review)?;
  if mutation {
   let title=format!("Authorize NodeNetwork {}",request.operation);
-  let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: {}\nParameters: {}\nExact request approval ID: {}\n\nThis action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",target.label(),request.operation,request.parameters,request.approval_id());
+  let reviewed=binding_review.as_ref().map(|review|review.confirmation_details(&request))
+   .unwrap_or_else(||format!("\nParameters: {}",request.parameters));
+  let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: {}{}\nExact request approval ID: {}\n\nThis action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",target.label(),request.operation,reviewed,request.approval_id());
   let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title(title)
    .buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show())
    .await.map_err(|_|"Operator confirmation did not finish.")?;
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
+ if let Some(review)=binding_review {
+  let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
+  let serial=node_controller::SERIAL.lock().await;
+  return dispatch_reviewed_genesis_binding(&target,&request,&review,&journal, |request| {
+   let (target,directory,serial)=(&target,&directory,&serial);
+   async move {node_controller::execute_locked(target,&request,directory,None,serial).await}
+  }).await;
+ }
  let dispatch=if mutation {Some(request_journal::Dispatch::begin(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?,&target.journal_identity(),&request.operation,&request.canonical())?)} else {None};
  let result=node_controller::execute(target,request,&directory).await;
  if let Some(dispatch)=dispatch {dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;}
+ result
+}
+
+async fn dispatch_reviewed_genesis_binding<Fut>(target:&node_controller::Target,request:&node_controller::Request,
+ review:&node_controller::GenesisBindingReview,journal:&Path,mut execute:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
+where Fut:Future<Output=Result<Value,String>> {
+ let preflight=node_controller::Request{version:1,operation:"genesis_binding_preflight".into(),parameters:serde_json::json!({})};
+ let fresh=execute(preflight).await
+  .map_err(|_|"The controller could not recheck the reviewed unbound Genesis scope. Review it again before binding.")?;
+ review.require_unbound(request,&fresh)?;
+ let dispatch=request_journal::Dispatch::begin(journal,&target.journal_identity(),&request.operation,&request.canonical())?;
+ let result=execute(request.clone()).await
+  .and_then(|reply|review.verify_acknowledgement(request,reply));
+ dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;
  result
 }
 #[tauri::command]
@@ -83,3 +109,64 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
  result.map(Some)
 }
 fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> { if window.label() == "main" { Ok(()) } else { Err("Use the main Portal window for native services.".into()) } }
+
+#[cfg(all(test,unix))]
+mod tests {
+ use super::*;
+ use crate::node_controller::{GenesisBindingReview,Request,Target,ROOT};
+ use serde_json::json;
+
+ fn genesis_bind_scope_fixture() -> (Target,Request,GenesisBindingReview,PathBuf) {
+  let target=Target{kind:"remote".into(),host:Some("fixture.invalid".into()),port:None,root:ROOT.into()};
+  let request=Request{version:1,operation:"genesis_bind".into(),parameters:json!({"genesis_sha256":"a".repeat(64)})};
+  let review=serde_json::from_value(json!({"networkId":"fixture-formation","chainId":"99999",
+   "validatorAddress":"synv1".to_owned()+&"a".repeat(36)})).unwrap();
+  let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+  let journal=std::env::temp_dir().canonicalize().unwrap().join(format!("nodenetwork-reviewed-binding-{}-{stamp}",std::process::id()));
+  (target,request,review,journal)
+ }
+
+ fn genesis_binding_projection(bound:bool)->Value {
+  json!({"version":1,"ok":true,"result":{
+   "schema":"nodenetwork-genesis-binding-v1","network_id":"fixture-formation","chain_id":"99999",
+   "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true,"address":"synv1".to_owned()+&"a".repeat(36),
+   "membership_verified":true,"bound":bound,"stage_receipt_verified":false}})
+ }
+
+ #[test]
+ fn genesis_bind_command_rechecks_scope_before_opening_the_journal_or_dispatching() {
+  let (target,request,review,journal)=genesis_bind_scope_fixture();
+  let mut calls=Vec::new();
+  let mut drift=genesis_binding_projection(false);
+  drift["result"]["address"]=json!("synv1".to_owned()+&"b".repeat(36));
+  let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_binding(&target,&request,&review,&journal, |submitted| {
+   calls.push(submitted.canonical());
+   std::future::ready(Ok(drift.clone()))
+  }));
+  assert!(outcome.unwrap_err().contains("differs from the reviewed unbound Genesis scope"));
+  assert_eq!(calls,vec![json!({"version":1,"operation":"genesis_binding_preflight","parameters":{}})]);
+  assert!(!journal.exists());
+ }
+
+ #[test]
+ fn genesis_bind_command_preserves_exact_wire_and_journals_validly_typed_scope_drift_as_uncertain() {
+  let (target,request,review,journal)=genesis_bind_scope_fixture();
+  let mut calls=Vec::new();
+  let mut drift=genesis_binding_projection(true);
+  drift["result"]["chain_id"]=json!("1266");
+  let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_binding(&target,&request,&review,&journal, |submitted| {
+   calls.push(submitted.canonical());
+   let report=if submitted.operation=="genesis_binding_preflight" {genesis_binding_projection(false)} else {drift.clone()};
+   std::future::ready(Ok(report))
+  }));
+  assert!(outcome.unwrap_err().contains("outcome is uncertain"));
+  assert_eq!(calls,vec![json!({"version":1,"operation":"genesis_binding_preflight","parameters":{}}),request.canonical()]);
+  assert_eq!(calls[1].to_string(),format!(r#"{{"operation":"genesis_bind","parameters":{{"genesis_sha256":"{}"}},"version":1}}"#,"a".repeat(64)));
+  let history=request_journal::inspect(&journal).unwrap();
+  assert_eq!(history["records"][0]["state"],"uncertain");
+  assert_eq!(history["records"][0]["request_digest"],"0e8a5f309948535cbc5fa7fdb13f298d053a1d964d673646d247a1008649463e");
+  assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),&request.operation,&request.canonical()).is_err());
+  assert!(!history.to_string().contains("fixture-formation"));
+  std::fs::remove_dir_all(journal).unwrap();
+ }
+}

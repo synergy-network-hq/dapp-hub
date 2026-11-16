@@ -1,7 +1,7 @@
 import {Card, Detail} from '@synergy-network/portal-native/dapp-sdk';
 import {GenesisStageFiles} from './GenesisStageFiles.jsx';
 
-export function IdentityPreflight({actions, observation, receipt, permitted}) {
+export function IdentityPreflight({actions, observation, receipt, bindingAcknowledged, permitted}) {
  const binding = typeof observation?.bound === 'boolean';
  const staging = observation?.artifactPins;
  return <Card title="Validator identity preparation">
@@ -14,7 +14,8 @@ export function IdentityPreflight({actions, observation, receipt, permitted}) {
    {staging && <p>The controller reports a prepared validator and approved Genesis input pins for local comparison.</p>}
    {binding && <>
     <p>The controller verified the staged signed Genesis and its admission of the reported validator address.</p>
-    <p>{observation.bound ? 'Local custody is already bound to this Genesis.' : 'The controller reports that local custody is still unbound.'}</p>
+    <p>{bindingAcknowledged ? 'The controller confirmed that it bound local custody to this Genesis.'
+     : observation.bound ? 'Local custody is already bound to this Genesis.' : 'The controller reports that local custody is still unbound.'}</p>
     <p>{observation.stageReceiptVerified ? 'The controller verified a Genesis staging receipt.' : 'The controller reported no Genesis staging receipt.'}</p>
    </>}
    {!staging && !binding && <p>{observation.genesisSha256

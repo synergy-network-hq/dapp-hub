@@ -27,6 +27,26 @@ export function formationPreparationInputs(review,form) {
  return matchesDraft(review,form) && digest(review.formationSha256) ? {formation_sha256:review.formationSha256} : null;
 }
 
+export function genesisBindingInputs(review,formation,form) {
+ if (!matchesDraft(review,form) || review.bound !== false || !digest(review.genesisSha256)
+  || formation?.kind !== 'Formation custody' || formation.pending !== true || !digest(formation.formationSha256)
+  || !validatorAddress(review.validatorAddress) || review.validatorAddress !== formation.validatorAddress
+  || review.networkId !== formation.networkId || review.chainId !== formation.chainId) return null;
+ return {genesis_sha256:review.genesisSha256};
+}
+
+export function genesisBindingObservation(value,review) {
+ const uncertain = 'Genesis binding outcome is uncertain. Preserve pending custody and review its binding status before another change.';
+ let bound;
+ try {bound=identityPreflightObservation('genesis_binding_preflight',value);}
+ catch {throw Error(uncertain);}
+ if (!bound.bound || review?.bound !== false || bound.genesisSha256 !== review.genesisSha256
+  || bound.networkId !== review.networkId || bound.chainId !== review.chainId || bound.validatorAddress !== review.validatorAddress) {
+  throw Error(uncertain);
+ }
+ return bound;
+}
+
 export function identityGenerationObservation(value,review) {
  const uncertain = 'Validator identity preparation outcome is uncertain. Preserve pending custody and read its status before another change.';
  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 7

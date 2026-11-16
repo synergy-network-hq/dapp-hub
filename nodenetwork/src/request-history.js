@@ -1,7 +1,7 @@
 import {nodeNetworkTarget} from './nodeNetwork.js';
 
 export const requestOperations = Object.freeze([
- 'bootstrap', 'install', 'identity_generate', 'formation_prepare', 'commission', 'register', 'vpn_enroll', 'start', 'stop', 'restart', 'upgrade', 'uninstall',
+ 'bootstrap', 'install', 'identity_generate', 'formation_prepare', 'genesis_bind', 'commission', 'register', 'vpn_enroll', 'start', 'stop', 'restart', 'upgrade', 'uninstall',
 ]);
 
 export const requestStatusOptions = [
