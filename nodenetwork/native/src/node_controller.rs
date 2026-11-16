@@ -202,7 +202,7 @@ pub async fn execute(target: Target, request: Request, control_dir: &Path) -> Re
     execute_pinned(target,request,control_dir,None).await
 }
 
-fn install_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+pub(super) fn install_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
     if reply["ok"] != true {
         if reply["error"]["code"] == "qualification_required" {
             return Err("The controller did not confirm package or network policy for this preflight.");
@@ -210,13 +210,68 @@ fn install_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'
         return Err("The selected controller could not provide an installation preflight report.");
     }
     let result = &reply["result"];
-    if !result.as_object().is_some_and(|fields| fields.len() == 6)
+    if reply["version"] != 1 || !result.as_object().is_some_and(|fields| fields.len() == 6)
         || result["release"] != request.parameters["release_id"] || result["root"] != ROOT
         || result["packageVerified"] != true || result["networkSelectionApproved"] != true
         || result["genesisAuthorityVerified"] != false || result["activationAuthorized"] != false {
         return Err("The selected controller returned unsupported or mismatched installation preflight evidence.");
     }
     Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
+pub(super) fn require_staged_install_target(reply: &Value) -> Result<(), &'static str> {
+    let result = &reply["result"];
+    let compatible = reply["version"] == 1 && reply["ok"] == true && result["root"] == ROOT
+        && result["controllerVersion"] == 1 && result["installed"] == false
+        && result["platform"] == "linux" && result["architecture"] == "x86_64"
+        && result["localValidatorSupported"] == true;
+    let qualified = result["operations"].as_array().filter(|rows| rows.len() <= 100).is_some_and(|rows| {
+        [("install", "mutation"), ("install_preflight", "read")].into_iter().all(|(operation, kind)| {
+            let mut matches = rows.iter().filter(|row| row["operation"] == operation);
+            matches.next().is_some_and(|row| row["kind"] == kind && row["available"] == true) && matches.next().is_none()
+        })
+    });
+    if !compatible || !qualified {
+        return Err("The controller no longer reports an uninstalled Linux x86-64 target with qualified installation and preflight operations.");
+    }
+    Ok(())
+}
+
+pub(super) fn install_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    const UNCERTAIN: &str = "Installation outcome is uncertain. Inspect the selected target before another change.";
+    if !reply.as_object().is_some_and(|fields| fields.len() == 3) || reply["version"] != 1 {
+        return Err(UNCERTAIN);
+    }
+    if reply["ok"] == false {
+        let error = &reply["error"];
+        // Only exact owner refusals before a grant is consumed can close the dispatch fence.
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("qualification_required"), Some("Release has no authenticated host approval" | "Network not approved for selected release" | "Operation has not passed host qualification")) =>
+                ("qualification_required", "The host did not qualify this exact installation request."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "The host requires a current one-use grant for this exact installation request."),
+            _ => return Err(UNCERTAIN),
+        };
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) { return Err(UNCERTAIN); }
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    let result = &reply["result"];
+    let p = &request.parameters;
+    let members = result["package_files"].as_object().filter(|files| !files.is_empty() && files.len() <= 4096
+        && files.values().all(lowercase_digest)).ok_or(UNCERTAIN)?;
+    if reply["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 10)
+        || result["format"] != "synergy-universal-linux-v1" || result["root"] != ROOT || result["role"] != "validator"
+        || ["network_id", "chain_id", "node_name"].iter().any(|key| result[*key] != p[*key])
+        || result["package_sha256"] != p["manifest_sha256"] || result["consensus_started"] != false
+        || !result["host_integrations"].as_array().is_some_and(Vec::is_empty) {
+        return Err(UNCERTAIN);
+    }
+    let chain = p["chain_id"].as_u64().ok_or(UNCERTAIN)?.to_string();
+    Ok(json!({"version":1,"ok":true,"result":{
+        "schema":"nodenetwork-installed-validator-v1","root":ROOT,"role":"validator","release_id":p["release_id"],
+        "manifest_sha256":p["manifest_sha256"],"network_id":p["network_id"],"chain_id":chain,"node_name":p["node_name"],
+        "declared_members":members.len(),"host_integrations_registered":false,"consensus_started":false
+    }}))
 }
 
 fn upgrade_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
@@ -630,6 +685,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "health" => health_reply(&value),
         "diagnostics" => crate::node_diagnostics::reply(&value),
         "install_preflight" => install_preflight_reply(request, &value),
+        "install" => install_reply(request, &value),
         "upgrade_preflight" => upgrade_preflight_reply(request, &value),
         "recovery_preflight" => recovery_preflight_reply(&value),
         "uninstall_preflight" => crate::node_removal_scope::reply(&value),

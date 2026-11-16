@@ -16,6 +16,18 @@ export function installPreflightObservation(value, parameters, target) {
  return value;
 }
 
+export function installationObservation(value, parameters, target) {
+ if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 11
+  || value.schema !== 'nodenetwork-installed-validator-v1' || value.root !== '/opt/Synergy' || value.root !== target?.root
+  || value.role !== 'validator' || value.release_id !== parameters.release_id || value.manifest_sha256 !== parameters.manifest_sha256
+  || value.network_id !== parameters.network_id || value.chain_id !== String(parameters.chain_id) || value.node_name !== parameters.node_name
+  || !Number.isInteger(value.declared_members) || value.declared_members < 1 || value.declared_members > 4096
+  || value.host_integrations_registered !== false || value.consensus_started !== false) {
+  throw Error('Installation outcome is uncertain. Inspect the selected target before another change.');
+ }
+ return value;
+}
+
 export function masterDraftComparison(master,form) {
  const check = 'Inspected master comparison';
  if (!master) return {check,status:'Not inspected',detail:'Optionally inspect the master folder and compare its release and digest with the draft.'};
@@ -30,7 +42,7 @@ export function masterDraftComparison(master,form) {
   : 'The inspected release or digest differs from the current draft.'};
 }
 
-export function installPreflightChecklist({form, target, permitted, capabilities, master, attempt}) {
+export function installPreflightChecklist({form, target, permitted, capabilities, master, attempt, attemptCurrent=true}) {
  const fields = provisioningChecks(form);
  const invalid = fields.filter(field => !field.valid);
  const parameters = invalid.length ? null : installParameters(form);
@@ -70,14 +82,16 @@ export function installPreflightChecklist({form, target, permitted, capabilities
   detail: 'Run preflight for the current draft on an enrolled target when its controller is available.',
  };
  let checks = [];
+ let reviewedParameters = null;
  if (attempt && permitted && target) {
-  const current = parameters && Object.keys(parameters).every(key => parameters[key] === attempt.parameters?.[key]);
+  const current = attemptCurrent && parameters && Object.keys(parameters).every(key => parameters[key] === attempt.parameters?.[key]);
   if (!current) {
    receipt = {...receipt, status: 'Draft changed', detail: 'Run preflight again for the current release and node parameters.'};
   } else if (attempt.state === 'pending') {
    receipt = {...receipt, status: 'Waiting for controller', detail: 'A preflight request for the current draft is pending.'};
   } else if (attempt.state === 'received') {
    if (supportedReport(attempt.observation, parameters, target)) {
+    if (capabilityAvailable) reviewedParameters = parameters;
     receipt = {...receipt, status: 'Checks reported',
      detail: `The selected controller returned its package and policy checks at ${new Date(attempt.receivedAt).toISOString()}.`,
     };
@@ -96,6 +110,7 @@ export function installPreflightChecklist({form, target, permitted, capabilities
  }
  return {
   canRun: Boolean(target && capabilityAvailable && parameters),
+  reviewedParameters,
   rows: [draft, packageReview, access, receipt, ...checks, {
    check: 'Required host checks',
    status: 'Unverified',

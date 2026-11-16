@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {installPreflightChecklist, installPreflightObservation} from '../src/install-preflight.js';
+import {installationObservation, installPreflightChecklist, installPreflightObservation} from '../src/install-preflight.js';
 import {installParameters} from '../src/nodeNetwork.js';
 
 const form = {
@@ -32,6 +32,7 @@ test('a successful controller response stays tied to the exact submitted draft',
  const inputs = {form, target, permitted: true, capabilities, attempt: received};
  const current = installPreflightChecklist(inputs);
  assert.equal(current.canRun, true);
+ assert.deepEqual(current.reviewedParameters,received.parameters);
  assert.equal(status(current, 'Installation preflight receipt'), 'Checks reported');
  assert.equal(status(current, 'Staged package inventory'), 'Reported verified');
  assert.equal(status(current, 'Host network policy'), 'Reported approved');
@@ -40,6 +41,8 @@ test('a successful controller response stays tied to the exact submitted draft',
  assert.equal(status(current, 'Required host checks'), 'Unverified');
  const changed = installPreflightChecklist({...inputs, form: {...form, node_name: 'another-node'}});
  assert.equal(status(changed, 'Installation preflight receipt'), 'Draft changed');
+ assert.equal(changed.reviewedParameters,null);
+ assert.equal(installPreflightChecklist({...inputs,attemptCurrent:false}).reviewedParameters,null);
  assert.ok(!changed.rows.some(row=>row.check==='Staged package inventory'));
  const invalid = installPreflightChecklist({...inputs, form: {...form, chain_id: '01266'}});
  assert.equal(invalid.canRun, false);
@@ -54,8 +57,21 @@ test('permission loss and duplicate capability rows prevent running preflight', 
  assert.equal(status(revoked, 'Installation preflight receipt'), 'Not run');
  const duplicate = installPreflightChecklist({...inputs, capabilities: {data: {...capabilities.data,operations: [capability, capability]}}});
  assert.equal(duplicate.canRun, false);
+ assert.equal(duplicate.reviewedParameters,null);
  const mismatched = installPreflightChecklist({...inputs, master: {...master, manifestSha256: 'b'.repeat(64)}});
  assert.equal(status(mismatched, 'Inspected master comparison'), 'References differ');
+});
+
+test('accepts only scoped installation evidence with bounded inventory counts and no service or activation authority', () => {
+ const valid={schema:'nodenetwork-installed-validator-v1',root:target.root,role:'validator',release_id:form.release_id,
+  manifest_sha256:form.manifest_sha256,network_id:form.network_id,chain_id:form.chain_id,node_name:form.node_name,
+  declared_members:12,host_integrations_registered:false,consensus_started:false};
+ assert.equal(installationObservation(valid,received.parameters,target),valid);
+ for (const changed of [
+  {...valid,package_files:{'/private/example':'a'.repeat(64)}},{...valid,chain_id:1266},{...valid,release_id:'different'},
+  {...valid,node_name:'different'},{...valid,declared_members:0},{...valid,declared_members:4097},
+  {...valid,host_integrations_registered:true},{...valid,consensus_started:true},
+ ]) assert.throws(()=>installationObservation(changed,received.parameters,target),/outcome is uncertain/);
 });
 
 test('accepts only the request-bound owner status and withholds package rows for unsupported successful envelopes', () => {

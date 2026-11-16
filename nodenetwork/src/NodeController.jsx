@@ -2,9 +2,9 @@ import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap,nodeNetworkStageGenesis} from "./native-services.js";
 import {Card,Detail,ErrorMessage,useResource,Resource,Table} from "@synergy-network/portal-native/dapp-sdk";
 import {controllerOperation,installParameters} from './nodeNetwork.js';
-import {installPreflightChecklist,installPreflightObservation} from './install-preflight.js';
+import {installationObservation,installPreflightChecklist,installPreflightObservation} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
-import {controllerRead,installedControllerMutation,installedControllerRead,targetControllerObservation} from './target-observation.js';
+import {controllerRead,installedControllerMutation,installedControllerRead,stagedInstallMutation,targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
 import {upgradePreflightObservation} from './upgrade-preflight.js';
 import {ControllerRemoval} from './Offboarding.jsx';
@@ -81,12 +81,19 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const identityScope=JSON.stringify([form.network_id,form.chain_id]);
  const identityContext=useRef({scope:identityScope});
  if(identityContext.current.scope!==identityScope)identityContext.current={scope:identityScope};
+ const installScope=JSON.stringify([key,permitted,form.release_id,form.manifest_sha256,form.network_id,form.chain_id,form.node_name]);
+ const installContext=useRef({scope:installScope});
+ if(installContext.current.scope!==installScope)installContext.current={scope:installScope};
  const capabilities=useResource(async()=>{
   if(!permitted)throw new Error('Allow NodeNetwork inspection in Security & permissions.');
   return targetControllerObservation(await nodeNetworkController(target,'target'));
  },`${key}:${permitted}`);
  const state=capabilities.data;
- const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt});
+ const preflight=installPreflightChecklist({form,target,permitted,capabilities,master,attempt:preflightAttempt,
+  attemptCurrent:preflightAttempt?.context===installContext.current});
+ const installGate=stagedInstallMutation(state);
+ const canInstall=permitted&&installGate.available&&Boolean(preflight.reviewedParameters);
+ const installResult=permitted&&result?.operation==='install'&&result.installContext===installContext.current?result:null;
  const statusGates=Object.fromEntries(Object.keys(typedStatus).map(operation=>[
   operation, ['uninstall_preflight','recovery_preflight'].includes(operation)?controllerRead(state,operation):installedControllerRead(state,operation),
  ]));
@@ -120,6 +127,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  async function run(operation,parameters={}){
   const read=statusGates[operation];
   const isPreflight=operation==='install_preflight';
+  const installsNode=operation==='install';
+  const reviewedInstallContext=isPreflight||installsNode?installContext.current:null;
   const isEnrollment=operation==='vpn_enroll';
   const isServiceAction=nodeServiceActions.includes(operation);
   const bindsGenesis=operation==='genesis_bind';
@@ -128,15 +137,15 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   const reviewsCustody=Boolean(preparesCustody)||custodyPreparations.some(action=>action.preflight===operation)
    || bindsGenesis||stagesGenesis||['genesis_binding_preflight','genesis_stage_preflight','formation_status'].includes(operation);
   const reviewedIdentityContext=reviewsCustody?identityContext.current:null;
-  const scopeSensitive=isEnrollment||isServiceAction||reviewsCustody||['health','vpn_status','identity_status'].includes(operation);
-  if(!permitted||busy||(read&&!read.available)||(isPreflight&&!preflight.canRun))return;
+  const scopeSensitive=reviewedInstallContext||isEnrollment||isServiceAction||reviewsCustody||['health','vpn_status','identity_status'].includes(operation);
+  if(!permitted||busy||(read&&!read.available)||(isPreflight&&!preflight.canRun)||(installsNode&&!canInstall))return;
   if(isEnrollment&&(!enrollmentSupported||enrollmentBlocker||vpnResult?.operation!=='vpn_status'))return;
   if(isServiceAction&&(!serviceGates[operation].available||(operation!=='stop'&&startupBlocker)))return;
   if(preparesCustody&&(!preparesCustody.available||!preparesCustody.inputs))return;
   if(bindsGenesis&&(!bindingAvailable||!bindingInputs))return;
   if(stagesGenesis&&(!stageAvailable||!genesisStageInputsMatch(parameters,stageScope)))return;
   if(scopeSensitive&&!targetScopeCurrent()){
-   setResult(null);setServiceAcknowledgement(null);setFormationReview(null);
+   setResult(null);setServiceAcknowledgement(null);setFormationReview(null);setPreflightAttempt(null);
    setError('The target, recovery state or permission changed. Review the selected controller again.');
    return;
   }
@@ -145,10 +154,11 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   if(operation!=='health')setServiceAcknowledgement(null);
   if(operation==='formation_status'||(!read&&!isPreflight&&!stagesGenesis))setFormationReview(null);
   const submitted=stagesGenesis?{...stageScope,requestSha256:parameters.requestSha256}
-   :bindsGenesis?bindingInputs:preparesCustody?preparesCustody.inputs:{...parameters};
+   :bindsGenesis?bindingInputs:preparesCustody?preparesCustody.inputs:installsNode?preflight.reviewedParameters:{...parameters};
   const scopeCurrent=()=>alive.current&&(!scopeSensitive||targetScopeCurrent())
-   &&(!reviewedIdentityContext||identityContext.current===reviewedIdentityContext);
-  setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
+   &&(!reviewedIdentityContext||identityContext.current===reviewedIdentityContext)
+   &&(!reviewedInstallContext||installContext.current===reviewedInstallContext);
+  setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending',context:reviewedInstallContext}:null);
   try{
    const nativeBindingReview=bindsGenesis?{networkId:bindingReview.networkId,chainId:bindingReview.chainId,
     validatorAddress:bindingReview.validatorAddress}:undefined;
@@ -156,6 +166,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    if(stagesGenesis&&raw===null)return;
    let response=raw;
    if(isPreflight)response=installPreflightObservation(raw,submitted,target);
+   else if(installsNode)response=installationObservation(raw,submitted,target);
    else if(isEnrollment)response=vpnEnrollmentObservation(raw);
    else if(isServiceAction)response=nodeServiceActionObservation(operation,raw);
    else if(stagesGenesis)response=genesisStageReceipt(raw,stageScope);
@@ -164,9 +175,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    else if(read)response=typedStatus[operation](raw,submitted);
    if(scopeCurrent()){
     const receivedAt=Date.now();
-    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt,observation:response});
+    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt,observation:response,context:reviewedInstallContext});
     else if(isServiceAction)setServiceAcknowledgement({operation:response.requested,receivedAt});
-    else setResult({operation,submitted,result:response,receivedAt,identityContext:reviewedIdentityContext});
+    else setResult({operation,submitted,result:response,receivedAt,identityContext:reviewedIdentityContext,installContext:reviewedInstallContext});
     if(operation==='formation_status'&&response.pending)setFormationReview({observation:response,context:reviewedIdentityContext});
     if(stagesGenesis)setFormationReview(null);
     if(!read&&!isPreflight)capabilities.reload();
@@ -174,7 +185,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   }
   catch(failure){
    if(scopeCurrent()){
-    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'failed'});
+    if(isPreflight)setPreflightAttempt({parameters:submitted,state:'failed',context:reviewedInstallContext});
     if(stagesGenesis){setResult(null);setFormationReview(null);}
     setError(String(failure?.message||failure));
    }
@@ -220,7 +231,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  </>;
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
-   if(typedStatus[result?.operation]||['vpn_enroll','genesis_bind','genesis_stage'].includes(result?.operation)||resultIsPreparation)setResult(null);
+   if(typedStatus[result?.operation]||['install','vpn_enroll','genesis_bind','genesis_stage'].includes(result?.operation)||resultIsPreparation)setResult(null);
    setPreflightAttempt(null);setServiceAcknowledgement(null);setFormationReview(null);
    capabilities.reload();
   }}>Inspect selected target</button>}>
@@ -239,7 +250,17 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <button disabled={!permitted||busy||!operator||(target.kind==='local'&&!localSupported)} onClick={bootstrap}>Bootstrap clean target from approved master</button>
     <p>Bootstrap uses native package and public-key pickers, verified SSH host identity and agent authentication. Its embedded canonical engine requires an empty /opt/Synergy and confirms the exact target and privilege scope before transmission.</p>
     <p>The R5 baseline is shown for comparison. Its digest alone does not approve this target, network or installation.</p>
-    {button('install','Install approved node',()=>installParameters(form))}
+    <div className="native-controller-action">
+     <button disabled={busy||!canInstall} onClick={()=>run('install')}>Install approved node</button>
+     {permitted&&!installGate.available&&<small>{installGate.blocker}</small>}
+     {permitted&&installGate.available&&!preflight.reviewedParameters&&<small>Run installation preflight for the current draft before installing.</small>}
+    </div>
+    {installResult&&<section aria-label="Reported validator installation">
+     <p>The selected controller reports installation completed for {installResult.result.node_name} on {installResult.result.network_id} (chain {installResult.result.chain_id}).</p>
+     <ControllerReceipt receivedAt={installResult.receivedAt}/>
+     <Detail data={{release:installResult.result.release_id,manifestSha256:installResult.result.manifest_sha256,declaredPackageMembers:installResult.result.declared_members}}/>
+     <p>Custody, service registration and validator startup have separate controls.</p>
+    </section>}
     {button('commission','Verify and commission provisioned custody')}
     {button('register','Register contained service')}
    </Card>
@@ -309,6 +330,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    inventoryAction={button('inventory','Inventory node-owned files')}
    preflightAction={statusAction('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&!['vpn_enroll','genesis_bind','genesis_stage'].includes(result.operation)&&!resultIsPreparation&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&!['install','vpn_enroll','genesis_bind','genesis_stage'].includes(result.operation)&&!resultIsPreparation&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }

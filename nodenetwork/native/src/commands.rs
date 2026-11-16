@@ -117,13 +117,26 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let title=format!("Authorize NodeNetwork {}",request.operation);
   let reviewed=binding_review.as_ref().map(|review|review.confirmation_details(&request))
    .unwrap_or_else(||format!("\nParameters: {}",request.parameters));
-  let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: {}{}\nExact request approval ID: {}\n\nThis action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",target.label(),request.operation,reviewed,request.approval_id());
+  let effect=if request.operation=="install" {
+   "This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations."
+  } else {
+   "This action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically."
+  };
+  let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: {}{}\nExact request approval ID: {}\n\n{effect}",target.label(),request.operation,reviewed,request.approval_id());
   let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title(title)
    .buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show())
    .await.map_err(|_|"Operator confirmation did not finish.")?;
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
+ if request.operation=="install" {
+  let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
+  let serial=node_controller::SERIAL.lock().await;
+  return dispatch_reviewed_install(&target,&request,&journal,|request| {
+   let (target,directory,serial)=(&target,&directory,&serial);
+   async move {node_controller::execute_locked(target,&request,directory,None,serial).await}
+  }).await;
+ }
  if let Some(review)=binding_review {
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
@@ -135,6 +148,22 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  let dispatch=if mutation {Some(request_journal::Dispatch::begin(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?,&target.journal_identity(),&request.operation,&request.canonical())?)} else {None};
  let result=node_controller::execute(target,request,&directory).await;
  if let Some(dispatch)=dispatch {dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;}
+ result
+}
+
+async fn dispatch_reviewed_install<Fut>(target:&node_controller::Target,request:&node_controller::Request,
+ journal:&Path,mut execute:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
+where Fut:Future<Output=Result<Value,String>> {
+ let fresh_target=execute(node_controller::Request{version:1,operation:"target".into(),parameters:serde_json::json!({})}).await
+  .map_err(|_|"The controller could not recheck the selected installation target.")?;
+ node_controller::require_staged_install_target(&fresh_target)?;
+ let preflight=node_controller::Request{version:1,operation:"install_preflight".into(),parameters:request.parameters.clone()};
+ let fresh_preflight=execute(preflight.clone()).await
+  .map_err(|_|"The controller could not recheck the exact staged package and network policy. Run installation preflight again.")?;
+ node_controller::install_preflight_reply(&preflight,&fresh_preflight)?;
+ let dispatch=request_journal::Dispatch::begin(journal,&target.journal_identity(),&request.operation,&request.canonical())?;
+ let result=execute(request.clone()).await;
+ dispatch.finish(&result).map_err(|_|"Installation outcome could not be saved to the local journal. Inspect the target before further changes.")?;
  result
 }
 
@@ -202,6 +231,101 @@ mod tests {
    "schema":"nodenetwork-genesis-binding-v1","network_id":"fixture-formation","chain_id":"99999",
    "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true,"address":"synv1".to_owned()+&"a".repeat(36),
    "membership_verified":true,"bound":bound,"stage_receipt_verified":false}})
+ }
+
+ fn reviewed_install_fixture() -> (Target, Request, PathBuf, Value, Value, Value) {
+  let (target,_,_,journal)=genesis_bind_scope_fixture();
+  let request=Request{version:1,operation:"install".into(),parameters:json!({
+   "release_id":"fixture-release","manifest_sha256":"a".repeat(64),"network_id":"fixture-network","chain_id":1266,"node_name":"fixture-node"})};
+  let staged=json!({"version":1,"ok":true,"result":{"controllerVersion":1,"root":"/opt/Synergy","installed":false,
+   "platform":"linux","architecture":"x86_64","localValidatorSupported":true,"operations":[
+    {"operation":"install","kind":"mutation","available":true,"blocker":null},
+    {"operation":"install_preflight","kind":"read","available":true,"blocker":null}]}});
+  let preflight=json!({"version":1,"ok":true,"result":{"packageVerified":true,"release":"fixture-release","root":"/opt/Synergy",
+   "networkSelectionApproved":true,"genesisAuthorityVerified":false,"activationAuthorized":false}});
+  let receipt=json!({"version":1,"ok":true,"result":{"format":"synergy-universal-linux-v1","root":"/opt/Synergy","role":"validator",
+   "network_id":"fixture-network","chain_id":1266,"node_name":"fixture-node","package_sha256":"a".repeat(64),
+   "package_files":{"bin/synergy-node":"b".repeat(64)},"host_integrations":[],"consensus_started":false}});
+  (target,request,journal,staged,preflight,receipt)
+ }
+
+ #[test]
+ fn reviewed_install_rechecks_target_and_exact_preflight_before_journal() {
+  let (target,request,journal,staged,preflight,_)=reviewed_install_fixture();
+  let mut installed=staged.clone();
+  installed["result"]["installed"]=json!(true);
+  let mut ambiguous=staged.clone();
+  let rows=ambiguous["result"]["operations"].as_array_mut().unwrap();
+  rows.push(rows[0].clone());
+  for incompatible in [installed,ambiguous] {
+   let mut operations=Vec::new();
+   let failure=tauri::async_runtime::block_on(dispatch_reviewed_install(&target,&request,&journal,|query| {
+    operations.push(query.canonical());
+    std::future::ready(Ok(incompatible.clone()))
+   }));
+   assert!(failure.unwrap_err().contains("uninstalled Linux"));
+   assert_eq!(operations,vec![json!({"version":1,"operation":"target","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+  let mut mismatched=preflight;
+  mismatched["result"]["release"]=json!("unreviewed-release");
+  let mut operations=Vec::new();
+  let failure=tauri::async_runtime::block_on(dispatch_reviewed_install(&target,&request,&journal,|query| {
+   operations.push(query.canonical());
+   std::future::ready(Ok(if query.operation=="target" {staged.clone()} else {mismatched.clone()}))
+  }));
+  assert!(failure.unwrap_err().contains("mismatched installation preflight"));
+  assert_eq!(operations,vec![json!({"version":1,"operation":"target","parameters":{}}),
+   json!({"version":1,"operation":"install_preflight","parameters":request.parameters})]);
+  assert!(!journal.exists());
+ }
+
+ #[test]
+ fn reviewed_install_projects_receipt_and_fences_unverified_effects() {
+  let (target,request,journal,staged,preflight,receipt)=reviewed_install_fixture();
+  let mut mismatched=receipt.clone();
+  mismatched["result"]["node_name"]=json!("different-node");
+  for (reply,state) in [
+   (receipt.clone(),"response_received"),
+   (json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Exact request needs one-time host operator authorization"}}),"response_received"),
+   (mismatched,"uncertain"),
+   (json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":"Controller validation or lifecycle operation failed"}}),"uncertain"),
+  ] {
+   let mut operations=Vec::new();
+   let install=tauri::async_runtime::block_on(dispatch_reviewed_install(&target,&request,&journal,|query| {
+    operations.push(query.canonical());
+    std::future::ready(match query.operation.as_str() {
+     "target"=>Ok(staged.clone()),"install_preflight"=>Ok(preflight.clone()),
+     "install"=>node_controller::install_reply(&query,&reply).map_err(String::from),_=>unreachable!(),
+    })
+   }));
+   assert_eq!(operations[1],json!({"version":1,"operation":"install_preflight","parameters":request.parameters}));
+   assert_eq!(operations[2],request.canonical());
+   let history=request_journal::inspect(&journal).unwrap();
+   assert_eq!(history["records"][0]["state"],state);
+   assert_eq!(history["records"][0]["request_digest"],request.approval_id());
+   assert!(!history.to_string().contains("fixture-node"));
+   if state=="uncertain" {
+    assert!(install.unwrap_err().contains("uncertain"));
+    assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"install",&request.canonical()).is_err());
+   } else if reply["ok"]==true {
+    let result=install.unwrap();
+    assert_eq!(result["result"],json!({"schema":"nodenetwork-installed-validator-v1","root":"/opt/Synergy","role":"validator",
+     "release_id":"fixture-release","manifest_sha256":"a".repeat(64),"network_id":"fixture-network","chain_id":"1266",
+     "node_name":"fixture-node","declared_members":1,"host_integrations_registered":false,"consensus_started":false}));
+    assert!(!result.to_string().contains("bin/synergy-node"));
+   } else {
+    assert_eq!(install.unwrap()["ok"],false);
+   }
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
+  for (key,wrong) in [("chain_id",json!(99999)),("network_id",json!("different-network")),("node_name",json!("different-node")),
+   ("package_sha256",json!("c".repeat(64))),("package_files",json!({"bin/synergy-node":"bad"})),
+   ("host_integrations",json!(["systemd"])),("consensus_started",json!(true))] {
+   let mut changed=receipt.clone();
+   changed["result"][key]=wrong;
+   assert!(node_controller::install_reply(&request,&changed).is_err(),"{key}");
+  }
  }
 
  fn genesis_stage_fixture() -> (Target,GenesisStageReview,PreparedGenesisStage,Value,Value,PathBuf) {
