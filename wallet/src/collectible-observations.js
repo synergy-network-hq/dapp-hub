@@ -112,23 +112,57 @@ export function ownerCollectibleObservation(response, account, readiness) {
   return {...snapshot, items};
 }
 
-function ownerCollectibleSnapshot(response, account, readiness, limit, asset) {
-  const {value, chainContext} = response;
+export function matchesCollectibleReadiness(chainContext, readiness) {
   const chain = readiness.chain;
-  if (chainContext?.chainId !== chain.chainId || String(chainContext.incarnation) !== chain.incarnation ||
-      chainContext.genesis !== chain.genesis.toLowerCase()) {
+  return chainContext?.chainId === chain.chainId && String(chainContext.incarnation) === chain.incarnation &&
+    chainContext.genesis === chain.genesis.toLowerCase();
+}
+
+function collectibleSnapshot(response, readiness, asset) {
+  const {value, chainContext} = response;
+  if (!matchesCollectibleReadiness(chainContext, readiness)) {
     throw Error(`The ${asset} response does not match the selected RPC readiness identity.`);
   }
-  if (value?.owner !== account) throw Error('The selected RPC did not return the exact Wallet owner.');
-
-  const snapshotHeight = blockHeight(value.replay?.latest_height);
-  const snapshotHash = metadataHash(value.replay?.snapshot_block_hash);
-  if (value.success !== true || !snapshotSources.has(value.source) || value.replay?.source !== value.source ||
-      value.replay?.complete !== true || snapshotHeight === null || !snapshotHash ||
-      !Array.isArray(value.items) || value.count !== value.items.length || value.items.length > limit) {
+  const snapshotHeight = blockHeight(value?.replay?.latest_height);
+  const snapshotHash = metadataHash(value?.replay?.snapshot_block_hash);
+  if (value?.success !== true || !snapshotSources.has(value.source) || value.replay?.source !== value.source ||
+      value.replay?.complete !== true || snapshotHeight === null || !snapshotHash) {
     throw Error(`The selected RPC did not return a supported ${asset} snapshot.`);
   }
-  return {items: value.items, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+  return {chainContext, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+}
+
+function ownerCollectibleSnapshot(response, account, readiness, limit, asset) {
+  const snapshot = collectibleSnapshot(response, readiness, asset);
+  const {value} = response;
+  if (value.owner !== account) throw Error('The selected RPC did not return the exact Wallet owner.');
+  if (!Array.isArray(value.items) || value.count !== value.items.length || value.items.length > limit) {
+    throw Error(`The selected RPC did not return a supported ${asset} snapshot.`);
+  }
+  return {...snapshot, items: value.items};
+}
+
+// Testnet-v3 release a6a434f2, sts_nft_collection_json and sts_nft_collection_item_json.
+export function nftCollectionObservation(response, selection, inventory, readiness) {
+  const snapshot = collectibleSnapshot(response, readiness, 'NFT collection');
+  const item = response.value.item;
+  if (item?.asset_kind !== 'nft_collection' || item.collection_id !== selection.collectionId ||
+      item.collection_address !== selection.collectionId || item.class !== selection.tokenClass ||
+      !isStsNftObjectId(item.collection_id, item.class)) {
+    throw Error('The selected RPC did not return the selected NFT collection and class.');
+  }
+  if (BigInt(snapshot.snapshotHeight) < BigInt(inventory.snapshotHeight) ||
+      (snapshot.snapshotHeight === inventory.snapshotHeight && snapshot.snapshotHash !== inventory.snapshotHash)) {
+    throw Error('The collection snapshot is older or conflicts with the owner NFT snapshot. Refresh the inventory.');
+  }
+  const {verified, transferable, requires_issuer_approval, metadata_mutable, image_locked} = item;
+  if ([verified, transferable, requires_issuer_approval, metadata_mutable, image_locked].some(flag => typeof flag !== 'boolean') ||
+      (item.metadata_hash !== null && !metadataHash(item.metadata_hash)) ||
+      (item.image_hash !== null && !metadataHash(item.image_hash))) {
+    throw Error('The selected RPC returned unsupported collection policy or commitment fields.');
+  }
+  return {...snapshot, verified, transferable, issuerApproval: requires_issuer_approval,
+    metadataMutable: metadata_mutable, imageLocked: image_locked, metadataHash: item.metadata_hash, imageHash: item.image_hash};
 }
 
 export function ownerMultiAssetObservation(response, account, readiness) {

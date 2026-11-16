@@ -159,6 +159,30 @@ pub fn status() -> Result<Value, String> {
             self.declare_file("roles/roles.json", &serde_json::to_vec(&json!({"roles":roles,"implemented":implemented})).unwrap());
             roles
         }
+
+        fn with_apqe_candidate(&self) -> Value {
+            let mut artifacts = Vec::new();
+            for index in 0..8 {
+                let name = format!("libaegisvariant{index}.so");
+                let bytes = format!("owner-compatible synthetic library {index}");
+                self.declare_file(&format!("lib/apqe/{name}"), bytes.as_bytes());
+                artifacts.push(json!({"path":name,"sha256":format!("{:x}",Sha256::digest(bytes.as_bytes()))}));
+            }
+            let report = json!({"validation":false,"backend_policy":{"selected_backend":"portable"},
+                "required_variant_count":8,"artifacts":artifacts});
+            self.declare_apqe_report(&report);
+            report
+        }
+
+        fn declare_apqe_report(&self, report: &Value) {
+            let path = "lib/apqe/build-report.json";
+            self.declare_file(path, &serde_json::to_vec(report).unwrap());
+            let manifest_path = self.root().join("package.json");
+            let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            manifest["apqe_provider"] = json!({"report_path":path,"report_sha256":manifest["files"][path],
+                "profile":"PQ-VSESSION-01-candidate-v1","production_qualified":false});
+            fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        }
     }
 
     #[cfg(unix)]
@@ -175,12 +199,68 @@ pub fn status() -> Result<Value, String> {
         let result = review_master(&root).unwrap();
         let size: usize = FIXTURE_MEMBERS.iter().map(|name| name.len()).sum();
         assert_eq!(result["inventory"], json!({"status":"matched","verifiedFiles":4,"verifiedBytes":size,
-            "layout":{"roles":false,"runtimeAreas":false,"linuxHeaders":false}}));
+            "layout":{"roles":false,"runtimeAreas":false,"linuxHeaders":false},
+            "apqeProvider":{"status":"unavailable","reason":"declaration_missing"}}));
         let bytes = fs::read(root.join("package.json")).unwrap();
         let hash = format!("{:x}", Sha256::digest(&bytes));
         assert_eq!(result["manifestSha256"], hash);
         assert_eq!(result["releaseTrustVerified"], false);
         assert_eq!(result["installAuthorized"], false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn master_review_binds_the_portable_apqe_report_to_the_eight_verified_libraries() {
+        let fixture = MasterFixture::new();
+        let root = fixture.root();
+        fixture.with_apqe_candidate();
+        let result = review_master(&root).unwrap();
+        assert_eq!(result["inventory"]["apqeProvider"], json!({"status":"matched","libraryCount":8}));
+        assert_eq!(result["releaseTrustVerified"], false);
+        assert_eq!(result["installAuthorized"], false);
+
+        let manifest_path = root.join("package.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["apqe_provider"]["production_qualified"] = json!(true);
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["apqeProvider"]["reason"], "declaration_invalid");
+
+        manifest["apqe_provider"]["production_qualified"] = json!(false);
+        manifest["apqe_provider"]["report_sha256"] = json!("0".repeat(64));
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(review_master(&root).unwrap()["inventory"]["apqeProvider"]["reason"], "report_digest");
+
+        fs::write(root.join("lib/apqe/libaegisvariant0.so"), b"changed binary bytes").unwrap();
+        let result = review_master(&root).unwrap();
+        assert_eq!(result["inventory"]["reason"], "digest_mismatch");
+        assert!(result["inventory"].get("apqeProvider").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn master_review_refuses_inconsistent_apqe_report_scope_even_for_matching_package_digests() {
+        let fixture = MasterFixture::new();
+        let root = fixture.root();
+        let report = fixture.with_apqe_candidate();
+        let mut changed = report.clone();
+        changed["backend_policy"]["selected_backend"] = json!("optimized");
+        fixture.declare_apqe_report(&changed);
+        assert_eq!(review_master(&root).unwrap()["inventory"]["apqeProvider"]["reason"], "report_invalid");
+
+        let first = &report["artifacts"][0];
+        for value in [json!({"path":"../libaegisvariant0.so","sha256":first["sha256"]}),
+            json!({"path":first["path"],"sha256":"0".repeat(64)}), report["artifacts"][1].clone()] {
+            let mut changed = report.clone();
+            changed["artifacts"][0] = value;
+            fixture.declare_apqe_report(&changed);
+            let result = review_master(&root).unwrap();
+            assert_eq!(result["inventory"]["status"], "matched");
+            assert_eq!(result["inventory"]["apqeProvider"]["reason"], "libraries_mismatch");
+        }
+
+        fixture.declare_apqe_report(&report);
+        fixture.declare_file("lib/apqe/libaegisextra.so", b"unexpected declared library");
+        assert_eq!(review_master(&root).unwrap()["inventory"]["apqeProvider"]["reason"], "libraries_mismatch");
     }
 
     #[cfg(unix)]

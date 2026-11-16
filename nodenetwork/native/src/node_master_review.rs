@@ -1,4 +1,6 @@
 //! Bounded inspection of an operator-selected folder before any target is configured.
+mod apqe;
+
 use super::node_bootstrap::{declared_files, safe_member, MAX_ARCHIVE};
 use rustix::fd::OwnedFd;
 use rustix::fs::{self, AtFlags, Dir, FileType, Mode, OFlags, Stat};
@@ -96,6 +98,7 @@ struct Review {
     remaining: BTreeMap<String, String>,
     layout: Layout,
     gateway_declared: bool,
+    provider_report: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -218,8 +221,9 @@ impl Review {
                     };
                     let mut file = open_regular(folder, name, &metadata)?.take(size + 1);
                     let role_catalog = path == ROLE_CATALOG && size <= ROLE_CATALOG_LIMIT;
+                    let provider_report = path == apqe::REPORT_PATH && size <= apqe::REPORT_LIMIT;
                     let linux_binary = LINUX_BINARIES.contains(&path.as_str());
-                    let sample_size = if role_catalog {
+                    let sample_size = if role_catalog || provider_report {
                         size
                     } else if linux_binary {
                         size.min(ELF_HEADER_SIZE)
@@ -252,6 +256,9 @@ impl Review {
                     {
                         self.layout.linux_headers += 1;
                     }
+                    if provider_report {
+                        self.provider_report = Some(sample);
+                    }
                 }
                 _ => return Err("unsafe_member"),
             }
@@ -274,6 +281,7 @@ pub(super) fn review(folder: &OwnedFd, manifest: &Value, manifest_sha256: &str) 
         remaining,
         layout: Layout::default(),
         gateway_declared,
+        provider_report: None,
     };
     let outcome = review.walk(folder, "", manifest_sha256).and_then(|()| {
         if review.manifest_seen && review.remaining.is_empty() {
@@ -284,7 +292,8 @@ pub(super) fn review(folder: &OwnedFd, manifest: &Value, manifest_sha256: &str) 
     });
     match outcome {
         Ok(()) => {
-            json!({"status":"matched","verifiedFiles":files,"verifiedBytes":review.verified_bytes,"layout":review.layout.report()})
+            json!({"status":"matched","verifiedFiles":files,"verifiedBytes":review.verified_bytes,
+                "layout":review.layout.report(), "apqeProvider":apqe::review(manifest, review.provider_report.as_deref())})
         }
         Err(reason) => json!({"status":"unavailable","reason":reason}),
     }

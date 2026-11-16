@@ -4,11 +4,12 @@ import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {ATLAS_NFT_LIMIT, RPC_OWNER_NFT_LIMIT, collectibleObservations, ownerCollectibleObservation} from './collectible-observations.js';
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
+import {WalletRpcCollectionCheck} from './WalletRpcCollectionCheck.jsx';
 
 const classLabels = {nf1: 'NF1 standard NFT', nf2: 'NF2 controlled NFT'};
 const collectionStatusLabels = {verified: 'Atlas marks this collection verified', active: 'Atlas reports an active collection'};
 
-function CollectibleList({items, receivedAt, indexed = true}) {
+function CollectibleList({items, receivedAt, indexed = true, ownerSnapshot, endpoint, canRead}) {
   const [collection, setCollection] = useState('');
   const [status, setStatus] = useState('');
   const [selection, setSelection] = useState(null);
@@ -65,6 +66,8 @@ function CollectibleList({items, receivedAt, indexed = true}) {
           reportedMetadataHash: selected.metadataHash ?? 'Unavailable',
         }}/>
         <p>Media unavailable. Wallet does not load the metadata reference.</p>
+        {ownerSnapshot && <WalletRpcCollectionCheck key={selected.key} selection={selected} inventory={ownerSnapshot}
+          {...{endpoint, canRead}}/>}
       </aside>}
     </> : <p>{indexed ? 'No matching NFT records were returned. This limited view cannot establish an empty inventory.' :
       'The selected RPC returned no matching NFTs at this snapshot.'}</p>}
@@ -130,7 +133,7 @@ export function WalletOwnerCollectibles({account, endpoint, canRead}) {
       {requested && <Resource value={{...observation, reload: undefined}}>{value => <>
         <Detail data={{reportedSnapshotHeight: value.snapshotHeight, reportedSnapshotHash: value.snapshotHash}}/>
         {value.items.length === RPC_OWNER_NFT_LIMIT && <p>The response reached the limit of {RPC_OWNER_NFT_LIMIT} records. Additional records may be available.</p>}
-        <CollectibleList items={value.items} receivedAt={value.receivedAt} indexed={false}/>
+        <CollectibleList items={value.items} receivedAt={value.receivedAt} indexed={false} ownerSnapshot={value} {...{endpoint, canRead}}/>
       </>}</Resource>}
     </> : <p>A current protected Wallet address is required for this check.</p>}
   </Card>;

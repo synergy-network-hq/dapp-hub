@@ -17,6 +17,15 @@ const layoutChecks = [
  ['linuxHeaders', 'Linux x86-64 binary headers', 'All 4 required ELF headers match', 'A required ELF header is missing or differs'],
 ];
 
+const apqeReasons = {
+ declaration_missing: 'The manifest has no supported APQE provider declaration.',
+ declaration_invalid: 'The manifest does not describe the supported portable candidate profile.',
+ report_digest: 'The provider report digest differs from the manifest’s file inventory.',
+ report_unavailable: 'The provider report exceeds the local review limit.',
+ report_invalid: 'The build report does not describe the eight required portable candidate libraries.',
+ libraries_mismatch: 'The report’s library names or digests differ from the verified package inventory.',
+};
+
 function LayoutChecks({layout}) {
  if (!layoutChecks.every(([key]) => typeof layout?.[key] === 'boolean')) {
   return <p>The native inspection supplied no supported package layout result.</p>;
@@ -24,6 +33,16 @@ function LayoutChecks({layout}) {
  return <ul aria-label="Master package layout checks">{layoutChecks.map(([key,label,matched,unmatched]) => (
   <li key={key}>{label} · {layout[key] ? matched : unmatched}</li>
  ))}</ul>;
+}
+
+function ApqeCandidateReview({result}) {
+ if (result?.status === 'matched' && result.libraryCount === 8) {
+  return <p>The APQE portable candidate report and all eight library digests agree with this package.</p>;
+ }
+ if (result?.status === 'unavailable' && Object.hasOwn(apqeReasons,result.reason)) {
+  return <p>APQE candidate check unavailable. {apqeReasons[result.reason]}</p>;
+ }
+ return <p>The native inspection supplied no supported APQE candidate check.</p>;
 }
 
 function InventoryEvidence({master}) {
@@ -34,6 +53,7 @@ function InventoryEvidence({master}) {
   return <>
    <p role="status">Local files matched the manifest at inspection. Checked {result.verifiedFiles} declared files and {result.verifiedBytes} bytes.</p>
    <LayoutChecks layout={result.layout}/>
+   <ApqeCandidateReview result={result.apqeProvider}/>
   </>;
  }
  if (result?.status === 'unavailable' && Object.hasOwn(inventoryReasons, result.reason)) {
