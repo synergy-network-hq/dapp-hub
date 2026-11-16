@@ -7,6 +7,17 @@ export async function nodeNetworkRequests(){
 // First-party native extension only; remote community HTML has no Tauri bridge.
 export async function nodeNetworkHostStatus(){if(!isTauri())throw new Error('Open the native Portal app to inspect this machine.');return invoke('portal_nodenetwork_status');}
 export async function nodeNetworkReviewMaster(){if(!isTauri())throw new Error('Open the native Portal app to inspect the node master.');return invoke('portal_nodenetwork_review_master');}
+export async function nodeNetworkReviewOperatorKey(){
+ if(!isTauri())throw Error('Open the native Portal app to inspect an operator public key.');
+ let reply;
+ try{reply=await invoke('portal_nodenetwork_review_operator_key');}
+ catch{throw Error('The public key could not be reviewed. Select one OpenSSH Ed25519 .pub file.');}
+ if(reply===null)return null;
+ if(!reply || Object.keys(reply).length!==3 || reply.schema!=='nodenetwork-operator-public-key-v1'
+  || reply.algorithm!=='ssh-ed25519' || typeof reply.canonicalSha256!=='string'
+  || reply.canonicalSha256.length!==64 || /[^0-9a-f]/.test(reply.canonicalSha256)) throw Error('The native public key inspection returned an unsupported result.');
+ return reply.canonicalSha256;
+}
 export async function nodeNetworkBootstrap(target,operator,parameters){if(!isTauri())throw new Error('Target bootstrap requires the native Portal app.');const reply=await withNodeChange(()=>invoke('portal_nodenetwork_bootstrap',{target,operator,parameters}));if(reply===null)return null;if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid bootstrap response.');if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Bootstrap refused the operation.'}`);return reply.result;}
 export async function nodeNetworkController(target,operation,parameters={}){if(!isTauri())throw new Error('Node management requires the native Portal app.');const call=()=>invoke('portal_nodenetwork_controller',{target,request:{version:1,operation,parameters}});const reply=await (readOperations.has(operation)?call():withNodeChange(call));if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid controller response.');if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Controller refused the operation.'}`);return reply.result;}
 

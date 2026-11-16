@@ -20,10 +20,21 @@ def load(path):
         return result
     return json.loads(path.read_text(encoding='utf8'),object_pairs_hook=unique)
 
+def valid_capabilities(values):
+    return (isinstance(values,list) and all(isinstance(value,str) for value in values)
+            and len(values)==len(set(values)) and set(values)<=CAPABILITIES)
+
 def release(value):
     if value is None:return
     fields={'version','artifact','capabilities','signature','qualification'}
-    require(isinstance(value,dict) and set(value) in (fields,fields|{'notes'}),'Invalid release fields')
+    versioned_fields={'manifestSchemaVersion','requiredCapabilities'}
+    require(isinstance(value,dict),'Invalid release fields')
+    has_requirements=bool(value.keys() & versioned_fields)
+    if has_requirements:
+        require(versioned_fields<=value.keys() and value['manifestSchemaVersion']==2,
+                'Required grants require an explicit package manifest schema version of 2')
+        fields|=versioned_fields
+    require(set(value) in (fields,fields|{'notes'}),'Invalid release fields')
     if 'notes' in value:
         notes=value['notes']
         require(isinstance(notes,str) and notes.strip() and len(notes.encode('utf8'))<=4000 and not re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]',notes),'Invalid release notes')
@@ -32,7 +43,11 @@ def release(value):
     url=artifact['url'];parsed=urlsplit(url)
     require(url==f'{REPOSITORY}/releases/download/v{version}/'+parsed.path.rsplit('/',1)[-1] and parsed.scheme=='https' and parsed.netloc=='github.com' and not parsed.query and not parsed.fragment and re.fullmatch(r'[-a-zA-Z0-9_.]+',parsed.path.rsplit('/',1)[-1]),'Artifact must use official versioned HTTPS release URL')
     require(re.fullmatch('[a-f0-9]{64}',artifact['sha256']) and type(artifact['bytes']) is int and 0<artifact['bytes']<=268435456,'Invalid artifact digest/size')
-    caps=value['capabilities'];require(isinstance(caps,list) and len(caps)==len(set(caps)) and set(caps)<=CAPABILITIES,'Unknown or duplicate capability')
+    caps=value['capabilities'];require(valid_capabilities(caps),'Unknown or duplicate capability')
+    if has_requirements:
+        required=value['requiredCapabilities']
+        require(valid_capabilities(required) and required and set(required)<=set(caps),
+                'Required capabilities must be a nonempty, unique subset of the declared release capabilities')
     sig=value['signature'];require(isinstance(sig,dict) and set(sig)=={'algorithm','provider','keyId','value'},'Invalid release signature fields')
     require(sig['algorithm']=='ML-DSA-87' and sig['provider']=='APQE','Native releases require APQE ML-DSA-87; classical signatures are prohibited')
     require(isinstance(sig['keyId'],str) and re.fullmatch('[a-zA-Z0-9._:-]{1,128}',sig['keyId']),'Invalid authority key identifier')
@@ -57,7 +72,7 @@ def catalog(root):
         if value['implementationStatus']=='planned':require(value.get('manifest') is None and value['status']=='coming-soon' and value.get('release') is None,'Planned apps cannot claim implemented/installable releases')
         if value.get('manifest'):
             manifest=value['manifest'];require(manifest.get('id')==identifier and manifest.get('runtime')=='portal-bundled','Bundled manifest identity/runtime mismatch')
-            caps=manifest.get('capabilities',[]);require(isinstance(caps,list) and len(caps)==len(set(caps)) and set(caps)<=CAPABILITIES,'Unknown or duplicate bundled capability')
+            caps=manifest.get('capabilities',[]);require(valid_capabilities(caps),'Unknown or duplicate bundled capability')
             widgets=manifest.get('widgets',[]);require(len({w['key'] for w in widgets})==len(widgets),'Duplicate widget key')
         require('release' in value,'Missing explicit release gate');release(value['release']);apps.append(value)
     return {'schemaVersion':1,'repository':REPOSITORY,'apps':apps}
@@ -92,6 +107,33 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):catalog(root)
     def candidate(self):return {'version':'1.0.0','artifact':{'url':REPOSITORY+'/releases/download/v1.0.0/wallet.tar','sha256':'a'*64,'bytes':100},'capabilities':['readWallet'],'signature':{'algorithm':'ML-DSA-87','provider':'APQE','keyId':'release-test','value':base64.b64encode(bytes(4627)).decode()},'qualification':{'profile':'test-only','reportSha256':'b'*64}}
     def test_structural_metadata_is_not_crypto_verification(self):release(self.candidate())
+    def test_explicit_package_manifest_schema_two(self):
+        value={**self.candidate(),'manifestSchemaVersion':2,'requiredCapabilities':['readWallet']}
+        release(value)
+        release({**value,'capabilities':['readWallet','externalLinks'],'requiredCapabilities':['externalLinks','readWallet']})
+        with tempfile.TemporaryDirectory(prefix='dapp-v2-release-metadata-') as temporary:
+            root=pathlib.Path(temporary);directory=root/'wallet';directory.mkdir()
+            entry={'schemaVersion':1,'id':'wallet','name':'Wallet','sourceDirectory':'wallet','implementationStatus':'bundled','status':'available',
+                   'manifest':{'id':'wallet','runtime':'portal-bundled','capabilities':['readWallet']},'release':value}
+            (directory/'manifest.json').write_text(json.dumps(entry),encoding='utf8')
+            self.assertEqual(catalog(root),{'schemaVersion':1,'repository':REPOSITORY,'apps':[entry]})
+    def test_implicit_or_unsupported_package_manifest_schema_rejected(self):
+        for fields in (
+            {'requiredCapabilities':['readWallet']},
+            {'schemaVersion':2},
+            {'manifestSchemaVersion':2},
+            {'manifestSchemaVersion':1},
+            {'manifestSchemaVersion':1,'requiredCapabilities':['readWallet']},
+            {'manifestSchemaVersion':3,'requiredCapabilities':['readWallet']},
+            {'manifestSchemaVersion':'2','requiredCapabilities':['readWallet']},
+            {'schemaVersion':1,'manifestSchemaVersion':2,'requiredCapabilities':['readWallet']},
+        ):
+            with self.subTest(fields=fields),self.assertRaises(ValueError):release({**self.candidate(),**fields})
+    def test_invalid_required_capabilities_and_artifact_version_drift(self):
+        value={**self.candidate(),'manifestSchemaVersion':2,'requiredCapabilities':['readWallet']}
+        for required in ([],['readWallet','readWallet'],['shell'],['readNetwork'],['ReadWallet'],'readWallet',[None]):
+            with self.subTest(required=required),self.assertRaises(ValueError):release({**value,'requiredCapabilities':required})
+        with self.assertRaises(ValueError):release({**value,'version':'1.0.1'})
     def test_optional_notes_are_bounded_plain_text(self):
         release({**self.candidate(),'notes':'Line one\nLine two'})
         for notes in ('', '\x00', '🌱'*1001, ['notes']):

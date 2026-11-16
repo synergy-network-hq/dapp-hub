@@ -21,6 +21,7 @@ import {WalletCollectibles, WalletOwnerCollectibles} from './WalletCollectibles.
 import {WalletMultiAssetInventory} from './WalletMultiAssetInventory.jsx';
 import {WalletOverview} from './WalletOverview.jsx';
 import {WalletOneTimeDraft, WalletRecipientDraft} from './WalletRecipientDraft.jsx';
+import {WalletSparkMintDraftReview} from './WalletSparkMintDraftReview.jsx';
 import {atlasEndpointRequired, canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
 import {checkWalletAccountEndpoint, requireWalletReadScope, useWalletReadScope} from './wallet-account-read.js';
 import './wallet.css';
@@ -151,6 +152,7 @@ export function WalletApp() {
       <div className="native-tabs">{tabs.map(name => <button key={name} aria-pressed={currentTab === name}
         disabled={!ready && name !== 'Connections'} onClick={() => setTab(name)}>{name}</button>)}</div>
       {tabContent()}
+      {(currentTab === 'Connections' || currentTab === 'Send') && <WalletSparkMintDraftReview key={currentTab}/>}
     </div>
   </div>;
 }

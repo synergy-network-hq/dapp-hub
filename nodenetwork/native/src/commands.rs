@@ -1,5 +1,5 @@
 use serde_json::Value;
-use sha2::{Digest,Sha256};
+use std::path::PathBuf;
 use tauri::Manager;
 use crate::{node_network,node_controller,node_bootstrap,request_journal};
 #[tauri::command]
@@ -21,6 +21,22 @@ pub async fn portal_nodenetwork_review_master(window:tauri::WebviewWindow)->Resu
   let path=folder.into_path().map_err(|_|"Select a local Synergy master directory.")?;
   node_network::review_master(&path).map(Some)
  }).await.map_err(|_|"Master inspection did not finish.")?
+}
+
+fn pick_operator_public_key(window:&tauri::WebviewWindow)->Result<Option<PathBuf>,String>{
+ use tauri_plugin_dialog::DialogExt;
+ let Some(key)=window.dialog().file().set_parent(window).set_title("Select the operator SSH public key (.pub)")
+  .add_filter("SSH public key",&["pub"]).blocking_pick_file() else{return Ok(None)};
+ key.into_path().map(Some).map_err(|_|"Select a local public key file.".into())
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_review_operator_key(window:tauri::WebviewWindow)->Result<Option<Value>,String>{
+ main_only(&window)?;
+ tauri::async_runtime::spawn_blocking(move || {
+  let Some(key)=pick_operator_public_key(&window)? else{return Ok(None)};
+  node_bootstrap::review_operator_public_key(&key).map(Some)
+ }).await.map_err(|_|"Public key inspection did not finish.")?
 }
 #[tauri::command]
 pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,request:node_controller::Request)->Result<Value,String>{
@@ -52,12 +68,11 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
  let prepared=tauri::async_runtime::spawn_blocking(move ||{
   let Some(folder)=view.dialog().file().set_parent(&view).set_title("Select the approved Synergy master to stage").blocking_pick_folder() else{return Ok(None)};
   let root=folder.into_path().map_err(|_|"Select a local Synergy master directory.")?;
-  let Some(key)=view.dialog().file().set_parent(&view).set_title("Select the operator SSH PUBLIC key (.pub), never a private key").add_filter("SSH public key",&["pub"]).blocking_pick_file() else{return Ok(None)};
-  let key=key.into_path().map_err(|_|"Select a local public key file.")?;
+  let Some(key)=pick_operator_public_key(&view)? else{return Ok(None)};
   node_bootstrap::prepare(&root,&key,&fields).map(Some)
  }).await.map_err(|_|"Master bootstrap inspection did not finish.")??;
  let Some(prepared)=prepared else{return Ok(None)};
- let message=format!("Target: {}\nAdministrative account: {}\nRoot: /opt/Synergy\nRelease: {}\nManifest SHA-256: {}\nEmbedded bootstrap SHA-256: {}\nNetwork incarnation: {}\nChain: {}\nNode name: {}\nOperator public-key SHA-256: {}\n\nThis stages the verified software and installs a restricted host controller account, rooted SSH/sudo definitions and OS registration links. The target must be clean. No community enrollment, custody creation, consensus membership or activation is authorized. No passwords are requested or stored by Portal.",target.label(),operator,prepared.release,prepared.manifest_sha256,node_bootstrap::script_pin(),parameters["network_id"],parameters["chain_id"],parameters["node_name"],format!("{:x}",Sha256::digest(prepared.public_key.as_bytes())));
+ let message=format!("Target: {}\nAdministrative account: {}\nRoot: /opt/Synergy\nRelease: {}\nManifest SHA-256: {}\nEmbedded bootstrap SHA-256: {}\nNetwork incarnation: {}\nChain: {}\nNode name: {}\nOperator public-key SHA-256: {}\n\nThis stages the verified software and installs a restricted host controller account, rooted SSH/sudo definitions and OS registration links. The target must be clean. No community enrollment, custody creation, consensus membership or activation is authorized. No passwords are requested or stored by Portal.",target.label(),operator,prepared.release,prepared.manifest_sha256,node_bootstrap::script_pin(),parameters["network_id"],parameters["chain_id"],parameters["node_name"],prepared.operator_public_key_sha256());
  let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title("Authorize NodeNetwork target bootstrap")
   .buttons(MessageDialogButtons::OkCancelCustom("Bootstrap selected target once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Bootstrap confirmation did not finish.")?;
  if !confirmed{return Err("Operator canceled; no bootstrap was sent.".into());}

@@ -1,5 +1,6 @@
 //! Streams only an operator-selected, digest-pinned master to the canonical bootstrap.
 use super::node_controller::{self, Request, Target};
+use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{collections::BTreeMap,fs,path::{Path,Component},process::Stdio,time::Duration};
@@ -18,7 +19,17 @@ fn authenticate_release(release:&str,pin:&str)->Result<(),String>{
     Err("The selected release has no independent native approval. Self-declared manifests cannot authorize privileged installation.".into())
 }
 
-pub struct Prepared {members:Vec<Member>,pub release:String,pub manifest_sha256:String,pub public_key:String}
+pub struct Prepared {members:Vec<Member>,pub release:String,pub manifest_sha256:String,public_key:OperatorPublicKey}
+impl Prepared {
+    pub(super) fn operator_public_key_sha256(&self) -> String { self.public_key.sha256() }
+}
+
+const PUBLIC_KEY_LIMIT:usize = 16_384;
+const INVALID_PUBLIC_KEY:&str = "Select one OpenSSH Ed25519 public key from a .pub file.";
+struct OperatorPublicKey(String);
+impl OperatorPublicKey {
+    fn sha256(&self) -> String { format!("{:x}", Sha256::digest(self.0.as_bytes())) }
+}
 struct Member {name:String,size:u64,directory:bool,digest:Option<String>,file:Option<fs::File>}
 pub(super) fn safe_member(name:&str)->bool {
     !name.is_empty() && name.len()<=100 && name.is_ascii() && !name.contains('\\')
@@ -38,18 +49,59 @@ fn read_bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{
     use std::io::Read;
     let metadata=fs::symlink_metadata(path).map_err(|_|"Selected public input is inaccessible.")?;
     if !metadata.is_file()||metadata.len()>max as u64 {return Err("Selected public input is not a bounded regular file.".into());}
-    let mut out=Vec::new();fs::File::open(path).map_err(|_|"Cannot open selected public input.")?.take(max as u64+1).read_to_end(&mut out).map_err(|_|"Cannot read selected public input.")?;
-    if out.len()>max{return Err("Selected public input exceeds its bound.".into());} Ok(out)
-}
-fn public_key(path:&Path)->Result<String,String>{
-    let raw=read_bounded(path,16_384)?;
-    let text=std::str::from_utf8(&raw).map_err(|_|"Select an SSH public .pub file; never a private key.")?.trim();
-    let fields:Vec<_>=text.split_whitespace().collect();
-    if fields.len()<2 || fields[0]!="ssh-ed25519"
-        || !fields[1].bytes().all(|b|b.is_ascii_alphanumeric()||b"+/=".contains(&b)) || text.contains('\n') {
-        return Err("Select one administrative Ed25519 SSH public key. Private keys and authorized_keys options are forbidden.".into());
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{Mode, OFlags, open};
+        fs::File::from(open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty()).map_err(|_|"Cannot open selected public input.")?)
+    };
+    #[cfg(not(unix))]
+    let file = fs::File::open(path).map_err(|_|"Cannot open selected public input.")?;
+    let opened = file.metadata().map_err(|_|"Cannot inspect selected public input.")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err("Selected public input changed while opening.".into());
+        }
     }
-    Ok(format!("{} {}",fields[0],fields[1]))
+    if !opened.is_file() || opened.len() != metadata.len() {return Err("Selected public input changed while opening.".into());}
+    let mut out = Vec::new();
+    file.take(max as u64+1).read_to_end(&mut out).map_err(|_|"Cannot read selected public input.")?;
+    if out.len() as u64 != opened.len() {return Err("Selected public input changed while reading.".into());}
+    Ok(out)
+}
+fn parse_operator_public_key(raw:&[u8])->Result<OperatorPublicKey,String>{
+    // The pinned bootstrap public_header expects the 68-character OpenSSH encoding.
+    // The SSH wire blob is a length-prefixed algorithm and 32 public-key bytes.
+    const PREFIX:&[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
+    let text=std::str::from_utf8(raw).map_err(|_|INVALID_PUBLIC_KEY)?;
+    let line=text.strip_suffix("\r\n").or_else(||text.strip_suffix('\n')).unwrap_or(text);
+    if line.chars().any(|character| character.is_control() && character != '\t') {
+        return Err(INVALID_PUBLIC_KEY.into());
+    }
+    let mut fields=line.split_ascii_whitespace();
+    if fields.next()!=Some("ssh-ed25519") {return Err(INVALID_PUBLIC_KEY.into());}
+    let encoded=fields.next().filter(|text|text.len()==68).ok_or(INVALID_PUBLIC_KEY)?;
+    let decoded=STANDARD_NO_PAD.decode(encoded).map_err(|_|INVALID_PUBLIC_KEY)?;
+    if decoded.len()!=PREFIX.len()+32 || !decoded.starts_with(PREFIX) {
+        return Err(INVALID_PUBLIC_KEY.into());
+    }
+    // Ignore a trailing comment; refuse a second key even if it was pasted on the same line.
+    if fields.clone().zip(fields.skip(1)).any(|(label,blob)| {
+        ["ssh-","ecdsa-","sk-"].iter().any(|prefix| label.starts_with(prefix))
+            && blob.len()>=32 && blob.bytes().all(|byte|byte.is_ascii_alphanumeric() || b"+/=".contains(&byte))
+    }) {return Err(INVALID_PUBLIC_KEY.into());}
+    Ok(OperatorPublicKey(format!("ssh-ed25519 {encoded}")))
+}
+
+fn read_operator_public_key(path:&Path)->Result<OperatorPublicKey,String>{
+    parse_operator_public_key(&read_bounded(path,PUBLIC_KEY_LIMIT)?)
+}
+
+pub(super) fn review_operator_public_key(path:&Path)->Result<Value,String>{
+    let key=read_operator_public_key(path)?;
+    Ok(json!({"schema":"nodenetwork-operator-public-key-v1","algorithm":"ssh-ed25519","canonicalSha256":key.sha256()}))
 }
 fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,String>,total:&mut u64)->Result<(),String>{
     let mut children=fs::read_dir(at).map_err(|_|"Cannot inventory the master folder.")?.collect::<Result<Vec<_>,_>>().map_err(|_|"Cannot inventory the master folder.")?;
@@ -89,7 +141,7 @@ pub fn prepare(root:&Path,key:&Path,parameters:&Value)->Result<Prepared,String>{
         let actual=format!("{:x}",hash.finalize());let expected=if member.name=="package.json"{&pin}else{member.digest.as_ref().unwrap()};
         if &actual!=expected{return Err("Master file digest mismatch.".into());} file.rewind().map_err(|_|"Cannot rewind verified master file.")?;member.file=Some(file);member.digest=Some(actual);
     }
-    Ok(Prepared{members,release:manifest["release_id"].as_str().unwrap().into(),manifest_sha256:pin,public_key:public_key(key)?})
+    Ok(Prepared{members,release:manifest["release_id"].as_str().unwrap().into(),manifest_sha256:pin,public_key:read_operator_public_key(key)?})
 }
 fn tar_header(member:&Member)->[u8;512]{
     let mut out=[0u8;512];out[..member.name.len()].copy_from_slice(member.name.as_bytes());
@@ -120,7 +172,7 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
     let mut child=command.spawn().map_err(|_|"Cannot start restricted bootstrap transport.")?;
     let mut input=child.stdin.take().ok_or("Bootstrap input unavailable.")?;
     let output=child.stdout.take().ok_or("Bootstrap output unavailable.")?;
-    let mut header=parameters;header["version"]=json!(1);header["operator_public_key"]=json!(prepared.public_key);
+    let mut header=parameters;header["version"]=json!(1);header["operator_public_key"]=json!(prepared.public_key.0);
     let transfer=async move {
         input.write_all(format!("{}\n",header).as_bytes()).await.map_err(|_|"Cannot send bootstrap header.")?;
         for member in &prepared.members{
@@ -144,6 +196,62 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
 
 #[cfg(test)] mod tests {
     use super::*;
+    const OPENSSH_VECTOR: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINdamAGCsQq31Uv+08lkBzoO4XLz2qYjJa8CGmj3B1Ea";
+    const VECTOR_SHA256: &str = "6442aab9f902438a4cb8c8937e7cd0d0a66737acab731501554caaeb89a59774";
+
+    #[test]
+    fn operator_public_key_accepts_owner_and_openssh_fixture_with_only_canonical_digest() {
+        // This public test vector passes pinned bootstrap.py::public_header and ssh-keygen -l.
+        for value in [OPENSSH_VECTOR.to_string(), format!("{OPENSSH_VECTOR} fixture comment\n"),
+            format!("{}  fixture comment métro\r\n",OPENSSH_VECTOR.replace(' ',"\t"))] {
+            let parsed = parse_operator_public_key(value.as_bytes()).unwrap();
+            assert_eq!(parsed.0, OPENSSH_VECTOR);
+            assert_eq!(parsed.sha256(), VECTOR_SHA256);
+        }
+    }
+
+    #[test]
+    fn operator_public_key_rejects_noncanonical_or_ambiguous_inputs() {
+        let payload = OPENSSH_VECTOR.split_ascii_whitespace().nth(1).unwrap();
+        let mut wrong_type = STANDARD_NO_PAD.decode(payload).unwrap();
+        wrong_type[4] = b'x';
+        let mut wrong_size = STANDARD_NO_PAD.decode(payload).unwrap();
+        wrong_size[18] = 31;
+        for value in [String::new(), "ssh-ed25519 AAAA".into(),format!("ssh-ed25519 {}","A".repeat(68)),
+            format!("ssh-rsa {payload}"),format!("{OPENSSH_VECTOR}="),
+            format!("ssh-ed25519 {}",STANDARD_NO_PAD.encode(wrong_type)),
+            format!("ssh-ed25519 {}",STANDARD_NO_PAD.encode(wrong_size)),
+            format!("{OPENSSH_VECTOR}\n{OPENSSH_VECTOR}\n"),format!("{OPENSSH_VECTOR} {OPENSSH_VECTOR}"),
+            format!("{OPENSSH_VECTOR}\r{OPENSSH_VECTOR}"),format!("{OPENSSH_VECTOR}\n\n"),
+            format!("restrict {OPENSSH_VECTOR}"),format!("-----BEGIN OPENSSH {} KEY-----\n", "PRIVATE")] {
+            assert!(parse_operator_public_key(value.as_bytes()).is_err());
+        }
+        assert!(parse_operator_public_key(&[255,0]).is_err());
+    }
+
+    #[test]
+    fn operator_public_key_reviews_regular_bounded_files_and_returns_no_key_or_comment() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!("portal-node-operator-key-{}-{stamp}",std::process::id()));
+        fs::create_dir(&folder).unwrap();
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch { fn drop(&mut self) { let _=fs::remove_dir_all(&self.0); } }
+        let _cleanup=Scratch(folder.clone());
+        let path=folder.join("operator.pub");
+        fs::write(&path,format!("{OPENSSH_VECTOR} fixture comment\n")).unwrap();
+        let report=review_operator_public_key(&path).unwrap();
+        assert_eq!(report,json!({"schema":"nodenetwork-operator-public-key-v1","algorithm":"ssh-ed25519","canonicalSha256":VECTOR_SHA256}));
+        assert!(review_operator_public_key(&folder).is_err());
+        assert!(review_operator_public_key(&folder.join("missing.pub")).is_err());
+        #[cfg(unix)] {
+            let link=folder.join("link.pub");
+            std::os::unix::fs::symlink(&path,&link).unwrap();
+            assert!(review_operator_public_key(&link).is_err());
+        }
+        fs::write(&path, vec![b'x'; PUBLIC_KEY_LIMIT+1]).unwrap();
+        assert!(review_operator_public_key(&path).is_err());
+    }
+
     #[test]
     #[ignore="Requires a specifically authorized clean disposable Linux target, pinned host key and isolated debug release approval"]
     fn native_bootstrap_streams_authenticated_master_to_disposable_target(){

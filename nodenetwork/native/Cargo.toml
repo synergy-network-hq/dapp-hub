@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+base64 = "0.22"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
