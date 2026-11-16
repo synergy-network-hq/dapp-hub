@@ -139,7 +139,7 @@ export function NodeNetworkApp(){
      ? <><p>A target is configured. Open Monitoring to inspect its native controller.</p><button onClick={()=>setSection('monitoring')}>Open target monitoring</button></>
      : <><p>Monitor-only · Host selection deferred.</p><button onClick={()=>setSection('settings')}>Review target settings</button></>}
    </Card>
-   <RpcReadiness profile={profile} permitted={permitted}/>
+   <RpcReadiness profile={profile} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <NetworkComparison profile={profile} profiles={profiles} permitted={permitted} onOpenEndpoints={()=>n.navigate('network/endpoints')}/>
    <div className="node-read-monitor"><Card title="Public validator index">
     {indexAvailable ? <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>

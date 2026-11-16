@@ -1,8 +1,10 @@
-import {useId, useLayoutEffect, useRef, useState} from 'react';
+import {Fragment, useId, useLayoutEffect, useRef, useState} from 'react';
 import {Card, useNative} from '@synergy-network/portal-native/dapp-sdk';
 import {inspectSparkNf1MintDraft, isSparkNf1WalletAddress, MAX_SPARK_MINT_DRAFT_BYTES} from './spark-nf1-draft.js';
 import {STS_TESTNET_GENESIS} from './wallet-address.js';
 import {WalletSparkMintAuthorityCheck} from './WalletSparkMintAuthorityCheck.jsx';
+import {WalletSparkMintReceiptCheck} from './WalletSparkMintReceiptCheck.jsx';
+import {useWalletReadScope} from './wallet-account-read.js';
 
 export function WalletSparkMintDraftReview() {
   const [review, setReview] = useState({status: 'empty'});
@@ -71,9 +73,25 @@ function MintDraftSummary({value, isCurrent}) {
       <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
     </dl>
     <SparkMintPairingComparison draft={value}/>
-    <WalletSparkMintAuthorityCheck draft={value} isCurrent={isCurrent}/>
+    <SparkMintRpcChecks draft={value} isCurrent={isCurrent}/>
     <p>Signer identity, fees and transaction approval still require independent verification.</p>
   </section>;
+}
+
+function SparkMintRpcChecks({draft, isCurrent}) {
+  const native = useNative();
+  const {endpoint, walletConsentSession: consent, wallet: {connection, connectionRevision, isCurrentConnection}} = native;
+  const scope = JSON.stringify([draft.sha256, native.endpointId, endpoint?.id, endpoint?.rpc, endpoint?.networkKey,
+    endpoint?.chainId, endpoint?.genesisHash, consent, connectionRevision, connection?.walletId, connection?.address, connection?.chainId]);
+  const allowed = () => !!connection && typeof consent === 'string' && !!consent && isCurrent() &&
+    !native.recoverySuspended && native.permit('wallet', 'readWallet') && connection.chainId === 'synergy:1266' &&
+    Number(endpoint?.chainId) === 1266 && Number.isSafeInteger(connectionRevision) &&
+    typeof isCurrentConnection === 'function' && isCurrentConnection(connectionRevision, connection.address, connection.chainId);
+  const canRead = useWalletReadScope(scope, allowed);
+  return allowed() && <Fragment key={scope}>
+    <WalletSparkMintAuthorityCheck {...{draft, endpoint, canRead}}/>
+    <WalletSparkMintReceiptCheck {...{draft, endpoint, canRead}}/>
+  </Fragment>;
 }
 
 function SparkMintPairingComparison({draft}) {

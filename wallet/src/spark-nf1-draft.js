@@ -63,7 +63,8 @@ export function inspectSparkNf1MintDraft(bytes) {
   if (source !== JSON.stringify(canonicalDraft, null, 2) + '\n') throw Error(unsupportedDraft);
 
   const unsupportedPayload = 'The draft has an unsupported or noncanonical NF1 mint payload.';
-  const payload = utf8(hexToBytes(payload_hex), unsupportedPayload);
+  const payloadBytes = hexToBytes(payload_hex);
+  const payload = utf8(payloadBytes, unsupportedPayload);
   if (!payload.startsWith(PAYLOAD_PREFIX)) throw Error(unsupportedPayload);
   const decoded = jsonFile(payload.slice(PAYLOAD_PREFIX.length), unsupportedPayload);
   if (decoded?.version !== 1 || decoded.chain_id !== CHAIN_ID || decoded.network !== NETWORK ||
@@ -86,7 +87,8 @@ export function inspectSparkNf1MintDraft(bytes) {
   if (payload !== PAYLOAD_PREFIX + JSON.stringify(canonicalPayload)) throw Error(unsupportedPayload);
 
   return {
-    sha256: bytesToHex(sha256(bytes)), chainId: CHAIN_ID, network: NETWORK, sender,
+    sha256: bytesToHex(sha256(bytes)), payloadSha256: bytesToHex(sha256(payloadBytes)),
+    chainId: CHAIN_ID, network: NETWORK, sender,
     recipient: data.to, collectionId: data.collection_id, mintedAt: data.minted_at,
     metadataUri: data.metadata_uri, metadataSha3: data.metadata_hash,
   };

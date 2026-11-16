@@ -27,7 +27,7 @@ function validSample(sample) {
   && isHeight(chain.incarnation) && isHeight(sample.current) && isHeight(sample.highest);
 }
 
-function sameChain(a, b) {
+export function sameSyncChain(a, b) {
  return a.chainId === b.chainId && a.network === b.network && a.incarnation === b.incarnation && a.genesis === b.genesis;
 }
 
@@ -64,13 +64,28 @@ export function selectSyncHistory(history, source, reportedChain, configuredPin)
  if (configuredPin != null && !pin) return [];
  const samples = history.samples.filter(sample => sample.source === source && (!pin || genesisDigest(sample.chain.genesis) === pin));
  const chain = reportedChain ?? samples[0]?.chain;
- return chain ? samples.filter(sample => sameChain(sample.chain, chain)) : [];
+ return chain ? samples.filter(sample => sameSyncChain(sample.chain, chain)) : [];
 }
 
-export function saveSyncSample(source, observation, storage) {
+function sampleFor(source,observation) {
  const {chain, sync, receivedAt} = observation;
  const sample = {source, chain, receivedAt, current: sync?.current, highest: sync?.highest};
  if (sync?.mode !== 'reported' || !validSample(sample)) throw Error('No supported public sync sample is available to save.');
+ return sample;
+}
+
+function writeHistory(saved,storage,errorMessage) {
+ try {
+  (storage ?? localStorage).setItem(syncHistoryKey, JSON.stringify(saved));
+ } catch {
+  throw Error(errorMessage);
+ }
+ return saved;
+}
+
+export function saveSyncSample(source, observation, storage) {
+ const sample=sampleFor(source,observation);
+ const {chain,receivedAt}=sample;
  // Read the latest history before appending. Local storage has no atomic read-modify-write.
  const history = readSyncHistory(storage);
  const [latest] = selectSyncHistory(history, source, chain);
@@ -78,13 +93,33 @@ export function saveSyncSample(source, observation, storage) {
 
  const samples = [sample, ...history.samples].sort((a, b) => b.receivedAt - a.receivedAt).slice(0, syncHistoryLimit);
  if (!samples.includes(sample)) throw Error('This observation is older than the retained history. Refresh the RPC report.');
- const saved = {version: 1, samples};
- try {
-  (storage ?? localStorage).setItem(syncHistoryKey, JSON.stringify(saved));
- } catch {
-  throw Error('The public sync sample could not be saved. The previous history is retained.');
+ return writeHistory({version: 1, samples},storage,'The public sync sample could not be saved. The previous history is retained.');
+}
+
+export function saveSyncCapture(source,observations,storage) {
+ if (!Array.isArray(observations) || observations.length<1 || observations.length>syncHistoryLimit) {
+  throw Error('No supported captured sync samples are available to save.');
  }
- return saved;
+ const additions=observations.map(observation=>sampleFor(source,observation));
+ const chain=additions[0].chain;
+ if (additions.some((sample,index)=>!sameSyncChain(chain,sample.chain) || (index>0&&sample.receivedAt<=additions[index-1].receivedAt))) {
+  throw Error('Captured sync samples have inconsistent context or receipt times.');
+ }
+ if (additions.some(sample=>BigInt(sample.highest)<BigInt(sample.current))) {
+  throw Error('A captured reference is below its local head. The previous history is retained.');
+ }
+ const history=readSyncHistory(storage);
+ const existing=new Map(selectSyncHistory(history,source,chain).map(sample=>[sample.receivedAt,sample]));
+ const pending=additions.filter(sample=>{
+  const prior=existing.get(sample.receivedAt);
+  if (prior && (prior.current!==sample.current || prior.highest!==sample.highest)) {
+   throw Error('A saved sync sample conflicts with the captured receipt. The previous history is retained.');
+  }
+  return !prior;
+ });
+ const samples=[...pending,...history.samples].sort((a,b)=>b.receivedAt-a.receivedAt).slice(0,syncHistoryLimit);
+ const count=pending.filter(sample=>samples.includes(sample)).length;
+ return count ? {history:writeHistory({version:1,samples},storage,'Captured sync samples could not be saved. The previous history is retained.'),count} : {history,count:0};
 }
 
 export function syncHistoryRows(samples) {

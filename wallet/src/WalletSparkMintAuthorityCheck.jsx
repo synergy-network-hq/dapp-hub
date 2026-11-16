@@ -1,8 +1,8 @@
 import {useState} from 'react';
-import {Detail, Resource, rpcNftMintAuthorityObservation, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {Detail, Resource, rpcNftMintAuthorityObservation, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {matchesCollectibleReadiness} from './collectible-observations.js';
-import {requireWalletReadScope, useWalletReadScope} from './wallet-account-read.js';
+import {requireWalletReadScope} from './wallet-account-read.js';
 import {readNftWalletReadiness} from './wallet-owner-readiness.js';
 import {exactRpcAmount, maxU64} from './rpc-unsigned.js';
 import {STS_TESTNET_GENESIS} from './wallet-address.js';
@@ -14,20 +14,7 @@ const reports = new Map([
 ]);
 const hash = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 
-export function WalletSparkMintAuthorityCheck({draft, isCurrent}) {
-  const native = useNative();
-  const {endpoint, walletConsentSession: consent, wallet: {connection, connectionRevision, isCurrentConnection}} = native;
-  const scope = JSON.stringify([draft.sha256, native.endpointId, endpoint?.id, endpoint?.rpc, endpoint?.networkKey,
-    endpoint?.chainId, endpoint?.genesisHash, consent, connectionRevision, connection?.walletId, connection?.address, connection?.chainId]);
-  const allowed = () => !!connection && typeof consent === 'string' && !!consent && isCurrent() &&
-    !native.recoverySuspended && native.permit('wallet', 'readWallet') && connection.chainId === 'synergy:1266' &&
-    Number(endpoint?.chainId) === 1266 && Number.isSafeInteger(connectionRevision) &&
-    typeof isCurrentConnection === 'function' && isCurrentConnection(connectionRevision, connection.address, connection.chainId);
-  const canRead = useWalletReadScope(scope, allowed);
-  return allowed() && <MintAuthorityCheck key={scope} {...{draft, endpoint, canRead}}/>;
-}
-
-function MintAuthorityCheck({draft, endpoint, canRead}) {
+export function WalletSparkMintAuthorityCheck({draft, endpoint, canRead}) {
   const [revision, setRevision] = useState(0);
   const observation = useResource(async signal => {
     if (!revision) return null;
