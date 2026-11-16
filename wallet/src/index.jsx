@@ -27,6 +27,8 @@ import {checkWalletAccountEndpoint, requireWalletReadScope, useWalletReadScope} 
 import './wallet.css';
 
 const tabs = ['Assets', 'Collectibles', 'Activity', 'Receive', 'Send', 'Address book', 'Connections'];
+// Portal can remount this app when Wallet consent or the selected endpoint changes.
+const receiveConflicts = new Map();
 
 export function WalletApp() {
   const n = useNative();
@@ -97,9 +99,18 @@ export function WalletApp() {
           <WalletStsActivity key={`sts-activity:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
           <WalletReceiptHashLookup key={`receipt-hash:${draftScope}`} account={connection.address} endpoint={n.endpoint} readRpc={rpc}/>
         </>;
-      case 'Receive':
+      case 'Receive': {
+        const {id, rpc: url, networkKey, chainId, genesisHash} = n.endpoint;
+        const endpointKey = JSON.stringify([n.endpointId, id, url, networkKey, Number(chainId),
+          typeof genesisHash === 'string' ? genesisHash.toLowerCase() : genesisHash]);
+        function recordConflict(message) {
+          if (message === null) receiveConflicts.delete(endpointKey);
+          else receiveConflicts.set(endpointKey, message);
+        }
         return <Receive account={connection.address} endpoint={n.endpoint} consentSession={n.walletConsentSession}
-          readRpc={rpc} canUse={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')}/>;
+          endpointKey={endpointKey} readConflict={() => receiveConflicts.get(endpointKey)} onConflictChange={recordConflict}
+          readRpc={rpc} canUse={canReadWallet}/>;
+      }
       case 'Address book':
         return <><WalletContacts key={draftScope} canWrite={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')} onDraftRecipient={contact => {
           if (!n.permit('wallet', 'readWallet')) return false;

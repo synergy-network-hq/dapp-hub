@@ -9,6 +9,7 @@ pub const ROOT: &str = "/opt/Synergy";
 const CONTROLLER: &str = "/opt/Synergy/tmp/controller/controller.py";
 const LIMIT: u64 = 1_000_000;
 pub(super) const GENESIS_STAGE_WIRE_LIMIT: usize = 12 * 1024 * 1024;
+pub(super) const REGISTER_UNCERTAIN: &str = "Service registration outcome is uncertain. Inspect the selected target before another change.";
 pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Deserialize)]
@@ -219,22 +220,60 @@ pub(super) fn install_preflight_reply(request: &Request, reply: &Value) -> Resul
     Ok(json!({"version":1,"ok":true,"result":result}))
 }
 
-pub(super) fn require_staged_install_target(reply: &Value) -> Result<(), &'static str> {
+fn qualified_software_target(reply: &Value, installed: bool, operations: &[(&str, &str)]) -> bool {
     let result = &reply["result"];
     let compatible = reply["version"] == 1 && reply["ok"] == true && result["root"] == ROOT
-        && result["controllerVersion"] == 1 && result["installed"] == false
+        && result["controllerVersion"] == 1 && result["installed"] == installed
         && result["platform"] == "linux" && result["architecture"] == "x86_64"
         && result["localValidatorSupported"] == true;
-    let qualified = result["operations"].as_array().filter(|rows| rows.len() <= 100).is_some_and(|rows| {
-        [("install", "mutation"), ("install_preflight", "read")].into_iter().all(|(operation, kind)| {
+    compatible && result["operations"].as_array().filter(|rows| rows.len() <= 100).is_some_and(|rows| {
+        operations.iter().copied().all(|(operation, kind)| {
             let mut matches = rows.iter().filter(|row| row["operation"] == operation);
             matches.next().is_some_and(|row| row["kind"] == kind && row["available"] == true) && matches.next().is_none()
         })
-    });
-    if !compatible || !qualified {
-        return Err("The controller no longer reports an uninstalled Linux x86-64 target with qualified installation and preflight operations.");
+    })
+}
+
+pub(super) fn require_staged_install_target(reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, false, &[("install", "mutation"), ("install_preflight", "read")]).then_some(())
+        .ok_or("The controller no longer reports an uninstalled Linux x86-64 target with qualified installation and preflight operations.")
+}
+
+pub(super) fn require_service_registration_target(reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, true, &[("register", "mutation")]).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified service registration.")
+}
+
+pub(super) fn register_service_reply(reply: &Value) -> Result<Value, &'static str> {
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) { return Err(REGISTER_UNCERTAIN); }
+    if reply["ok"] == false {
+        let error = &reply["error"];
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) { return Err(REGISTER_UNCERTAIN); }
+        // These exact owner refusals occur before the grant and service changes.
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("qualification_required"), Some("Operation has not passed host qualification")) =>
+                ("qualification_required", "The host policy does not qualify service registration."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "A matching one-use host grant is required for service registration."),
+            _ => return Err(REGISTER_UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
     }
-    Ok(())
+    let result = &reply["result"];
+    if reply["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 3)
+        || result["services_started"] != false || result["boot_enabled"] != false {
+        return Err(REGISTER_UNCERTAIN);
+    }
+    // Owner lifecycle.py returns the exact unit order defined by rendered_units.
+    let registered = result["registered"].as_array().ok_or(REGISTER_UNCERTAIN)?;
+    let owner_units = ["/etc/systemd/system/synergy-node.service", "/etc/systemd/system/synergy-vpn.service",
+        "/etc/systemd/system/synergy-canary-rpc-relay.service"];
+    if !matches!(registered.len(), 2 | 3) || registered.iter().zip(owner_units).any(|(unit, expected)| unit != expected) {
+        return Err(REGISTER_UNCERTAIN);
+    }
+    let services = &["node", "vpn", "canary-rpc-relay"][..registered.len()];
+    Ok(json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-service-registration-v1",
+        "services":services,"services_started":false,"boot_enabled":false}}))
 }
 
 pub(super) fn install_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
@@ -686,6 +725,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "diagnostics" => crate::node_diagnostics::reply(&value),
         "install_preflight" => install_preflight_reply(request, &value),
         "install" => install_reply(request, &value),
+        "register" => register_service_reply(&value),
         "upgrade_preflight" => upgrade_preflight_reply(request, &value),
         "recovery_preflight" => recovery_preflight_reply(&value),
         "uninstall_preflight" => crate::node_removal_scope::reply(&value),

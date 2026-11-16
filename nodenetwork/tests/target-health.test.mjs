@@ -1,6 +1,6 @@
 import {strict as assert} from 'node:assert';
 import test from 'node:test';
-import {nodeServiceActionObservation,targetHealthObservation} from '../src/target-health.js';
+import {nodeServiceActionObservation,nodeServiceRegistrationObservation,targetHealthObservation} from '../src/target-health.js';
 import {installedControllerMutation,targetControllerObservation} from '../src/target-observation.js';
 import {validatorStartupBlocker,vpnStatusObservation} from '../src/vpn-status.js';
 
@@ -55,5 +55,17 @@ test('admits an exact service acknowledgement without health, progress or activa
    {...acknowledged,healthy:true},{requested}]) {
    assert.throws(()=>nodeServiceActionObservation(requested,invalid),/outcome is uncertain/);
   }
+ }
+});
+
+test('projects only the owned registration inventory and never promotes it to health or startup', () => {
+ const receipt = {schema:'nodenetwork-service-registration-v1',services:['node','vpn'],services_started:false,boot_enabled:false};
+ assert.deepEqual(nodeServiceRegistrationObservation(receipt),{services:['node','vpn']});
+ const relay = ['node','vpn','canary-rpc-relay'];
+ assert.deepEqual(nodeServiceRegistrationObservation({...receipt,services:relay}),{services:relay});
+ for (const value of [{...receipt,services:['vpn','node']},{...receipt,services:['node','vpn','vpn']},
+  {...receipt,services:['node','vpn','/etc/systemd/foreign.service']},{...receipt,services:['node']},
+  {...receipt,services_started:true},{...receipt,boot_enabled:true},{...receipt,connected:true}]) {
+  assert.throws(()=>nodeServiceRegistrationObservation(value),/Service registration outcome is uncertain/);
  }
 });

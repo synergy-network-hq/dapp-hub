@@ -13,6 +13,17 @@ export function nodeServiceActionObservation(operation,value) {
  return {requested:operation,healthNotInferred:true};
 }
 
+export function nodeServiceRegistrationObservation(value) {
+ const services = value?.services;
+ if (!fieldCount(value,4) || value.schema !== 'nodenetwork-service-registration-v1'
+  || value.services_started !== false || value.boot_enabled !== false
+  || !Array.isArray(services) || ![2,3].includes(services.length)
+  || services[0] !== 'node' || services[1] !== 'vpn' || (services.length === 3 && services[2] !== 'canary-rpc-relay')) {
+  throw Error('Service registration outcome is uncertain. Inspect the selected target before another change.');
+ }
+ return {services:[...services]};
+}
+
 export function targetHealthObservation(value) {
  const unsupported = 'The selected controller returned unsupported service health evidence.';
  if (!fieldCount(value, 2) || value.schema_version !== 1

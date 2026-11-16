@@ -1,17 +1,18 @@
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import QRCode from 'qrcode';
 import {Card, chainIdNumber, Detail, Resource, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {isProtectedWalletAddress} from './wallet-address.js';
 import {checkConfiguredReceiptGenesis as checkConfiguredGenesis} from './rpc-receipt-observation.js';
 
-export function Receive({account, endpoint, consentSession, canUse = () => true, readRpc, generateQr = QRCode.toDataURL}) {
+export function Receive({account, endpoint, endpointKey, consentSession, readConflict, onConflictChange,
+  canUse = () => true, readRpc, generateQr = QRCode.toDataURL}) {
   const chainId = Number(endpoint?.chainId);
   const networkName = typeof endpoint?.name === 'string' && endpoint.name.trim() ? endpoint.name : null;
   const hasNetwork = !!networkName && Number.isSafeInteger(chainId) && chainId > 0;
   const supportedNetwork = hasNetwork && chainId === 1266;
   const canReceive = supportedNetwork && isProtectedWalletAddress(account) && canUse();
-  const key = JSON.stringify([account, endpoint?.id, endpoint?.networkKey, endpoint?.rpc, networkName, chainId,
+  const key = JSON.stringify([account, endpointKey, endpoint?.id, endpoint?.networkKey, endpoint?.rpc, networkName, chainId,
     endpoint?.genesisHash, consentSession, canReceive]);
   const scope = useRef({key});
   if (scope.current.key !== key) scope.current = {key};
@@ -23,12 +24,24 @@ export function Receive({account, endpoint, consentSession, canUse = () => true,
   const [checkRequest, setCheckRequest] = useState(null);
   const activeCheck = checkRequest?.scope === current ? checkRequest : null;
   const canCheck = canReceive && typeof readRpc === 'function' && typeof endpoint.rpc === 'string' && !!endpoint.rpc;
+  const liveCheck = useRef(null);
+  useLayoutEffect(() => {
+    liveCheck.current = activeCheck;
+    return () => {liveCheck.current = null;};
+  }, [activeCheck]);
 
   const network = useResource(async signal => {
     if (!activeCheck) return null;
     function checkScope() {
       signal.throwIfAborted();
-      if (scope.current !== current || !canUse()) throw Error('The Wallet receive context changed.');
+      if (liveCheck.current !== activeCheck || scope.current !== current || !canUse()) {
+        throw Error('The Wallet receive context changed.');
+      }
+    }
+    function record(result) {
+      checkScope();
+      onConflictChange?.(result.kind === 'mismatch' ? result.message : null);
+      return result;
     }
 
     checkScope();
@@ -41,7 +54,7 @@ export function Receive({account, endpoint, consentSession, canUse = () => true,
     }
     checkScope();
     if (reportedChain !== chainId) {
-      return {kind: 'mismatch', message: `The selected RPC reported chain ${reportedChain}. Receive expects chain ${chainId}.`};
+      return record({kind: 'mismatch', message: `The selected RPC reported chain ${reportedChain}. Receive expects chain ${chainId}.`});
     }
 
     let readiness;
@@ -55,22 +68,22 @@ export function Receive({account, endpoint, consentSession, canUse = () => true,
     }
     checkScope();
     if (readiness.chain.chainId !== chainId) {
-      return {kind: 'mismatch', message: `The selected RPC readiness report identifies chain ${readiness.chain.chainId}. Receive expects chain ${chainId}.`};
+      return record({kind: 'mismatch', message: `The selected RPC readiness report identifies chain ${readiness.chain.chainId}. Receive expects chain ${chainId}.`});
     }
     if (readiness.chain.network !== 'synergy-testnet-v3') {
-      return {kind: 'mismatch', message: 'The selected RPC reported a network different from Synergy Testnet v3.'};
+      return record({kind: 'mismatch', message: 'The selected RPC reported a network different from Synergy Testnet v3.'});
     }
     try {
       checkConfiguredGenesis(readiness.chain, endpoint.genesisHash);
     } catch (failure) {
-      return {kind: 'mismatch', message: failure.message};
+      return record({kind: 'mismatch', message: failure.message});
     }
-    return {kind: 'matched', chain: readiness.chain, checkedAt: new Date().toISOString()};
+    return record({kind: 'matched', chain: readiness.chain, checkedAt: new Date().toISOString()});
   }, activeCheck);
 
   const observation = network.data;
   const conflict = observation?.kind === 'mismatch' ? observation.message :
-    observation?.kind === 'matched' ? null : activeCheck?.priorConflict;
+    observation?.kind === 'matched' ? null : readConflict?.() ?? activeCheck?.priorConflict;
   const canShare = canReceive && !conflict;
   const sharing = useRef(false);
   sharing.current = canShare;

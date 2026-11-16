@@ -117,10 +117,10 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let title=format!("Authorize NodeNetwork {}",request.operation);
   let reviewed=binding_review.as_ref().map(|review|review.confirmation_details(&request))
    .unwrap_or_else(||format!("\nParameters: {}",request.parameters));
-  let effect=if request.operation=="install" {
-   "This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations."
-  } else {
-   "This action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically."
+  let effect=match request.operation.as_str() {
+   "install"=>"This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations.",
+   "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
+   _=>"This action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",
   };
   let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: {}{}\nExact request approval ID: {}\n\n{effect}",target.label(),request.operation,reviewed,request.approval_id());
   let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title(title)
@@ -129,10 +129,10 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- if request.operation=="install" {
+ if matches!(request.operation.as_str(),"install"|"register") {
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
-  return dispatch_reviewed_install(&target,&request,&journal,|request| {
+  return dispatch_reviewed_software(&target,&request,&journal,|request| {
    let (target,directory,serial)=(&target,&directory,&serial);
    async move {node_controller::execute_locked(target,&request,directory,None,serial).await}
   }).await;
@@ -151,19 +151,24 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  result
 }
 
-async fn dispatch_reviewed_install<Fut>(target:&node_controller::Target,request:&node_controller::Request,
+async fn dispatch_reviewed_software<Fut>(target:&node_controller::Target,request:&node_controller::Request,
  journal:&Path,mut execute:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
 where Fut:Future<Output=Result<Value,String>> {
  let fresh_target=execute(node_controller::Request{version:1,operation:"target".into(),parameters:serde_json::json!({})}).await
-  .map_err(|_|"The controller could not recheck the selected installation target.")?;
- node_controller::require_staged_install_target(&fresh_target)?;
- let preflight=node_controller::Request{version:1,operation:"install_preflight".into(),parameters:request.parameters.clone()};
- let fresh_preflight=execute(preflight.clone()).await
-  .map_err(|_|"The controller could not recheck the exact staged package and network policy. Run installation preflight again.")?;
- node_controller::install_preflight_reply(&preflight,&fresh_preflight)?;
+  .map_err(|_|"The controller could not recheck the selected target.")?;
+ let registers_services=request.operation=="register";
+ if registers_services {
+  node_controller::require_service_registration_target(&fresh_target)?;
+ } else {
+  node_controller::require_staged_install_target(&fresh_target)?;
+  let preflight=node_controller::Request{version:1,operation:"install_preflight".into(),parameters:request.parameters.clone()};
+  let fresh_preflight=execute(preflight.clone()).await
+   .map_err(|_|"The controller could not recheck the exact staged package and network policy. Run installation preflight again.")?;
+  node_controller::install_preflight_reply(&preflight,&fresh_preflight)?;
+ }
  let dispatch=request_journal::Dispatch::begin(journal,&target.journal_identity(),&request.operation,&request.canonical())?;
- let result=execute(request.clone()).await;
- dispatch.finish(&result).map_err(|_|"Installation outcome could not be saved to the local journal. Inspect the target before further changes.")?;
+ let result=execute(request.clone()).await.map_err(|error|if registers_services {node_controller::REGISTER_UNCERTAIN.into()} else {error});
+ dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes.")?;
  result
 }
 
@@ -259,7 +264,7 @@ mod tests {
   rows.push(rows[0].clone());
   for incompatible in [installed,ambiguous] {
    let mut operations=Vec::new();
-   let failure=tauri::async_runtime::block_on(dispatch_reviewed_install(&target,&request,&journal,|query| {
+   let failure=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
     operations.push(query.canonical());
     std::future::ready(Ok(incompatible.clone()))
    }));
@@ -270,7 +275,7 @@ mod tests {
   let mut mismatched=preflight;
   mismatched["result"]["release"]=json!("unreviewed-release");
   let mut operations=Vec::new();
-  let failure=tauri::async_runtime::block_on(dispatch_reviewed_install(&target,&request,&journal,|query| {
+  let failure=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
    operations.push(query.canonical());
    std::future::ready(Ok(if query.operation=="target" {staged.clone()} else {mismatched.clone()}))
   }));
@@ -292,7 +297,7 @@ mod tests {
    (json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":"Controller validation or lifecycle operation failed"}}),"uncertain"),
   ] {
    let mut operations=Vec::new();
-   let install=tauri::async_runtime::block_on(dispatch_reviewed_install(&target,&request,&journal,|query| {
+   let install=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
     operations.push(query.canonical());
     std::future::ready(match query.operation.as_str() {
      "target"=>Ok(staged.clone()),"install_preflight"=>Ok(preflight.clone()),
@@ -325,6 +330,84 @@ mod tests {
    let mut changed=receipt.clone();
    changed["result"][key]=wrong;
    assert!(node_controller::install_reply(&request,&changed).is_err(),"{key}");
+  }
+ }
+
+ fn service_registration_fixture() -> (Target, Request, PathBuf, Value, Value) {
+  let (target,_,journal,mut report,_,_)=reviewed_install_fixture();
+  report["result"]["installed"]=json!(true);
+  report["result"]["operations"]=json!([{"operation":"register","kind":"mutation","available":true,"blocker":null}]);
+  let request=Request{version:1,operation:"register".into(),parameters:json!({})};
+  let reply=json!({"version":1,"ok":true,"result":{"registered":["/etc/systemd/system/synergy-node.service",
+   "/etc/systemd/system/synergy-vpn.service"],"services_started":false,"boot_enabled":false}});
+  (target,request,journal,report,reply)
+ }
+
+ #[test]
+ fn service_registration_requires_one_current_installed_capability_before_journal() {
+  let (target,request,journal,report,_)=service_registration_fixture();
+  assert_eq!(request.validate(),Ok(true));
+  let mut unsupported=request.clone();
+  unsupported.parameters=json!({"unit":"synergy-node"});
+  assert!(unsupported.validate().is_err());
+
+  let mut not_installed=report.clone();
+  not_installed["result"]["installed"]=json!(false);
+  let mut unqualified=report.clone();
+  unqualified["result"]["operations"][0]["available"]=json!(false);
+  let mut duplicate=report;
+  let rows=duplicate["result"]["operations"].as_array_mut().unwrap();
+  rows.push(rows[0].clone());
+  for invalid in [not_installed,unqualified,duplicate] {
+   let mut reads=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    reads.push(query.canonical());
+    std::future::ready(Ok(invalid.clone()))
+   }));
+   assert!(outcome.unwrap_err().contains("qualified service registration"));
+   assert_eq!(reads,[json!({"version":1,"operation":"target","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn service_registration_scopes_wire_receipt_and_uncertain_journal() {
+  let (target,request,journal,report,valid)=service_registration_fixture();
+  let mut relay=valid.clone();
+  relay["result"]["registered"].as_array_mut().unwrap().push(json!("/etc/systemd/system/synergy-canary-rpc-relay.service"));
+  let mut foreign=valid.clone();
+  foreign["result"]["registered"][1]=json!("/private/foreign.service");
+  let mut started=valid.clone();
+  started["result"]["services_started"]=json!(true);
+  let refused=json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Exact request needs one-time host operator authorization"}});
+  let unknown=json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":"conflicting host service exists"}});
+  for (reply, ids, state) in [(valid, json!(["node","vpn"]), "response_received"),
+   (relay, json!(["node","vpn","canary-rpc-relay"]), "response_received"),
+   (refused, Value::Null,"response_received"), (foreign,Value::Null,"uncertain"),
+   (started,Value::Null,"uncertain"), (unknown,Value::Null,"uncertain")] {
+   let mut operations=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    operations.push(query.canonical());
+    std::future::ready(match query.operation.as_str() {
+     "target"=>Ok(report.clone()),"register"=>node_controller::register_service_reply(&reply).map_err(String::from),_=>unreachable!(),
+    })
+   }));
+   assert_eq!(operations,[json!({"version":1,"operation":"target","parameters":{}}),request.canonical()]);
+   assert_eq!(operations[1].to_string(),r#"{"operation":"register","parameters":{},"version":1}"#);
+   let history=request_journal::inspect(&journal).unwrap();
+   assert_eq!(history["records"][0]["state"],state);
+   assert_eq!(history["records"][0]["request_digest"],request.approval_id());
+   assert!(!history.to_string().contains(".service"));
+   if state=="uncertain" {
+    assert!(outcome.unwrap_err().contains("uncertain"));
+    assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"register",&request.canonical()).is_err());
+   } else if ids.is_array() {
+    assert_eq!(outcome.unwrap()["result"],json!({"schema":"nodenetwork-service-registration-v1","services":ids,
+     "services_started":false,"boot_enabled":false}));
+   } else {
+    assert_eq!(outcome.unwrap()["ok"],false);
+   }
+   std::fs::remove_dir_all(&journal).unwrap();
   }
  }
 
