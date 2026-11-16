@@ -6,20 +6,28 @@ import {readAccountHistory} from './account-history.js';
 import {WalletActivity} from './WalletActivity.jsx';
 import {activityWalletVersion} from './WalletActivityExport.jsx';
 import {WalletTransactionDetails} from './WalletTransactionDetails.jsx';
-import {checkIndexedHistorySnapshot,indexedHistorySnapshot} from './history-snapshot.js';
+import {checkIndexedHistorySnapshot,checkRpcHistorySnapshot,indexedHistorySnapshot} from './history-snapshot.js';
 import {checkConfiguredReceiptGenesis as checkConfiguredGenesis} from './rpc-receipt-observation.js';
+import {atlasAccountKey} from './atlas-account.js';
+import {canReadWalletAtlas} from './atlas-scope.js';
+import {blockLookupHeight} from './transaction-observation.js';
+import {useWalletReadScope} from './wallet-account-read.js';
 
 export function WalletHistory(props) {
  const n = useNative();
  const {account, endpoint} = props;
+ const accountKey = atlasAccountKey(account);
+ const canReadRpcSnapshot = () => !!accountKey && canReadWalletAtlas(n,endpoint) &&
+   atlasAccountKey(n.wallet.connection.address) === accountKey;
  const scope = JSON.stringify([account, endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey, endpoint.genesisHash,
-   n?.walletConsentSession, activityWalletVersion(n)]);
- return <ScopedWalletHistory key={scope} {...props}/>;
+   n?.walletConsentSession, activityWalletVersion(n), canReadRpcSnapshot()]);
+ return <ScopedWalletHistory key={scope} {...props} canReadRpcSnapshot={canReadRpcSnapshot}/>;
 }
 
-function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas}){
+function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas,canReadRpcSnapshot}){
  const [epoch,setEpoch]=useState(0),[pages,setPages]=useState([]),[position,setPosition]=useState(0),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const [snapshotRevision,setSnapshotRevision]=useState(0);
+ const [rpcSnapshotRevision,setRpcSnapshotRevision]=useState(0);
  const [genesisConflict,setGenesisConflict]=useState(null);
  const request=useRef({generation:0,controller:null,pending:false});
  async function load(cursor,previous,signal){
@@ -52,10 +60,17 @@ function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readA
  const snapshot=indexedHistorySnapshot(current?.snapshot);
  const snapshotCheck=useResource(signal=>snapshotRevision&&snapshot?checkIndexedHistorySnapshot(readAtlas,snapshot,signal):null,
   JSON.stringify([epoch,snapshotRevision,snapshot?.height,snapshot?.hash]));
- const checkingSnapshot=!!snapshot&&snapshotRevision>0&&snapshotCheck.loading;
- function restart(){request.current.generation++;request.current.controller?.abort();request.current.pending=false;setBusy(false);setError('');setPages([]);setPosition(0);setSelected(null);setSnapshotRevision(0);setGenesisConflict(null);setEpoch(value=>value+1);}
+ const rpcSnapshotAvailable=!!snapshot&&blockLookupHeight(snapshot.height)!==null&&canReadRpcSnapshot();
+ const rpcSnapshotKey=JSON.stringify([epoch,rpcSnapshotRevision,snapshot?.height,snapshot?.hash,rpcSnapshotAvailable]);
+ const allowed=useWalletReadScope(rpcSnapshotKey,canReadRpcSnapshot);
+ const rpcSnapshotCheck=useResource(signal=>rpcSnapshotRevision&&rpcSnapshotAvailable
+  ?checkRpcHistorySnapshot(readRpc,endpoint,snapshot,signal,allowed):null,rpcSnapshotKey);
+ const checkingSnapshot=(!!snapshot&&snapshotRevision>0&&snapshotCheck.loading)||
+  (rpcSnapshotAvailable&&rpcSnapshotRevision>0&&rpcSnapshotCheck.loading);
+ const conflictingSnapshot=snapshotCheck.data?.changed?snapshotCheck.data:rpcSnapshotCheck.data?.changed?rpcSnapshotCheck.data:null;
+ function restart(){request.current.generation++;request.current.controller?.abort();request.current.pending=false;setBusy(false);setError('');setPages([]);setPosition(0);setSelected(null);setSnapshotRevision(0);setRpcSnapshotRevision(0);setGenesisConflict(null);setEpoch(value=>value+1);}
  async function next(){
-  if(!current||request.current.pending||checkingSnapshot||snapshotCheck.data?.changed)return;
+  if(!current||request.current.pending||checkingSnapshot||conflictingSnapshot)return;
   if(position+1<pages.length){setPosition(position+1);setSelected(null);return;}
   if(!current.hasMore)return;
   const generation=++request.current.generation,controller=new AbortController();request.current.controller=controller;request.current.pending=true;setBusy(true);setError('');
@@ -83,12 +98,16 @@ function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readA
   {selected&&<WalletTransactionDetails data={recent} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}
  </>;
  if(!current)return <p role="status">Preparing account history page…</p>;
- if(snapshotCheck.data?.changed)return <>
-  <ErrorMessage error={`Atlas reported a different block hash at snapshot height ${snapshot.height}. Restart history to load a new snapshot.`}/>
-  <Detail data={{previousSnapshotHash:snapshot.hash,currentAtlasBlockHash:snapshotCheck.data.hash}}/>
-  <p>Atlas snapshot checked <time dateTime={snapshotCheck.data.checkedAt}>{snapshotCheck.data.checkedAt}</time></p>
-  <button onClick={restart}>Restart history</button>
- </>;
+ if(conflictingSnapshot){
+  const source=conflictingSnapshot===snapshotCheck.data?'Atlas':'Selected RPC';
+  return <>
+   <ErrorMessage error={`${source} reported a different block hash at snapshot height ${snapshot.height}. Restart history to load a new snapshot.`}/>
+   <Detail data={{previousSnapshotHash:snapshot.hash,
+    [source==='Atlas'?'currentAtlasBlockHash':'reportedRpcBlockHash']:conflictingSnapshot.hash}}/>
+   <p>{source} snapshot checked <time dateTime={conflictingSnapshot.checkedAt}>{conflictingSnapshot.checkedAt}</time></p>
+   <button onClick={restart}>Restart history</button>
+  </>;
+ }
  const data={recentTransactions:current.items};
  return <>
   <SourceAge updatedAt={current.receivedAt} source="Atlas account-history page read"/>
@@ -101,11 +120,17 @@ function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readA
     {snapshot&&<button disabled={busy||checkingSnapshot} onClick={()=>setSnapshotRevision(value=>value+1)}>
       {snapshotRevision?'Check Atlas snapshot again':'Check Atlas snapshot'}
     </button>}
+    {rpcSnapshotAvailable&&<button disabled={busy||checkingSnapshot} onClick={()=>setRpcSnapshotRevision(value=>value+1)}>
+      {rpcSnapshotRevision?'Check snapshot on selected RPC again':'Check snapshot on selected RPC'}
+    </button>}
     <button onClick={restart}>Restart history</button>
   </div>
   {busy&&<p role="status">Reading the next page…</p>}
   {!!snapshotRevision&&snapshot&&<section aria-label="Atlas snapshot observation">
     <Resource value={{...snapshotCheck,reload:undefined}}>{value=><p>Atlas reports the same snapshot block hash. Checked <time dateTime={value.checkedAt}>{value.checkedAt}</time>.</p>}</Resource>
+  </section>}
+  {!!rpcSnapshotRevision&&rpcSnapshotAvailable&&<section aria-label="Selected RPC history snapshot observation">
+    <Resource value={{...rpcSnapshotCheck,reload:undefined}}>{value=><p>The selected RPC reports the same snapshot block hash. Checked <time dateTime={value.checkedAt}>{value.checkedAt}</time>.</p>}</Resource>
   </section>}
   <ErrorMessage error={error}/>
   <WalletActivity key={current.ordinal} data={data} account={account} paged onSelect={setSelected}
