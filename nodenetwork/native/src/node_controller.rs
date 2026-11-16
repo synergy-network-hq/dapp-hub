@@ -50,7 +50,7 @@ impl Request {
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
             "target"|"inventory"|"health"|"diagnostics"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"identity_status"|"formation_status"|"identity_preflight"|"formation_preflight"|"genesis_binding_preflight"|"genesis_stage_preflight" => false,
-            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
+            "install"|"commission"|"register"|"vpn_enroll"|"start"|"stop"|"restart"|"upgrade"|"uninstall" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
@@ -239,6 +239,26 @@ fn vpn_status_reply(reply: &Value) -> Result<Value, &'static str> {
         .map(|field| (field.into(), result[field].clone())).collect();
     public.insert("schema".into(), json!("nodenetwork-vpn-status-v1"));
     Ok(json!({"version":1,"ok":true,"result":public}))
+}
+
+fn vpn_enrollment_reply(reply: &Value) -> Result<Value, &'static str> {
+    const UNCERTAIN: &str = "VPN enrollment outcome is uncertain. Check the enrolled controller and reconcile the prior request before further changes.";
+    if reply["ok"] == false {
+        // The pinned controller reports these two codes before using the staged enrollment input.
+        let (code, message) = match reply["error"]["code"].as_str() {
+            Some("qualification_required") => ("qualification_required", "The host policy does not qualify this VPN enrollment."),
+            Some("authorization_required") => ("authorization_required", "The host controller refused the one-use VPN enrollment authorization."),
+            _ => return Err(UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    let result = vpn_status_reply(reply).map_err(|_| UNCERTAIN)?;
+    let status = &result["result"];
+    if status["enrollment_recorded"] != true || status["service_registered"] != true
+        || status["enrollment_staged"] != false {
+        return Err(UNCERTAIN);
+    }
+    Ok(result)
 }
 
 fn lowercase_digest(value: &Value) -> bool {
@@ -448,7 +468,8 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
     let mut child=command.spawn().map_err(|_|"Controller could not start. Enroll the target and verify its SSH host identity first.")?;
     let mut input=child.stdin.take().ok_or("Controller input unavailable.")?;
     let mut output=child.stdout.take().ok_or("Controller output unavailable.")?.take(LIMIT+1);
-    let result=tokio::time::timeout(Duration::from_secs(180),async {
+    let deadline = if request.operation == "vpn_enroll" { 240 } else { 180 };
+    let result=tokio::time::timeout(Duration::from_secs(deadline),async {
         input.write_all(request.canonical().to_string().as_bytes()).await.map_err(|_|"Cannot send controller request.")?;
         input.write_all(b"\n").await.map_err(|_|"Cannot complete controller request.")?;
         drop(input);
@@ -467,6 +488,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "recovery_preflight" => recovery_preflight_reply(&value),
             "uninstall_preflight" => crate::node_removal_scope::reply(&value),
             "vpn_status" => vpn_status_reply(&value),
+            "vpn_enroll" => vpn_enrollment_reply(&value),
             "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
             "genesis_binding_preflight" => genesis_binding_reply(&value),
             "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
@@ -627,14 +649,70 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         let refused = json!({"ok":false,"error":{"code":"qualification_required","message":"fixture detail excluded"}});
         assert_eq!(install_preflight_reply(&request,&refused),Err("The controller did not confirm package or network policy for this preflight."));
     }
-    #[test] fn vpn_status_is_an_empty_parameter_read_and_enrollment_is_unavailable() {
+    #[test] fn vpn_status_is_an_empty_parameter_read() {
         let mut request = Request{version:1,operation:"vpn_status".into(),parameters:json!({})};
         assert_eq!(request.validate(), Ok(false));
         request.parameters = json!({"address":"fixture"});
         assert!(request.validate().is_err());
-        request.operation = "vpn_enroll".into();
-        request.parameters = json!({});
-        assert!(request.validate().is_err());
+    }
+    #[test] fn vpn_enrollment_is_a_fixed_empty_mutation() {
+        let mut request = Request{version:1,operation:"vpn_enroll".into(),parameters:json!({})};
+        assert_eq!(request.validate(), Ok(true));
+        assert_eq!(request.canonical().to_string(), r#"{"operation":"vpn_enroll","parameters":{},"version":1}"#);
+        for forbidden in [json!({"setup_key":"fixture"}),json!({"enrollment_sha256":"fixture"}),json!({"management_url":"fixture"}),json!(null),json!([])] {
+            request.parameters = forbidden;
+            assert!(request.validate().is_err());
+        }
+    }
+    #[test] fn vpn_enrollment_projects_reported_recording_and_retains_uncertain_results() {
+        let mut reply = json!({"version":1,"ok":true,"result":{
+            "schema":"nodenetwork-vpn-status-v1","service_registered":true,"enrollment_staged":false,
+            "enrollment_recorded":true,"reconciliation_required":false,"server_bound":false,"connected":true,
+            "overlay_address":"100.80.10.4/16"
+        }});
+        let projected = vpn_enrollment_reply(&reply).unwrap();
+        assert_eq!(projected["result"]["enrollment_recorded"], true);
+        assert_eq!(projected["result"]["server_bound"], false);
+        assert!(projected["result"].get("overlay_address").is_none());
+        let refused = |code| json!({"version":1,"ok":false,"error":{"code":code,"message":"fixture private details"}});
+        for code in ["qualification_required", "authorization_required"] {
+            let sanitized = vpn_enrollment_reply(&refused(code)).unwrap();
+            assert_eq!(sanitized["ok"], false);
+            assert_eq!(sanitized["error"]["code"], code);
+            assert!(!sanitized.to_string().contains("fixture private details"));
+        }
+        for code in ["vpn_reconciliation_required", "operation_refused", "unknown"] {
+            assert!(vpn_enrollment_reply(&refused(code)).unwrap_err().contains("outcome is uncertain"));
+        }
+        reply["result"]["enrollment_staged"] = json!(true);
+        assert!(vpn_enrollment_reply(&reply).is_err());
+        reply["result"]["enrollment_staged"] = json!(false);
+        reply["result"]["enrollment_recorded"] = json!(false);
+        reply["result"]["connected"] = json!(false);
+        reply["result"]["overlay_address"] = Value::Null;
+        assert!(vpn_enrollment_reply(&reply).is_err());
+    }
+    #[cfg(unix)]
+    #[test] fn vpn_enrollment_journal_preserves_the_target_fence_for_ambiguous_outcome() {
+        use crate::request_journal::{inspect, Dispatch};
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().canonicalize().unwrap().join(format!("nodenetwork-vpn-journal-{}-{stamp}",std::process::id()));
+        let target = json!({"kind":"remote","host":"fixture.invalid","port":22,"root":ROOT});
+        let request = Request{version:1,operation:"vpn_enroll".into(),parameters:json!({})}.canonical();
+        let run = |code| {
+            let dispatch = Dispatch::begin(&base,&target,"vpn_enroll",&request).unwrap();
+            let reply = json!({"version":1,"ok":false,"error":{"code":code,"message":"fixture private details"}});
+            dispatch.finish(&vpn_enrollment_reply(&reply).map_err(String::from)).unwrap();
+        };
+        run("authorization_required");
+        run("vpn_reconciliation_required");
+        let history = inspect(&base).unwrap();
+        let records = history["records"].as_array().unwrap();
+        assert!(records.iter().any(|row| row["operation"] == "vpn_enroll" && row["state"] == "response_received" && row["response_ok"] == false));
+        assert!(records.iter().any(|row| row["operation"] == "vpn_enroll" && row["state"] == "uncertain" && row["response_ok"].is_null()));
+        assert!(Dispatch::begin(&base,&target,"vpn_enroll",&request).is_err());
+        assert!(!history.to_string().contains("fixture"));
+        std::fs::remove_dir_all(base).unwrap();
     }
     #[test] fn vpn_status_validates_owner_shape_and_keeps_extra_reply_metadata_private() {
         let mut reply = json!({"version":1,"ok":true,"internal":"unreviewed fixture","result":{

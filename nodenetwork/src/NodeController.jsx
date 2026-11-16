@@ -10,7 +10,7 @@ import {upgradePreflightObservation} from './upgrade-preflight.js';
 import {ControllerRemoval} from './Offboarding.jsx';
 import {removalPreflightObservation} from './removal-preflight.js';
 import {VpnStatus} from './VpnStatus.jsx';
-import {vpnStatusObservation} from './vpn-status.js';
+import {vpnEnrollmentBlocker,vpnEnrollmentObservation,vpnEnrollmentSupported,vpnStatusObservation} from './vpn-status.js';
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
@@ -61,7 +61,7 @@ function ControllerReceipt({receivedAt}) {
  </p>;
 }
 
-export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onOpenDiagnostics}){
+export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onOpenDiagnostics,canEnroll=()=>permitted}){
  const [operator,setOperator]=useState('');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null);
  const [preflightAttempt,setPreflightAttempt]=useState(null);
@@ -79,20 +79,32 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const statusResult=permitted&&statusGates[result?.operation]?.available?result:null;
  const healthResult=statusResult?.operation==='health'?statusResult:null;
  const recoveryResult=statusResult?.operation==='recovery_preflight'?statusResult:null;
- const vpnResult=statusResult?.operation==='vpn_status'?statusResult:null;
+ const vpnResult=permitted&&statusGates.vpn_status.available&&['vpn_status','vpn_enroll'].includes(result?.operation)?result:null;
+ const enrollmentSupported=permitted&&vpnEnrollmentSupported(state);
+ const enrollmentBlocker=vpnEnrollmentBlocker(vpnResult?.result);
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  const preparationResult=identityPreflightReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  async function run(operation,parameters={}){
   const read=statusGates[operation];
   const isPreflight=operation==='install_preflight';
+  const isEnrollment=operation==='vpn_enroll';
   if(!permitted||busy||(read&&!read.available)||(isPreflight&&!preflight.canRun))return;
+  if(isEnrollment){
+   if(!enrollmentSupported||enrollmentBlocker||vpnResult?.operation!=='vpn_status')return;
+   if(!canEnroll()){
+    setResult(null);
+    setError('The target, recovery state or permission changed. Review VPN status again.');
+    return;
+   }
+  }
   setBusy(true);setError('');setResult(null);
   const submitted={...parameters};
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
   try{
    const raw=await nodeNetworkController(target,operation,submitted);
-   const response=isPreflight?installPreflightObservation(raw,submitted,target):read?typedStatus[operation](raw,submitted):raw;
-   if(alive.current){
+   const response=isPreflight?installPreflightObservation(raw,submitted,target):
+    isEnrollment?vpnEnrollmentObservation(raw):read?typedStatus[operation](raw,submitted):raw;
+   if(alive.current&&(!isEnrollment||canEnroll())){
     const receivedAt=Date.now();
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt,observation:response});
     else setResult({operation,submitted,result:response,receivedAt});
@@ -100,7 +112,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    }
   }
   catch(failure){
-   if(alive.current){
+   if(alive.current&&(!isEnrollment||canEnroll())){
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'failed'});
     setError(String(failure?.message||failure));
    }
@@ -128,7 +140,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  }
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
-   if(typedStatus[result?.operation])setResult(null);
+   if(typedStatus[result?.operation]||result?.operation==='vpn_enroll')setResult(null);
    setPreflightAttempt(null);
    capabilities.reload();
   }}>Inspect selected target</button>}>
@@ -180,6 +192,12 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    action={statusAction('vpn_status','Read VPN status')}
    observation={vpnResult?.result}
    receipt={vpnResult&&<ControllerReceipt receivedAt={vpnResult.receivedAt}/>}
+   enrollmentReported={vpnResult?.operation==='vpn_enroll'}
+   enrollmentAction={enrollmentSupported&&<div className="native-controller-action">
+    <button disabled={busy||!!enrollmentBlocker} onClick={()=>run('vpn_enroll')}>Enroll validator VPN</button>
+    {enrollmentBlocker&&<small>{enrollmentBlocker}</small>}
+    <p>Portal requests native confirmation to use the staged input on this host. The controller requires a matching one-use host grant.</p>
+   </div>}
    onOpenDiagnostics={onOpenDiagnostics}/>}
   {tab==='Management'&&<CustodyStatus
    actions={<div className="native-actions">{custodyStatusReads.map(({operation,label})=>statusAction(operation,label))}</div>}
@@ -192,6 +210,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    inventoryAction={button('inventory','Inventory node-owned files')}
    preflightAction={statusAction('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&result.operation!=='vpn_enroll'&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }

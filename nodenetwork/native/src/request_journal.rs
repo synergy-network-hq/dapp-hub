@@ -24,6 +24,9 @@ struct Record {
 
 fn digest(value: &Value) -> String { format!("{:x}", Sha256::digest(value.to_string().as_bytes())) }
 fn pin(value: &str) -> bool { value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
+fn journaled_operation(operation: &str) -> bool {
+    matches!(operation, "bootstrap" | "install" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall")
+}
 fn now() -> Result<u64, String> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok())
         .ok_or_else(|| "Request journal clock is unavailable; no mutation was dispatched.".into())
@@ -94,7 +97,7 @@ fn load(path: &Path) -> Result<Vec<Record>, String> {
         file.take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|_| failure())?;
         if bytes.len() as u64 > MAX_BYTES { return Err(failure()); }
         let record: Record = serde_json::from_slice(&bytes).map_err(|_| failure())?;
-        let operation = matches!(record.operation.as_str(), "bootstrap" | "install" | "commission" | "register" | "start" | "stop" | "restart" | "upgrade" | "uninstall");
+        let operation = journaled_operation(&record.operation);
         let state = match record.state.as_str() {
             "dispatch_intent" => record.observed_at_ms.is_none() && record.response_ok.is_none(),
             "uncertain" => record.observed_at_ms.is_some() && record.response_ok.is_none(),
@@ -129,7 +132,7 @@ impl Dispatch {
     /// Caller must validate the typed target/request and obtain native consent first.
     pub fn begin(base: &Path, target: &Value, operation: &str, request: &Value) -> Result<Self, String> {
         let _serial = SERIAL.lock().map_err(|_| failure())?;
-        if !matches!(operation, "bootstrap" | "install" | "commission" | "register" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
+        if !journaled_operation(operation) { return Err(failure()); }
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;

@@ -3,7 +3,7 @@ import {vpnPrerequisiteStatus} from './vpn-status.js';
 
 const columns = [{key: 'check', label: 'Check'}, {key: 'status', label: 'Reported state'}];
 
-export function VpnStatus({action, observation, receipt, onOpenDiagnostics}) {
+export function VpnStatus({action, observation, receipt, enrollmentAction, enrollmentReported, onOpenDiagnostics}) {
  return <Card title="Validator VPN status" action={action}>
   {!action && <p>Host selection is deferred. A supported enrolled controller can report validator VPN status.</p>}
   <p>Validator start and restart require registered VPN service, recorded enrollment, a verified server binding and a connected validator peer. Resolve any earlier enrollment attempt before proceeding.</p>
@@ -19,6 +19,8 @@ export function VpnStatus({action, observation, receipt, onOpenDiagnostics}) {
    ]} columns={columns}/>
    <p role="status">{vpnPrerequisiteStatus(observation)}</p>
   </>}
+  {enrollmentReported && <p role="status">The controller reports the VPN enrollment was recorded. Server binding and connectivity are checked separately.</p>}
+  {enrollmentAction}
   {onOpenDiagnostics && <button onClick={onOpenDiagnostics}>Open Logs &amp; Diagnostics</button>}
  </Card>;
 }

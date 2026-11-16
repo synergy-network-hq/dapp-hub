@@ -1,3 +1,5 @@
+import {controllerOperation} from './nodeNetwork.js';
+
 const fields = [
  'service_registered', 'enrollment_staged', 'enrollment_recorded', 'reconciliation_required', 'server_bound', 'connected',
 ];
@@ -13,12 +15,36 @@ export function vpnStatusObservation(value) {
  return Object.fromEntries(fields.map(field => [field, value[field]]));
 }
 
+export function vpnEnrollmentObservation(value) {
+ const observation = vpnStatusObservation(value);
+ if (!observation.service_registered || !observation.enrollment_recorded || observation.enrollment_staged) {
+  throw Error('VPN enrollment outcome is uncertain. Check the enrolled controller before another change.');
+ }
+ return observation;
+}
+
+export function vpnEnrollmentSupported(controller) {
+ const {summary}=controller??{};
+ return summary?.controllerVersion === 1 && summary.controllerReportedInstalled === true
+  && summary.reportedPlatform === 'linux' && summary.reportedArchitecture === 'x86_64' && summary.controllerReportedLocalSupport === true
+  && controllerOperation(controller, 'vpn_enroll').available
+  && controller.operations.find(row=>row?.operation==='vpn_enroll')?.kind === 'mutation';
+}
+
+export function vpnEnrollmentBlocker(status) {
+ if (!status) return 'Read VPN status before requesting enrollment.';
+ if (status.reconciliation_required) return 'Reconcile the previous enrollment with the VPN operator first.';
+ if (status.enrollment_recorded) return 'The controller already reports a recorded VPN enrollment.';
+ if (!status.service_registered || !status.enrollment_staged) return 'The controller must report a registered service and a staged enrollment input.';
+ return null;
+}
+
 export function vpnPrerequisiteStatus(observation) {
  if (observation.reconciliation_required) return 'Ask the VPN operator to reconcile the prior attempt before pursuing enrollment.';
  if (!observation.service_registered) return 'Review registration of the contained VPN service before enrollment or validator startup.';
  if (!observation.enrollment_recorded) {
   return observation.enrollment_staged
-   ? 'The enrollment input is staged. Fresh enrollment requires qualified transport and an exact one-use host grant.'
+   ? 'The enrollment input is staged. Enrollment requires a qualified controller and an exact one-use host grant.'
    : 'Ask the VPN operator to stage an approved one-use enrollment input and arrange the matching host grant.';
  }
  if (!observation.server_bound) return 'Ask the VPN operator to verify the recorded validator peer against the server binding.';

@@ -67,7 +67,12 @@ export function useTargetSelection() {
   }
  }
 
- return {...selection, draft, updateDraft, loadSavedChoice, save};
+ function targetIsCurrent() {
+  if (!snapshot || !selection.target) return false;
+  try {return readTargetSelection().raw === snapshot.raw;} catch {return false;}
+ }
+
+ return {...selection, draft, updateDraft, loadSavedChoice, save, targetIsCurrent};
 }
 
 export function TargetSettings({selection, local}) {
