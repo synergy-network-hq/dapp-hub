@@ -1,6 +1,6 @@
 //! Native-only exact input and receipt model for Testnet v3 613fa6ab `controller.py::genesis_stage`.
 use crate::node_bootstrap::read_bounded;
-use crate::node_controller::{valid_validator_address, validator_chain_id, validator_network_id, GENESIS_STAGE_WIRE_LIMIT};
+use crate::node_controller::{exact_genesis_mutation_reply, valid_validator_address, validator_chain_id, validator_network_id, GENESIS_STAGE_WIRE_LIMIT};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -12,6 +12,7 @@ pub(super) const INPUTS: [(&str, usize); 3] = [
     ("authority.json", 1024 * 1024),
     ("authority-root.pub", 8 * 1024),
 ];
+pub(super) const GENESIS_STAGE_UNCERTAIN: &str = "Genesis staging outcome is uncertain. Preserve the target state and review staged Genesis before another change.";
 
 fn sha256(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
 fn pin(value: &str) -> bool {
@@ -85,7 +86,7 @@ impl GenesisStageReview {
     }
 
     pub(super) fn stage_reply(&self, reply: &Value) -> Result<Value, String> {
-        const UNKNOWN:&str="Genesis staging outcome is uncertain. Preserve the target state and review staged Genesis before another change.";
+        if !exact_genesis_mutation_reply(reply) { return Err(GENESIS_STAGE_UNCERTAIN.into()); }
         if reply["ok"] == false {
             // These exact owner refusals occur before staging or consumption of the grant.
             let error=&reply["error"];
@@ -98,16 +99,16 @@ impl GenesisStageReview {
                     ("qualification_required","The host policy does not qualify this Genesis staging operation."),
                 (Some("authorization_required"),Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
                     ("authorization_required","A matching one-use host grant is required for Genesis staging."),
-                _=>return Err(UNKNOWN.into()),
+                _=>return Err(GENESIS_STAGE_UNCERTAIN.into()),
             };
             return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
         }
         let result=&reply["result"];
-        if reply["version"] != 1 || reply["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 9)
+        if !result.as_object().is_some_and(|fields| fields.len() == 9)
             || result["schema"] != "nodenetwork-genesis-stage-v1" || result["address"] != self.validator_address
             || result["request_sha256"] != self.request_sha256 || !self.pins.matches(result)
             || result["staged"] != true || result["genesis_authority_verified"] != true || result["membership_verified"] != true {
-            return Err(UNKNOWN.into());
+            return Err(GENESIS_STAGE_UNCERTAIN.into());
         }
         Ok(json!({"version":1,"ok":true,"result":{"schema":result["schema"],"address":result["address"],
             "genesis_sha256":self.pins.genesis_sha256,"authority_sha256":self.pins.authority_sha256,

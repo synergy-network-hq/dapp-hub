@@ -1,5 +1,5 @@
 //! Typed operational bridge. Host policy, custody and consensus authority stay on target.
-use serde::Deserialize;
+use serde::{de, Deserialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio, time::Duration};
@@ -11,6 +11,7 @@ const LIMIT: u64 = 1_000_000;
 const IDENTITY_GENERATION_UNCERTAIN: &str = "Validator identity preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
 const FORMATION_PREPARATION_UNCERTAIN: &str = "Formation preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
 pub(super) const GENESIS_STAGE_WIRE_LIMIT: usize = 12 * 1024 * 1024;
+pub(super) const GENESIS_BIND_UNCERTAIN: &str = "Genesis binding outcome is uncertain. Preserve pending custody and review its binding status before another change.";
 pub(super) const COMMISSION_UNCERTAIN: &str = "Validator commissioning outcome is uncertain. Inspect the selected target and its request history before another change.";
 pub(super) const NODE_SERVICE_UNCERTAIN: &str = "Node service action outcome is uncertain. Inspect the selected controller before another change.";
 pub(super) const REGISTER_UNCERTAIN: &str = "Service registration outcome is uncertain. Inspect the selected target before another change.";
@@ -126,7 +127,9 @@ impl GenesisBindingReview {
 
     fn matches(&self, request: &Request, reply: &Value, bound: bool) -> bool {
         let result = &reply["result"];
-        reply["version"] == 1 && reply["ok"] == true && result["schema"] == "nodenetwork-genesis-binding-v1"
+        exact_genesis_mutation_reply(reply) && reply["ok"] == true
+            && result.as_object().is_some_and(|fields| fields.len() == 9)
+            && result["stage_receipt_verified"].is_boolean() && result["schema"] == "nodenetwork-genesis-binding-v1"
             && result["genesis_authority_verified"] == true && result["membership_verified"] == true
             && result["bound"] == bound && result["genesis_sha256"] == request.parameters["genesis_sha256"]
             && result["network_id"] == self.network_id && result["chain_id"] == self.chain_id
@@ -139,7 +142,7 @@ impl GenesisBindingReview {
     }
 
     pub(super) fn verify_acknowledgement(&self, request: &Request, reply: Value) -> Result<Value, String> {
-        if reply["ok"] == false || self.matches(request, &reply, true) { return Ok(reply); }
+        if exact_genesis_mutation_reply(&reply) && (reply["ok"] == false || self.matches(request, &reply, true)) { return Ok(reply); }
         Err("Genesis binding outcome is uncertain. The controller reply differed from the reviewed validator scope. Preserve pending custody and review its binding status before another change.".into())
     }
 }
@@ -323,11 +326,29 @@ pub(super) fn require_commission_target(reply: &Value, pending_formation: bool) 
     let required = [("commission", "mutation"), ("formation_status", "read"),
         ("vpn_status", "read"), ("genesis_binding_preflight", "read")];
     let operations = if pending_formation { &required[..] } else { &required[..2] };
-    (reply.as_object().is_some_and(|fields| fields.len() == 3)
+    enrolled_software_target(reply, operations).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified validator commissioning and its required reads.")
+}
+
+fn enrolled_software_target(reply: &Value, operations: &[(&str,&str)]) -> bool {
+    reply.as_object().is_some_and(|fields| fields.len() == 3)
         && reply["result"].as_object().is_some_and(|fields| fields.len() == 8)
         && reply["result"]["communityEnrollment"] == false
-        && qualified_software_target(reply, true, operations)).then_some(())
-        .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified validator commissioning and its required reads.")
+        && qualified_software_target(reply, true, operations)
+}
+
+pub(super) fn require_genesis_target(reply: &Value, operation: &str) -> Result<(), &'static str> {
+    // Testnet v3 613fa6ab controller.py::target advertises qualified mutations independently of policy reads.
+    let operations: &[(&str, &str)] = match operation {
+        "genesis_stage" => &[("genesis_stage", "mutation"), ("formation_status", "read"), ("genesis_stage_preflight", "read")],
+        "genesis_bind" => &[("genesis_bind", "mutation"), ("genesis_binding_preflight", "read")],
+        _ => return Err("Unsupported Genesis target qualification."),
+    };
+    let exact_rows = || reply["result"]["operations"].as_array().is_some_and(|rows| rows.iter()
+        .filter(|row| operations.iter().any(|(name,_)| row["operation"] == *name))
+        .all(|row| row.as_object().is_some_and(|fields| fields.len() == 4) && row.get("blocker") == Some(&Value::Null)));
+    (enrolled_software_target(reply, operations) && exact_rows()).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with the qualified Genesis operation and its required reads.")
 }
 
 pub(super) fn require_custody_preparation_target(request: &Request, review: &CustodyPreparationReview, reply: &Value) -> Result<(), &'static str> {
@@ -772,8 +793,53 @@ pub(super) fn formation_receipt_status(reply: &Value, expected_request_digest: &
     if result["request_sha256"] == expected_request_digest { "match" } else { "different" }
 }
 
+pub(super) fn exact_genesis_mutation_reply(reply: &Value) -> bool {
+    reply["version"] == 1 && reply.as_object().is_some_and(|fields| fields.len() == 3)
+        && match reply["ok"].as_bool() {
+            Some(true) => reply["result"].is_object(),
+            Some(false) => reply["error"].as_object().is_some_and(|fields| fields.len() == 2)
+                && reply["error"]["code"].is_string() && reply["error"]["message"].is_string(),
+            None => false,
+        }
+}
+
+// Owner Genesis success and refusal objects have scalar fields. The enrollment
+// document is an exact string, whose bytes are checked separately.
+struct UniqueGenesisReply(serde_json::Map<String,Value>);
+
+impl<'de> Deserialize<'de> for UniqueGenesisReply {
+    fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct UniqueFields;
+        impl<'de> de::Visitor<'de> for UniqueFields {
+            type Value = UniqueGenesisReply;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an owner Genesis response object with unique field names")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut input: M) -> Result<Self::Value, M::Error> {
+                let mut fields = serde_json::Map::new();
+                while let Some(key) = input.next_key::<String>()? {
+                    if fields.contains_key(&key) { return Err(de::Error::custom("duplicate Genesis response field")); }
+                    let value = match key.as_str() {
+                        "result" | "error" => Value::Object(input.next_value::<UniqueGenesisReply>()?.0),
+                        _ => input.next_value()?,
+                    };
+                    fields.insert(key, value);
+                }
+                Ok(UniqueGenesisReply(fields))
+            }
+        }
+        decoder.deserialize_map(UniqueFields)
+    }
+}
+
+fn decode_genesis_mutation_reply(bytes: &[u8]) -> serde_json::Result<Value> {
+    serde_json::from_slice::<UniqueGenesisReply>(bytes).map(|fields| Value::Object(fields.0))
+}
+
 fn genesis_bind_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
-    const UNCERTAIN: &str = "Genesis binding outcome is uncertain. Preserve pending custody and review its binding status before another change.";
+    if !exact_genesis_mutation_reply(reply) { return Err(GENESIS_BIND_UNCERTAIN); }
     if reply["ok"] == false {
         let error = &reply["error"];
         let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
@@ -785,15 +851,15 @@ fn genesis_bind_reply(request: &Request, reply: &Value) -> Result<Value, &'stati
                 ("qualification_required", "The host policy does not qualify this Genesis binding."),
             (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
                 ("authorization_required", "A matching one-use host grant is required for Genesis binding."),
-            _ => return Err(UNCERTAIN),
+            _ => return Err(GENESIS_BIND_UNCERTAIN),
         };
         return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
     }
     let result = &reply["result"];
     if result["bound"] != true || result["genesis_sha256"] != request.parameters["genesis_sha256"] {
-        return Err(UNCERTAIN);
+        return Err(GENESIS_BIND_UNCERTAIN);
     }
-    genesis_binding_reply(reply).map_err(|_| UNCERTAIN)
+    genesis_binding_reply(reply).map_err(|_| GENESIS_BIND_UNCERTAIN)
 }
 
 fn genesis_stage_policy_reply(reply: &Value) -> Result<Value, &'static str> {
@@ -1011,7 +1077,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
     request.validate()?;
     let wire=request.canonical().to_string();
     let deadline=if request.operation == "vpn_enroll" { 240 } else { 180 };
-    let value=exchange(target,wire.as_bytes(),deadline,control_dir,known_hosts).await?;
+    let value=exchange(target,wire.as_bytes(),deadline,control_dir,known_hosts,request.operation=="genesis_bind").await?;
     let result=match request.operation.as_str() {
         "health" => health_reply(&value),
         "diagnostics" => crate::node_diagnostics::reply(&value),
@@ -1039,7 +1105,7 @@ pub(super) async fn execute_genesis_stage_locked(target:&Target,wire:&str,contro
     _serial:&tokio::sync::MutexGuard<'_, ()>) -> Result<Value,String> {
     // Controller counts the trailing LF in the full staging wire limit.
     if wire.is_empty() || wire.len() >= GENESIS_STAGE_WIRE_LIMIT { return Err("The exact Genesis request exceeds its encoded byte limit.".into()); }
-    exchange(target,wire.as_bytes(),180,control_dir,None).await
+    exchange(target,wire.as_bytes(),180,control_dir,None,true).await
 }
 
 pub(super) async fn execute_custody_receipt_raw_locked(target:&Target,request:&Request,control_dir:&Path,
@@ -1048,10 +1114,10 @@ pub(super) async fn execute_custody_receipt_raw_locked(target:&Target,request:&R
     if !matches!(request.operation.as_str(),"genesis_binding_preflight"|"formation_status") || request.validate()? {
         return Err("Unsupported custody receipt read.".into());
     }
-    exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None).await
+    exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None,false).await
 }
 
-async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known_hosts:Option<&Path>) -> Result<Value,String> {
+async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known_hosts:Option<&Path>,genesis_mutation:bool) -> Result<Value,String> {
     target.validate()?;
     if !cfg!(unix) { return Err("This Portal platform has no qualified native controller transport.".into()); }
     let mut command = if target.kind=="local" {
@@ -1075,7 +1141,8 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         if bytes.len()>LIMIT as usize { return Err("Controller response exceeds safe limit."); }
         let status=child.wait().await.map_err(|_|"Controller did not finish.")?;
         if !status.success() { return Err("Controller connection failed. Check enrolled target, pinned SSH identity, agent authentication and restricted sudo policy."); }
-        let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Controller returned an invalid response.")?;
+        let decoded=if genesis_mutation {decode_genesis_mutation_reply(&bytes)} else {serde_json::from_slice(&bytes)};
+        let value:Value=decoded.map_err(|_|"Controller returned an invalid response.")?;
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
         Ok(value)
     }).await;
@@ -1698,6 +1765,61 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         let read=Request{version:1,operation:"health".into(),parameters:json!({})};
         assert!(GenesisBindingReview::for_request(&read,Some(review)).is_err());
         assert!(GenesisBindingReview::for_request(&read,None).unwrap().is_none());
+    }
+
+    #[test] fn genesis_bind_refusals_require_the_exact_owner_envelope() {
+        let request=Request{version:1,operation:"genesis_bind".into(),parameters:json!({"genesis_sha256":"a".repeat(64)})};
+        let refusal=json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Host authorization expired or differs"}});
+        assert_eq!(genesis_bind_reply(&request,&refusal).unwrap()["ok"],false);
+        for (path,value) in [("/version",json!(2)),("/ok",json!("false")),("/error/message",json!("private fixture"))] {
+            let mut malformed=refusal.clone();
+            *malformed.pointer_mut(path).unwrap()=value;
+            assert_eq!(genesis_bind_reply(&request,&malformed),Err(GENESIS_BIND_UNCERTAIN));
+        }
+        let mut extra_error=refusal.clone();
+        extra_error["error"]["detail"]=json!("private fixture");
+        let mut extra_reply=refusal;
+        extra_reply["result"]=Value::Null;
+        let mut extra_success=genesis_binding_fixture(true);
+        extra_success["error"]=Value::Null;
+        for malformed in [extra_error,extra_reply,extra_success] {
+            assert_eq!(genesis_bind_reply(&request,&malformed),Err(GENESIS_BIND_UNCERTAIN));
+        }
+    }
+
+    #[test] fn genesis_bind_and_stage_reject_ambiguous_raw_response_keys() {
+        let valid=genesis_binding_fixture(true);
+        assert_eq!(decode_genesis_mutation_reply(valid.to_string().as_bytes()).unwrap(),valid);
+        for wire in [
+            r#"{"version":1,"ok":true,"o\u006b":false,"error":{"code":"x","message":"y"}}"#,
+            r#"{"version":1,"ok":false,"error":{"code":"x","message":"old","message":"new"}}"#,
+            r#"{"version":1,"ok":true,"result":{"staged":false,"staged":true}}"#,
+            r#"{"version":1,"ok":true,"result":{"bound":false,"boun\u0064":true}}"#,
+        ] {
+            assert!(decode_genesis_mutation_reply(wire.as_bytes()).is_err());
+        }
+    }
+
+    #[test] fn genesis_stage_and_bind_target_gate_requires_exact_distinct_owner_capabilities() {
+        let stage=|operation,kind| json!({"operation":operation,"kind":kind,"available":true,"blocker":null});
+        let controller=|operations|json!({"version":1,"ok":true,"result":{"controllerVersion":1,"platform":"linux",
+            "architecture":"x86_64","root":ROOT,"installed":true,"localValidatorSupported":true,
+            "communityEnrollment":false,"operations":operations}});
+        let stage_ops=vec![stage("genesis_stage","mutation"),stage("formation_status","read"),stage("genesis_stage_preflight","read")];
+        let stage_report=controller(stage_ops.clone());
+        assert_eq!(require_genesis_target(&stage_report,"genesis_stage"),Ok(()));
+        assert!(require_genesis_target(&stage_report,"genesis_bind").is_err());
+        assert_eq!(require_genesis_target(&controller(vec![stage("genesis_bind","mutation"),stage("genesis_binding_preflight","read")]),"genesis_bind"),Ok(()));
+        for (path,value) in [("/result/root",json!("/opt/synergy")),("/result/installed",json!(false)),
+            ("/result/communityEnrollment",json!(true)),("/result/operations/0/kind",json!("read")),
+            ("/result/operations/0/blocker",json!("private fixture")),("/result/operations/1/available",json!(false))] {
+            let mut malformed=stage_report.clone();
+            *malformed.pointer_mut(path).unwrap()=value;
+            assert!(require_genesis_target(&malformed,"genesis_stage").is_err(),"{path}");
+        }
+        let mut duplicate=stage_ops;
+        duplicate.push(stage("genesis_stage_preflight","read"));
+        assert!(require_genesis_target(&controller(duplicate),"genesis_stage").is_err());
     }
 
     #[cfg(unix)]

@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::{future::Future, path::{Path, PathBuf}};
 use tauri::Manager;
 use crate::{node_network,node_controller,node_bootstrap,request_journal};
-use crate::genesis_stage::{GenesisStageReview, PreparedGenesisStage, INPUTS as GENESIS_INPUTS};
+use crate::genesis_stage::{GenesisStageReview, PreparedGenesisStage, GENESIS_STAGE_UNCERTAIN, INPUTS as GENESIS_INPUTS};
 use crate::request_journal::CustodyReceiptKind;
 #[tauri::command]
 pub fn portal_nodenetwork_requests(window:tauri::WebviewWindow,app:tauri::AppHandle)->Result<Value,String>{
@@ -141,7 +141,7 @@ pub async fn portal_nodenetwork_stage_genesis(window:tauri::WebviewWindow,app:ta
  let Some(prepared)=pick_genesis_stage_inputs(window.clone()).await? else {return Ok(None)};
  review.matches_preparation(&prepared)?;
  let details=review.confirmation_details(&prepared);
- let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: genesis_stage\n{details}\n\nThis stages three public files on the selected host. The controller requires a matching one-use grant. Binding and validator startup are separate operations.",target.label());
+ let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: genesis_stage\n{details}\n\nThis stages three public files on the selected host. Portal rechecks controller qualification, pending formation and public input pins after confirmation. The controller requires a matching one-use grant. Binding and validator startup are separate operations.",target.label());
  let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title("Authorize Genesis staging")
   .buttons(MessageDialogButtons::OkCancelCustom("Stage public Genesis files once".into(),"Cancel".into())).blocking_show())
   .await.map_err(|_|"Genesis staging confirmation did not finish.")?;
@@ -163,14 +163,18 @@ async fn dispatch_reviewed_genesis_stage<Read,Stage>(target:&node_controller::Ta
 where Read:Future<Output=Result<Value,String>>,Stage:Future<Output=Result<Value,String>> {
  review.matches_preparation(&prepared)?;
  let query=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
+ let current_target=read(query("target")).await.map_err(|_|"The controller could not recheck the selected target before Genesis staging.")?;
+ node_controller::require_genesis_target(&current_target,"genesis_stage")?;
  let formation=read(query("formation_status")).await
   .map_err(|_|"The controller could not recheck the prepared formation before Genesis staging.")?;
  review.require_current_formation(&formation)?;
  let policy=read(query("genesis_stage_preflight")).await
   .map_err(|_|"The controller could not recheck the reviewed Genesis staging policy.")?;
  review.require_current_policy(&policy)?;
+ let current_target=read(query("target")).await.map_err(|_|"The controller could not recheck Genesis staging qualification after reviewing custody and pins.")?;
+ node_controller::require_genesis_target(&current_target,"genesis_stage")?;
  let dispatch=request_journal::Dispatch::begin_digest(journal,&target.journal_identity(),"genesis_stage",prepared.request_sha256)?;
- let outcome=stage(prepared.wire).await.and_then(|reply|review.stage_reply(&reply));
+ let outcome=stage(prepared.wire).await.map_err(|_|GENESIS_STAGE_UNCERTAIN.to_owned()).and_then(|reply|review.stage_reply(&reply));
  dispatch.finish(&outcome).map_err(|_|"Genesis staging outcome could not be saved. Review the target before another change.")?;
  outcome
 }
@@ -191,6 +195,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let effect=match request.operation.as_str() {
    "install"=>"This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations.",
    "commission"=>"This commissions the installed validator using inputs and custody already staged on the host. Portal rechecks the installed target and, for pending formation, bound VPN connectivity and matching Genesis custody after confirmation. The controller can initialize node data and remove staged inputs and temporary custody. A matching one-use host grant is required. Service startup and production approval are separate.",
+   "genesis_bind"=>"This binds the reviewed validator custody to the staged Genesis. Portal rechecks controller qualification and the reviewed unbound scope after confirmation. The controller requires a matching one-use host grant. Commissioning and service startup are separate operations.",
    "identity_generate"|"formation_prepare"=>"This prepares host-local validator custody from the reviewed inputs. Portal rechecks the installed controller and the exact preflight after confirmation. A matching one-use host grant is required. Validator membership is a separate operation.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
    "start"|"restart"=>"This requests a service start or restart on the selected validator. Portal rechecks controller qualification and current VPN readiness after confirmation. A matching one-use host grant is required. Read target health separately after the request.",
@@ -314,12 +319,16 @@ where Fut:Future<Output=Result<Value,String>> {
 async fn dispatch_reviewed_genesis_binding<Fut>(target:&node_controller::Target,request:&node_controller::Request,
  review:&node_controller::GenesisBindingReview,journal:&Path,mut execute:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
 where Fut:Future<Output=Result<Value,String>> {
- let preflight=node_controller::Request{version:1,operation:"genesis_binding_preflight".into(),parameters:serde_json::json!({})};
- let fresh=execute(preflight).await
+ let read=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
+ let current_target=execute(read("target")).await.map_err(|_|"The controller could not recheck the selected target before Genesis binding.")?;
+ node_controller::require_genesis_target(&current_target,"genesis_bind")?;
+ let fresh=execute(read("genesis_binding_preflight")).await
   .map_err(|_|"The controller could not recheck the reviewed unbound Genesis scope. Review it again before binding.")?;
  review.require_unbound(request,&fresh)?;
+ let current_target=execute(read("target")).await.map_err(|_|"The controller could not recheck Genesis binding qualification after reviewing custody.")?;
+ node_controller::require_genesis_target(&current_target,"genesis_bind")?;
  let dispatch=request_journal::Dispatch::begin(journal,&target.journal_identity(),&request.operation,&request.canonical())?;
- let result=execute(request.clone()).await
+ let result=execute(request.clone()).await.map_err(|_|node_controller::GENESIS_BIND_UNCERTAIN.to_owned())
   .and_then(|reply|review.verify_acknowledgement(request,reply));
  dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;
  result
@@ -391,6 +400,14 @@ mod tests {
    "schema":"nodenetwork-genesis-binding-v1","network_id":"fixture-formation","chain_id":"99999",
    "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true,"address":"synv1".to_owned()+&"a".repeat(36),
    "membership_verified":true,"bound":bound,"stage_receipt_verified":false}})
+ }
+
+ fn genesis_target_capability(operation:&str)->Value {
+  let reads:&[&str]=if operation=="genesis_stage" {&["formation_status","genesis_stage_preflight"]} else {&["genesis_binding_preflight"]};
+  let mut operations=vec![json!({"operation":operation,"kind":"mutation","available":true,"blocker":null})];
+  operations.extend(reads.iter().map(|name|json!({"operation":name,"kind":"read","available":true,"blocker":null})));
+  json!({"version":1,"ok":true,"result":{"controllerVersion":1,"root":ROOT,"installed":true,
+   "platform":"linux","architecture":"x86_64","localValidatorSupported":true,"communityEnrollment":false,"operations":operations}})
  }
 
  fn reviewed_install_fixture() -> (Target, Request, PathBuf, Value, Value, Value) {
@@ -1665,21 +1682,91 @@ mod tests {
  #[test]
  fn genesis_stage_command_stops_after_changed_native_policy_before_creating_journal() {
   let (target,review,prepared,formation,mut policy,journal)=genesis_stage_fixture();
+  let capability=genesis_target_capability("genesis_stage");
   policy["result"]["authority_sha256"]=json!("e".repeat(64));
   let mut reads=Vec::new();
   let refused=tauri::async_runtime::block_on(dispatch_reviewed_genesis_stage(&target,&review,prepared,&journal,|request| {
    reads.push(request.canonical());
-   std::future::ready(Ok(if request.operation=="formation_status" {formation.clone()} else {policy.clone()}))
+   std::future::ready(Ok(match request.operation.as_str() {
+    "target"=>capability.clone(),"formation_status"=>formation.clone(),"genesis_stage_preflight"=>policy.clone(),_=>panic!("unexpected read"),
+   }))
   },|_|std::future::ready(Err("Unexpected staging transport".into()))));
   assert!(refused.unwrap_err().contains("differs from the reviewed address or input pins"));
-  assert_eq!(reads,vec![json!({"version":1,"operation":"formation_status","parameters":{}}),
-   json!({"version":1,"operation":"genesis_stage_preflight","parameters":{}})]);
+  assert_eq!(reads,["target","formation_status","genesis_stage_preflight"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}})));
   assert!(!journal.exists());
+ }
+
+ #[test]
+ fn genesis_stage_command_rechecks_installed_qualifications_before_and_after_review() {
+  for late in [false,true] {
+   let (target,review,prepared,formation,policy,journal)=genesis_stage_fixture();
+   let capability=genesis_target_capability("genesis_stage");
+   let mut retired=capability.clone();
+   retired["result"]["operations"][0]["available"]=json!(false);
+   let mut reads=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_stage(&target,&review,prepared,&journal,|query| {
+    reads.push(query.canonical());
+    std::future::ready(Ok(match query.operation.as_str() {
+     "target" if (reads.len()>1)==late=>retired.clone(),"target"=>capability.clone(),
+     "formation_status"=>formation.clone(),"genesis_stage_preflight"=>policy.clone(),_=>panic!("unadmitted read"),
+    }))
+   },|_| -> std::future::Ready<Result<Value,String>> {panic!("staging must not dispatch after lost qualification")}));
+   let expected=["target","formation_status","genesis_stage_preflight","target"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}}));
+   assert_eq!(reads,&expected[..if late {4}else{1}]);
+   assert!(outcome.unwrap_err().contains("qualified Genesis operation"));
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn genesis_stage_command_settles_exact_success_and_pregrant_refusal_only() {
+  for (variant,observed) in [("success",Some(true)),("refusal",Some(false)),("extra-success",None),
+   ("extra-error",None),("extra-refusal",None),("wrong-version",None),("unrecognized-refusal",None),("transport",None)] {
+   let (target,review,prepared,formation,policy,journal)=genesis_stage_fixture();
+   let capability=genesis_target_capability("genesis_stage");
+   let digest=prepared.request_sha256.clone();
+   let mut success=policy.clone();
+   success["result"]["schema"]=json!("nodenetwork-genesis-stage-v1");
+   success["result"]["request_sha256"]=json!(digest);
+   success["result"]["genesis_authority_verified"]=json!(true);
+   success["result"]["membership_verified"]=json!(true);
+   success["result"]["staged"]=json!(true);
+   let mut refusal=json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Host authorization expired or differs"}});
+   let reply=match variant {
+    "success"=>Ok(success),"refusal"=>Ok(refusal),
+    "extra-success"=>{success["detail"]=json!("private fixture");Ok(success)},
+    "extra-error"=>{refusal["error"]["detail"]=json!("private fixture");Ok(refusal)},
+    "extra-refusal"=>{refusal["detail"]=json!("private fixture");Ok(refusal)},
+    "wrong-version"=>{refusal["version"]=json!(2);Ok(refusal)},
+    "unrecognized-refusal"=>{refusal["error"]["message"]=json!("private fixture");Ok(refusal)},
+    "transport"=>Err("private fixture".into()),_=>unreachable!(),
+   };
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_stage(&target,&review,prepared,&journal,|query| {
+    std::future::ready(Ok(match query.operation.as_str() {
+     "target"=>capability.clone(),"formation_status"=>formation.clone(),"genesis_stage_preflight"=>policy.clone(),_=>panic!("unadmitted read"),
+    }))
+   },|_|std::future::ready(reply)));
+   let history=request_journal::inspect(&journal).unwrap();
+   let row=&history["records"][0];
+   assert_eq!(row["response_ok"],json!(observed),"{variant}");
+   assert_eq!(row["request_digest"],digest);
+   match observed {
+    Some(ok)=>assert_eq!(outcome.unwrap()["ok"],ok),
+    None=>{
+     assert_eq!(outcome.unwrap_err(),GENESIS_STAGE_UNCERTAIN);
+     assert!(request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),"genesis_stage",digest).is_err());
+    },
+   }
+   assert_eq!(row["state"],if observed.is_some(){"response_received"}else{"uncertain"});
+   assert!(!history.to_string().contains("private fixture"));
+   std::fs::remove_dir_all(journal).unwrap();
+  }
  }
 
  #[test]
  fn genesis_stage_command_fences_scope_mismatch_and_sends_only_exact_native_wire() {
   let (target,review,prepared,formation,policy,journal)=genesis_stage_fixture();
+  let capability=genesis_target_capability("genesis_stage");
   let digest=prepared.request_sha256.clone();
   let exact=prepared.wire.clone();
   let mut receipt=policy.clone();
@@ -1691,8 +1778,12 @@ mod tests {
   let valid=review.stage_reply(&receipt).unwrap();
   assert!(valid["result"].get("request_sha256").is_none());
   receipt["result"]["address"]=json!("synv1".to_owned()+&"b".repeat(36));
+  let mut reads=Vec::new();
   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_stage(&target,&review,prepared,&journal,|request| {
-   std::future::ready(Ok(if request.operation=="formation_status" {formation.clone()} else {policy.clone()}))
+   reads.push(request.canonical());
+   std::future::ready(Ok(match request.operation.as_str() {
+    "target"=>capability.clone(),"formation_status"=>formation.clone(),"genesis_stage_preflight"=>policy.clone(),_=>panic!("unexpected read"),
+   }))
   },|wire|{
    assert_eq!(wire,exact);
    let object:Value=serde_json::from_str(&wire).unwrap();
@@ -1701,6 +1792,7 @@ mod tests {
    std::future::ready(Ok(receipt))
   }));
   assert!(outcome.unwrap_err().contains("outcome is uncertain"));
+  assert_eq!(reads,["target","formation_status","genesis_stage_preflight","target"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}})));
   let history=request_journal::inspect(&journal).unwrap();
   assert_eq!(history["records"][0]["state"],"uncertain");
   assert_eq!(history["records"][0]["request_digest"],digest);
@@ -1712,32 +1804,87 @@ mod tests {
  #[test]
  fn genesis_bind_command_rechecks_scope_before_opening_the_journal_or_dispatching() {
   let (target,request,review,journal)=genesis_bind_scope_fixture();
+  let capability=genesis_target_capability("genesis_bind");
   let mut calls=Vec::new();
   let mut drift=genesis_binding_projection(false);
   drift["result"]["address"]=json!("synv1".to_owned()+&"b".repeat(36));
   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_binding(&target,&request,&review,&journal, |submitted| {
    calls.push(submitted.canonical());
-   std::future::ready(Ok(drift.clone()))
+   std::future::ready(Ok(if submitted.operation=="target" {capability.clone()} else {drift.clone()}))
   }));
   assert!(outcome.unwrap_err().contains("differs from the reviewed unbound Genesis scope"));
-  assert_eq!(calls,vec![json!({"version":1,"operation":"genesis_binding_preflight","parameters":{}})]);
+  assert_eq!(calls,["target","genesis_binding_preflight"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}})));
   assert!(!journal.exists());
+ }
+
+ #[test]
+ fn genesis_bind_command_rechecks_installed_qualifications_before_and_after_review() {
+  for late in [false,true] {
+   let (target,request,review,journal)=genesis_bind_scope_fixture();
+   let capability=genesis_target_capability("genesis_bind");
+   let mut retired=capability.clone();
+   retired["result"]["operations"][1]["kind"]=json!("mutation");
+   let mut calls=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_binding(&target,&request,&review,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(Ok(match query.operation.as_str() {
+     "target" if (calls.len()>1)==late=>retired.clone(),"target"=>capability.clone(),
+     "genesis_binding_preflight"=>genesis_binding_projection(false),_=>panic!("binding must not dispatch after lost qualification"),
+    }))
+   }));
+   let expected=["target","genesis_binding_preflight","target"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}}));
+   assert_eq!(calls,&expected[..if late {3}else{1}]);
+   assert!(outcome.unwrap_err().contains("qualified Genesis operation"));
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn genesis_bind_command_accepts_inherited_staging_and_fences_transport_failures() {
+  for transport_failed in [false,true] {
+   let (target,request,review,journal)=genesis_bind_scope_fixture();
+   let capability=genesis_target_capability("genesis_bind");
+   let result=tauri::async_runtime::block_on(dispatch_reviewed_genesis_binding(&target,&request,&review,&journal,|query| {
+    std::future::ready(match query.operation.as_str() {
+     "target"=>Ok(capability.clone()),"genesis_binding_preflight"=>Ok(genesis_binding_projection(false)),
+     "genesis_bind" if transport_failed=>Err("private fixture".into()),
+     "genesis_bind"=>Ok(genesis_binding_projection(true)),_=>panic!("unexpected read"),
+    })
+   }));
+   let history=request_journal::inspect(&journal).unwrap();
+   let row=&history["records"][0];
+   assert_eq!(row["state"],if transport_failed {"uncertain"} else {"response_received"});
+   assert_eq!(row["request_digest"],request.approval_id());
+   if transport_failed {
+    assert_eq!(result.unwrap_err(),node_controller::GENESIS_BIND_UNCERTAIN);
+    assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),&request.operation,&request.canonical()).is_err());
+   } else {
+    let result=result.unwrap();
+    assert_eq!(result["result"]["bound"],true);
+    assert_eq!(result["result"]["stage_receipt_verified"],false);
+   }
+   assert!(!history.to_string().contains("private fixture"));
+   std::fs::remove_dir_all(journal).unwrap();
+  }
  }
 
  #[test]
  fn genesis_bind_command_preserves_exact_wire_and_journals_validly_typed_scope_drift_as_uncertain() {
   let (target,request,review,journal)=genesis_bind_scope_fixture();
+  let capability=genesis_target_capability("genesis_bind");
   let mut calls=Vec::new();
   let mut drift=genesis_binding_projection(true);
   drift["result"]["chain_id"]=json!("1266");
   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_binding(&target,&request,&review,&journal, |submitted| {
    calls.push(submitted.canonical());
-   let report=if submitted.operation=="genesis_binding_preflight" {genesis_binding_projection(false)} else {drift.clone()};
+   let report=match submitted.operation.as_str() {
+    "target"=>capability.clone(),"genesis_binding_preflight"=>genesis_binding_projection(false),"genesis_bind"=>drift.clone(),_=>panic!("unexpected read"),
+   };
    std::future::ready(Ok(report))
   }));
   assert!(outcome.unwrap_err().contains("outcome is uncertain"));
-  assert_eq!(calls,vec![json!({"version":1,"operation":"genesis_binding_preflight","parameters":{}}),request.canonical()]);
-  assert_eq!(calls[1].to_string(),format!(r#"{{"operation":"genesis_bind","parameters":{{"genesis_sha256":"{}"}},"version":1}}"#,"a".repeat(64)));
+  assert_eq!(calls[..3],["target","genesis_binding_preflight","target"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}})));
+  assert_eq!(calls[3].to_string(),format!(r#"{{"operation":"genesis_bind","parameters":{{"genesis_sha256":"{}"}},"version":1}}"#,"a".repeat(64)));
   let history=request_journal::inspect(&journal).unwrap();
   assert_eq!(history["records"][0]["state"],"uncertain");
   assert_eq!(history["records"][0]["request_digest"],"0e8a5f309948535cbc5fa7fdb13f298d053a1d964d673646d247a1008649463e");
