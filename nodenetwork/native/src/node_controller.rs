@@ -8,6 +8,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub const ROOT: &str = "/opt/Synergy";
 const CONTROLLER: &str = "/opt/Synergy/tmp/controller/controller.py";
 const LIMIT: u64 = 1_000_000;
+const IDENTITY_GENERATION_UNCERTAIN: &str = "Validator identity preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
+const FORMATION_PREPARATION_UNCERTAIN: &str = "Formation preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
 pub(super) const GENESIS_STAGE_WIRE_LIMIT: usize = 12 * 1024 * 1024;
 pub(super) const COMMISSION_UNCERTAIN: &str = "Validator commissioning outcome is uncertain. Inspect the selected target and its request history before another change.";
 pub(super) const REGISTER_UNCERTAIN: &str = "Service registration outcome is uncertain. Inspect the selected target before another change.";
@@ -21,6 +23,80 @@ pub struct Target { pub kind: String, pub host: Option<String>, pub port: Option
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request { pub version: u8, pub operation: String, pub parameters: Value }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustodyPreparationReview {
+    network_id: String,
+    chain_id: String,
+    formation_id: Option<String>,
+}
+
+impl CustodyPreparationReview {
+    pub(super) fn for_request(request: &Request, review: Option<Self>) -> Result<Option<Self>, String> {
+        if !matches!(request.operation.as_str(), "identity_generate" | "formation_prepare") {
+            return if review.is_none() { Ok(None) } else { Err("Custody preparation review is only supported for preparation operations.".into()) };
+        }
+        let missing = "The exact reviewed network, chain ID and applicable formation ID are required for custody preparation.";
+        let review = review.ok_or(missing)?;
+        let formation_scope = match request.operation.as_str() {
+            "identity_generate" => review.formation_id.is_none(),
+            _ => review.formation_id.as_deref().is_some_and(|id| {
+                id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    && id.bytes().any(|byte| byte != b'0')
+            }),
+        };
+        if !formation_scope || !validator_network_id(&review.network_id) || !validator_chain_id(&review.chain_id) {
+            return Err(missing.into());
+        }
+        Ok(Some(review))
+    }
+
+    pub(super) fn preflight_operation(&self) -> &'static str {
+        if self.formation_id.is_some() { "formation_preflight" } else { "identity_preflight" }
+    }
+
+    fn digest_key(&self) -> &'static str {
+        if self.formation_id.is_some() { "formation_sha256" } else { "genesis_sha256" }
+    }
+
+    pub(super) fn confirmation_details(&self, request: &Request) -> String {
+        let mut details = format!("\nNetwork incarnation: {}\nChain ID: {}", self.network_id, self.chain_id);
+        let digest = request.parameters[self.digest_key()].as_str().unwrap_or_default();
+        if let Some(id) = &self.formation_id {
+            details.push_str(&format!("\nFormation ID: {id}\nFormation context SHA-256: {digest}"));
+        } else {
+            details.push_str(&format!("\nSigned Genesis SHA-256: {digest}"));
+        }
+        details
+    }
+
+    fn matches_scope(&self, request: &Request, result: &Value) -> bool {
+        let key = self.digest_key();
+        result["network_id"] == self.network_id && result["chain_id"] == self.chain_id
+            && result[key] == request.parameters[key]
+            && self.formation_id.as_deref().is_none_or(|id| result["formation_id"] == id)
+    }
+
+    pub(super) fn require_current_preflight(&self, request: &Request, reply: &Value) -> Result<(), &'static str> {
+        let evidence = preparation_reply(self.preflight_operation(), reply)?;
+        if self.matches_scope(request, &evidence["result"]) { return Ok(()); }
+        Err("The current controller preflight differs from the reviewed custody scope. Review the preparation inputs again.")
+    }
+
+    pub(super) fn uncertain_message(&self) -> &'static str {
+        if self.formation_id.is_some() { FORMATION_PREPARATION_UNCERTAIN } else { IDENTITY_GENERATION_UNCERTAIN }
+    }
+
+    pub(super) fn verify_acknowledgement(&self, request: &Request, reply: &Value) -> Result<Value, &'static str> {
+        let projection = match self.formation_id {
+            Some(_) => formation_preparation_reply(request, reply)?,
+            None => identity_generation_reply(request, reply)?,
+        };
+        if projection["ok"] == false || self.matches_scope(request, &projection["result"]) { return Ok(projection); }
+        Err(self.uncertain_message())
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -244,6 +320,11 @@ pub(super) fn require_staged_install_target(reply: &Value) -> Result<(), &'stati
 pub(super) fn require_commission_target(reply: &Value) -> Result<(), &'static str> {
     qualified_software_target(reply, true, &[("commission", "mutation")]).then_some(())
         .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified validator commissioning.")
+}
+
+pub(super) fn require_custody_preparation_target(request: &Request, review: &CustodyPreparationReview, reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, true, &[(&request.operation, "mutation"), (review.preflight_operation(), "read")]).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with the qualified preparation and preflight operations.")
 }
 
 pub(super) fn require_service_registration_target(reply: &Value) -> Result<(), &'static str> {
@@ -679,9 +760,11 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
 }
 
 fn identity_generation_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
-    const UNCERTAIN: &str = "Validator identity preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
+    const UNCERTAIN: &str = IDENTITY_GENERATION_UNCERTAIN;
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) { return Err(UNCERTAIN); }
     if reply["ok"] == false {
         let error = &reply["error"];
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) { return Err(UNCERTAIN); }
         let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
             (Some("operation_refused"), Some("The reviewed Genesis artifact changed; inspect it again")) =>
                 ("operation_refused", "The signed Genesis differs from the reviewed input. Check existing-network inputs again."),
@@ -704,9 +787,11 @@ fn identity_generation_reply(request: &Request, reply: &Value) -> Result<Value, 
 }
 
 fn formation_preparation_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
-    const UNCERTAIN: &str = "Formation preparation outcome is uncertain. Preserve pending custody and read its status before another change.";
+    const UNCERTAIN: &str = FORMATION_PREPARATION_UNCERTAIN;
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) { return Err(UNCERTAIN); }
     if reply["ok"] == false {
         let error = &reply["error"];
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) { return Err(UNCERTAIN); }
         let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
             (Some("operation_refused"), Some("Reviewed formation context changed")) =>
                 ("operation_refused", "The formation context differs from the reviewed input. Check formation inputs again."),
@@ -790,6 +875,9 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
     if request.operation == "genesis_bind" {
         return Err("Use the reviewed native Genesis binding operation.".into());
     }
+    if matches!(request.operation.as_str(), "identity_generate" | "formation_prepare") {
+        return Err("Use the reviewed native custody preparation operation.".into());
+    }
     let serial=SERIAL.lock().await;
     execute_locked(&target,&request,control_dir,known_hosts,&serial).await
 }
@@ -819,8 +907,6 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "genesis_bind" => genesis_bind_reply(request, &value),
         "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
         "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
-        "identity_generate" => identity_generation_reply(request, &value),
-        "formation_prepare" => formation_preparation_reply(request, &value),
         _ => Ok(value),
     };
     result.map_err(String::from)
@@ -1263,7 +1349,7 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         let result=json!({"schema":"nodenetwork-formation-v1","pending":true,"network_id":"fixture-formation","chain_id":"1266",
             "formation_sha256":pin,"formation_id":"b".repeat(64),"request_sha256":sha,"address":"synv1".to_owned()+&"a".repeat(36),
             "possession_verified":true,"membership_granted":false});
-        let wrap=|result|json!({"version":1,"ok":true,"result":result,"private":"fixture outer detail"});
+        let wrap=|result|json!({"version":1,"ok":true,"result":result});
         assert_eq!(formation_preparation_reply(&request,&wrap(result.clone())),Ok(json!({"version":1,"ok":true,"result":result})));
         for (key,value) in [("formation_sha256",json!("e".repeat(64))),("request_sha256",json!("b".repeat(64))),
             ("pending",json!(false)),("membership_granted",json!(true)),("possession_verified",json!(false)),("registration_json",json!("fixture"))] {
@@ -1318,7 +1404,7 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         let public=json!({"network_id":"fixture-testnet","chain_id":"1266","genesis_sha256":pin,
             "genesis_authority_verified":true,"address":"synv1".to_owned()+&"a".repeat(36),
             "possession_verified":true,"membership_granted":false});
-        let wrap=|result| json!({"version":1,"ok":true,"result":result,"private":"fixture outer detail"});
+        let wrap=|result| json!({"version":1,"ok":true,"result":result});
         assert_eq!(identity_generation_reply(&request,&wrap(public.clone())),Ok(json!({"version":1,"ok":true,"result":public})));
         for (key,value) in [("genesis_sha256",json!("b".repeat(64))),("chain_id",json!("1266\n")),("possession_verified",json!(false)),
             ("genesis_authority_verified",json!(false)),("membership_granted",json!(true)),("unlock",json!("fixture"))] {

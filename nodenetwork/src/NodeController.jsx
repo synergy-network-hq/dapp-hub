@@ -203,7 +203,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   try{
    const nativeBindingReview=bindsGenesis?{networkId:bindingReview.networkId,chainId:bindingReview.chainId,
     validatorAddress:bindingReview.validatorAddress}:undefined;
-   const raw=stagesGenesis?await nodeNetworkStageGenesis(target,submitted):await nodeNetworkController(target,operation,submitted,nativeBindingReview);
+   const nativePreparationReview=preparesCustody?{networkId:preparesCustody.review.networkId,chainId:preparesCustody.review.chainId,
+    ...(operation==='formation_prepare'?{formationId:preparesCustody.review.formationId}:{})}:undefined;
+   const raw=stagesGenesis?await nodeNetworkStageGenesis(target,submitted)
+    :await nodeNetworkController(target,operation,submitted,nativeBindingReview,nativePreparationReview);
    if(stagesGenesis&&raw===null)return;
    let response=raw;
    if(isPreflight)response=installPreflightObservation(raw,submitted,target);

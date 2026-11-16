@@ -107,19 +107,22 @@ where Read:Future<Output=Result<Value,String>>,Stage:Future<Output=Result<Value,
 }
 #[tauri::command]
 pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,request:node_controller::Request,
- binding_review:Option<node_controller::GenesisBindingReview>)->Result<Value,String>{
+ binding_review:Option<node_controller::GenesisBindingReview>,preparation_review:Option<node_controller::CustodyPreparationReview>)->Result<Value,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;
  target.validate()?;
  let mutation=request.validate()?;
  let binding_review=node_controller::GenesisBindingReview::for_request(&request,binding_review)?;
+ let preparation_review=node_controller::CustodyPreparationReview::for_request(&request,preparation_review)?;
  if mutation {
   let title=format!("Authorize NodeNetwork {}",request.operation);
   let reviewed=binding_review.as_ref().map(|review|review.confirmation_details(&request))
+   .or_else(||preparation_review.as_ref().map(|review|review.confirmation_details(&request)))
    .unwrap_or_else(||format!("\nParameters: {}",request.parameters));
   let effect=match request.operation.as_str() {
    "install"=>"This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations.",
    "commission"=>"This commissions the installed validator using inputs and custody already staged on the host. The controller can initialize node data and remove the staged inputs and temporary custody after applying them. A matching one-use host grant is required. Service startup and production approval are separate.",
+   "identity_generate"|"formation_prepare"=>"This prepares host-local validator custody from the reviewed inputs. Portal rechecks the installed controller and the exact preflight after confirmation. A matching one-use host grant is required. Validator membership is a separate operation.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
    "upgrade"=>"This checks and applies the staged software release. The controller can resume its recorded interrupted upgrade with the same exact package. A matching one-use host grant is required. This action does not start consensus or automatically restart services. Confirm maintenance scope and downtime with the operator.",
    "uninstall"=>"This deletes the selected /opt/Synergy installation, including keys, data and signing-safety state. The controller can stop and remove attributed services and remove its dedicated host account. A matching one-use host grant is required. Arrange file retention, VPN retirement and chain exit separately.",
@@ -144,6 +147,14 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
   return dispatch_reviewed_genesis_binding(&target,&request,&review,&journal, |request| {
+   let (target,directory,serial)=(&target,&directory,&serial);
+   async move {node_controller::execute_locked(target,&request,directory,None,serial).await}
+  }).await;
+ }
+ if let Some(review)=preparation_review {
+  let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
+  let serial=node_controller::SERIAL.lock().await;
+  return dispatch_reviewed_custody_preparation(&target,&request,&review,&journal,|request| {
    let (target,directory,serial)=(&target,&directory,&serial);
    async move {node_controller::execute_locked(target,&request,directory,None,serial).await}
   }).await;
@@ -201,6 +212,22 @@ where Fut:Future<Output=Result<Value,String>> {
  let result=execute(request.clone()).await
   .and_then(|reply|review.verify_acknowledgement(request,reply));
  dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;
+ result
+}
+
+async fn dispatch_reviewed_custody_preparation<Fut>(target:&node_controller::Target,request:&node_controller::Request,
+ review:&node_controller::CustodyPreparationReview,journal:&Path,mut execute:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
+where Fut:Future<Output=Result<Value,String>> {
+ let read=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
+ let current_target=execute(read("target")).await.map_err(|_|"The controller could not recheck the selected target before custody preparation.")?;
+ node_controller::require_custody_preparation_target(request,review,&current_target)?;
+ let current_preflight=execute(read(review.preflight_operation())).await
+  .map_err(|_|"The controller could not recheck reviewed custody preparation inputs. Run preflight again.")?;
+ review.require_current_preflight(request,&current_preflight)?;
+ let dispatch=request_journal::Dispatch::begin(journal,&target.journal_identity(),&request.operation,&request.canonical())?;
+ let result=execute(request.clone()).await.map_err(|_|review.uncertain_message().into())
+  .and_then(|reply|review.verify_acknowledgement(request,&reply).map_err(String::from));
+ dispatch.finish(&result).map_err(|_|"Custody preparation outcome could not be saved. Inspect the target before another change.")?;
  result
 }
 #[tauri::command]
@@ -270,6 +297,154 @@ mod tests {
    "network_id":"fixture-network","chain_id":1266,"node_name":"fixture-node","package_sha256":"a".repeat(64),
    "package_files":{"bin/synergy-node":"b".repeat(64)},"host_integrations":[],"consensus_started":false}});
   (target,request,journal,staged,preflight,receipt)
+ }
+
+ fn reviewed_preparation_fixture(operation:&str)->(Target,Request,node_controller::CustodyPreparationReview,PathBuf,Value,Value,Value) {
+  let (target,_,journal,mut capability,_,_)=reviewed_install_fixture();
+  let formation=operation=="formation_prepare";
+  let pin="a".repeat(64);
+  let chain="18446744073709551615";
+  let network="fixture-network";
+  let formation_id="b".repeat(64);
+  let mut reviewed=json!({"networkId":network,"chainId":chain});
+  if formation {reviewed["formationId"]=json!(formation_id);}
+  let review=serde_json::from_value(reviewed).unwrap();
+  let mut preflight=json!({"network_id":network,"chain_id":chain});
+  let parameters=if formation {
+   preflight["schema"]=json!("nodenetwork-formation-v1");
+   preflight["formation_id"]=json!(formation_id);
+   preflight["formation_sha256"]=json!(pin);
+   json!({"formation_sha256":pin})
+  } else {
+   preflight["genesis_authority_verified"]=json!(true);
+   preflight["genesis_sha256"]=json!(pin);
+   json!({"genesis_sha256":pin})
+  };
+  let request=Request{version:1,operation:operation.into(),parameters};
+  let review=node_controller::CustodyPreparationReview::for_request(&request,Some(review)).unwrap().unwrap();
+  let mut receipt=preflight.clone();
+  receipt["address"]=json!("synv1".to_owned()+&"a".repeat(36));
+  receipt["possession_verified"]=json!(true);
+  receipt["membership_granted"]=json!(false);
+  if formation {
+   receipt["pending"]=json!(true);
+   receipt["request_sha256"]=json!(request.approval_id());
+  }
+  let wrap=|result|json!({"version":1,"ok":true,"result":result});
+  capability["result"]["installed"]=json!(true);
+  capability["result"]["operations"]=json!([{"operation":operation,"kind":"mutation","available":true,"blocker":null},
+   {"operation":review.preflight_operation(),"kind":"read","available":true,"blocker":null}]);
+  (target,request,review,journal,capability,wrap(preflight),wrap(receipt))
+ }
+
+ #[test]
+ fn reviewed_preparation_requires_the_operation_specific_scope_for_native_consent() {
+  use crate::node_controller::CustodyPreparationReview;
+  for operation in ["identity_generate","formation_prepare"] {
+   let (_,request,review,_,_,_,_)=reviewed_preparation_fixture(operation);
+   assert_eq!(request.validate(),Ok(true));
+   assert!(CustodyPreparationReview::for_request(&request,None).is_err());
+   let details=review.confirmation_details(&request);
+   assert!(details.contains("Network incarnation: fixture-network"));
+   assert!(details.contains("Chain ID: 18446744073709551615"));
+   let expected_digest_label=if operation=="formation_prepare" {"Formation context SHA-256"} else {"Signed Genesis SHA-256"};
+   assert!(details.contains(&format!("{expected_digest_label}: {}","a".repeat(64))));
+   assert_eq!(details.contains(&format!("Formation ID: {}","b".repeat(64))),operation=="formation_prepare");
+   let incorrect=serde_json::from_value(json!({"networkId":"fixture-network","chainId":"1266",
+    "formationId":if operation=="formation_prepare" {"0".repeat(64)} else {"b".repeat(64)}})).unwrap();
+   assert!(CustodyPreparationReview::for_request(&request,Some(incorrect)).is_err());
+   let other=Request{version:1,operation:"target".into(),parameters:json!({})};
+   assert!(CustodyPreparationReview::for_request(&other,Some(review)).is_err());
+  }
+ }
+
+ #[test]
+ fn reviewed_preparation_rechecks_target_and_exact_preflight_before_journaling() {
+  for operation in ["identity_generate","formation_prepare"] {
+   let (target,request,review,journal,capability,preflight,_)=reviewed_preparation_fixture(operation);
+   let preflight_name=review.preflight_operation();
+   let mut wrong_architecture=capability.clone();
+   wrong_architecture["result"]["architecture"]=json!("aarch64");
+   let mut stale_target=capability.clone();
+   stale_target["result"]["installed"]=json!(false);
+   let mut disabled_read=capability.clone();
+   disabled_read["result"]["operations"][1]["available"]=json!(false);
+   let mut duplicate=capability.clone();
+   let operations=duplicate["result"]["operations"].as_array_mut().unwrap();
+   operations.push(operations[0].clone());
+   for bad in [wrong_architecture,stale_target,disabled_read,duplicate] {
+    let mut calls=Vec::new();
+    let outcome=tauri::async_runtime::block_on(dispatch_reviewed_custody_preparation(&target,&request,&review,&journal,|query| {
+     calls.push(query.canonical());
+     std::future::ready(Ok(bad.clone()))
+    }));
+    assert!(outcome.unwrap_err().contains("qualified preparation and preflight"));
+    assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}})]);
+    assert!(!journal.exists());
+   }
+   let mut changes=vec![("network_id",json!("another-network")),("chain_id",json!("1266"))];
+   if operation=="formation_prepare" {
+    changes.extend([("formation_id",json!("c".repeat(64))),("formation_sha256",json!("d".repeat(64)))]);
+   } else {
+    changes.push(("genesis_sha256",json!("d".repeat(64))));
+   }
+   for (key,value) in changes {
+    let mut changed=preflight.clone();
+    changed["result"][key]=value;
+    let mut calls=Vec::new();
+    let outcome=tauri::async_runtime::block_on(dispatch_reviewed_custody_preparation(&target,&request,&review,&journal,|query| {
+     calls.push(query.canonical());
+     std::future::ready(Ok(if query.operation=="target" {capability.clone()} else {changed.clone()}))
+    }));
+    assert!(outcome.unwrap_err().contains("differs from the reviewed custody scope"));
+    assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),json!({"version":1,"operation":preflight_name,"parameters":{}})]);
+    assert!(!journal.exists());
+   }
+  }
+ }
+
+ #[test]
+ fn reviewed_preparation_requires_matching_public_receipt_and_keeps_uncertain_dispatch_fenced() {
+  for operation in ["identity_generate","formation_prepare"] {
+   let (target,request,review,journal,capability,preflight,receipt)=reviewed_preparation_fixture(operation);
+   let mut conflicting=receipt.clone();
+   let field=if operation=="formation_prepare" {"formation_id"} else {"network_id"};
+   conflicting["result"][field]=if operation=="formation_prepare" {json!("c".repeat(64))} else {json!("another-network")};
+   let mut extra=receipt.clone();
+   extra["private"]=json!("unreviewed");
+   let owner_refusal=json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Exact request needs one-time host operator authorization"}});
+   for (raw,observed) in [(Ok(receipt.clone()),Some(true)),(Ok(owner_refusal),Some(false)),(Ok(conflicting),None),
+    (Ok(extra),None),(Err("private transport detail".into()),None)] {
+    let mut calls=Vec::new();
+    let run=tauri::async_runtime::block_on(dispatch_reviewed_custody_preparation(&target,&request,&review,&journal,|query| {
+     calls.push(query.canonical());
+     std::future::ready(match query.operation.as_str(){
+      "target"=>Ok(capability.clone()),
+      "identity_preflight"|"formation_preflight"=>Ok(preflight.clone()),
+      _=>raw.clone(),
+     })
+    }));
+    assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),
+     json!({"version":1,"operation":review.preflight_operation(),"parameters":{}}),request.canonical()]);
+    let key=if operation=="formation_prepare" {"formation_sha256"} else {"genesis_sha256"};
+    assert_eq!(calls[2].to_string(),format!(r#"{{"operation":"{operation}","parameters":{{"{key}":"{}"}},"version":1}}"#,"a".repeat(64)));
+    let history=request_journal::inspect(&journal).unwrap();
+    let item=&history["records"][0];
+    assert_eq!(item["request_digest"],request.approval_id());
+    assert_eq!(item["response_ok"],json!(observed));
+    assert_eq!(item["state"],if observed.is_some() {"response_received"} else {"uncertain"});
+    assert!(!history.to_string().contains("fixture-network"));
+    match observed {
+     Some(true)=>assert_eq!(run.unwrap(),receipt),
+     Some(false)=>assert_eq!(run.unwrap()["ok"],false),
+     None=>{
+      assert_eq!(run.unwrap_err(),review.uncertain_message());
+      assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),operation,&request.canonical()).is_err());
+     },
+    }
+    std::fs::remove_dir_all(&journal).unwrap();
+   }
+  }
  }
 
  #[test]

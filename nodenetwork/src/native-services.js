@@ -20,10 +20,11 @@ export async function nodeNetworkReviewOperatorKey(){
  return reply.canonicalSha256;
 }
 export async function nodeNetworkBootstrap(target,operator,parameters){if(!isTauri())throw new Error('Target bootstrap requires the native Portal app.');const reply=await withNodeChange(()=>invoke('portal_nodenetwork_bootstrap',{target,operator,parameters}));if(reply===null)return null;if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid bootstrap response.');if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Bootstrap refused the operation.'}`);return reply.result;}
-export async function nodeNetworkController(target,operation,parameters={},bindingReview){
+export async function nodeNetworkController(target,operation,parameters={},bindingReview,preparationReview){
  if(!isTauri())throw new Error('Node management requires the native Portal app.');
  const args={target,request:{version:1,operation,parameters}};
  if(bindingReview!==undefined)args.bindingReview=bindingReview;
+ if(preparationReview!==undefined)args.preparationReview=preparationReview;
  const call=()=>invoke('portal_nodenetwork_controller',args);
  const reply=await (readOperations.has(operation)?call():withNodeChange(call));
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid controller response.');

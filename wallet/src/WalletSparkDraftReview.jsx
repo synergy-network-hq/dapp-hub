@@ -4,6 +4,7 @@ import {inspectSparkNf1Draft, isSparkNf1WalletAddress, MAX_SPARK_NF1_DRAFT_BYTES
 import {STS_TESTNET_GENESIS} from './wallet-address.js';
 import {WalletSparkMintAuthorityCheck} from './WalletSparkMintAuthorityCheck.jsx';
 import {WalletSparkMintReceiptCheck} from './WalletSparkMintReceiptCheck.jsx';
+import {WalletSparkSaleEvidenceReview} from './WalletSparkSaleEvidenceReview.jsx';
 import {useWalletReadScope} from './wallet-account-read.js';
 
 export function WalletSparkDraftReview() {
@@ -32,7 +33,8 @@ export function WalletSparkDraftReview() {
     }
     if (current !== revision.current) return;
     try {
-      setReview({status: 'checked', value: inspectSparkNf1Draft(bytes), revision: current});
+      const value = inspectSparkNf1Draft(bytes);
+      setReview({status: 'checked', value, revision: current, draftBytes: value.action === 'buy' ? bytes : null});
     } catch (error) {
       setReview({status: 'failed', message: error.message});
     }
@@ -54,7 +56,8 @@ export function WalletSparkDraftReview() {
     {review.status === 'reading' && <p role="status">Reading draft…</p>}
     {review.status === 'failed' && <p role="alert" className="native-error">{review.message}</p>}
     {value?.action === 'mint' && <MintDraftSummary value={value} isCurrent={() => revision.current === review.revision}/>}
-    {value && value.action !== 'mint' && <SaleDraftSummary value={value}/>}
+    {value && value.action !== 'mint' && <SaleDraftSummary value={value} draftBytes={review.draftBytes}
+      isCurrent={() => revision.current === review.revision}/>}
   </Card>;
 }
 
@@ -82,7 +85,7 @@ function MintDraftSummary({value, isCurrent}) {
 
 const saleActions = {list: 'List NFT', cancel: 'Cancel listing', buy: 'Buy NFT'};
 
-function SaleDraftSummary({value}) {
+function SaleDraftSummary({value, draftBytes, isCurrent}) {
   return <section aria-label="Unsigned NF1 sale review">
     <p role="status">Unsigned NF1 sale draft</p>
     <dl className="native-details">
@@ -97,6 +100,7 @@ function SaleDraftSummary({value}) {
       <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
     </dl>
     <p>Ownership, listing state, fees and transaction approval require separate verification.</p>
+    {value.action === 'buy' && <WalletSparkSaleEvidenceReview key={value.sha256} draftBytes={draftBytes} isCurrent={isCurrent}/>}
   </section>;
 }
 
