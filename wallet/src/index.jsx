@@ -5,6 +5,7 @@ import {
 } from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {WalletFeeMarket} from './WalletFeeMarket.jsx';
+import {WalletEtdagTransferStatus} from './WalletEtdagTransferStatus.jsx';
 import {WalletConnections} from './WalletConnections.jsx';
 import {WalletHistory} from './WalletHistory.jsx';
 import {WalletStsActivity} from './WalletStsActivity.jsx';
@@ -110,6 +111,7 @@ export function WalletApp() {
       default:
         return <Card title="Send requires a supported transaction contract">
           <p>Transfers remain unavailable until the network’s authoritative ETDAG transaction preparation and mobile signing contracts are integrated. No nonce, fees, signature algorithm or transaction envelope is guessed.</p>
+          <WalletEtdagTransferStatus key={`transfer-status:${draftScope}`} endpoint={n.endpoint} canCheck={canReadWallet}/>
           {recipientDraft?.scope === draftScope ? <WalletRecipientDraft contact={recipientDraft.contact} account={connection.address} endpoint={n.endpoint}
             onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}
             canReview={canReadWallet}/> : <WalletOneTimeDraft key={draftScope} account={connection.address} endpoint={n.endpoint}

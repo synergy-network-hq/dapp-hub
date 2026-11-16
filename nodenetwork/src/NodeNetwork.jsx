@@ -22,6 +22,7 @@ import {MasterReview} from './MasterReview.jsx';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
 import {InstallationDraftReview} from './InstallationDraftReview.jsx';
 import {SavedControllerPolicy} from './SavedControllerPolicy.jsx';
+import {CommissioningPublicEvidence} from './CommissioningPublicEvidence.jsx';
 import {installPreflightChecklist} from './install-preflight.js';
 import {RequestHistory} from './RequestHistory.jsx';
 import {SavedValidatorObservation} from './SavedValidatorObservation.jsx';
@@ -148,6 +149,7 @@ export function NodeNetworkApp(){
    <Card title="Standardized validator installation">{!target&&<p>Host selection remains deferred.</p>}<p>Every validator must use the same qualified master package. Its identity, APQE custody, authenticated network configuration, blockchain data, recovery material and update staging belong inside /opt/Synergy.</p><ol><li>Authenticate the operator, target host and approved release.</li><li>Check host prerequisites and installation isolation.</li><li>Provision independent APQE role keys into local custody.</li><li>Verify authenticated Genesis, membership and transport authority.</li><li>Install through the shared lifecycle and verify restart, synchronization and finality.</li></ol></Card>
    <InstallationDraftReview form={form}/>
    <SavedControllerPolicy form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
+   <CommissioningPublicEvidence form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    {!target&&<InstallPreflight checklist={installPreflightChecklist({form,permitted,master})}
     action={<button disabled={!permitted} onClick={()=>setSection('monitoring')}>Review saved preflight evidence</button>}/>}
    {!target&&<IdentityPreflight permitted={permitted}/>}
