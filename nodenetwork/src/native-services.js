@@ -5,6 +5,15 @@ export async function nodeNetworkRequests(){
  if(!isTauri())throw Error('Local request history requires the native Portal app. No native history has been read.');
  return parseRequestHistory(await invoke('portal_nodenetwork_requests'));
 }
+export async function nodeNetworkReviewGenesisStageReceipt(target, recordId) {
+ if (!isTauri()) throw Error('Genesis staging receipt review requires the native Portal app.');
+ const reply=await invoke('portal_nodenetwork_review_genesis_stage_receipt',{target,recordId});
+ if (!reply || typeof reply !== 'object' || Array.isArray(reply) || Object.keys(reply).length !== 2
+  || reply.schema !== 'nodenetwork-genesis-stage-receipt-review-v1' || !['match','different','absent','unsupported'].includes(reply.status)) {
+  throw Error('The native bridge returned unsupported Genesis staging receipt evidence.');
+ }
+ return reply.status;
+}
 // First-party native extension only; remote community HTML has no Tauri bridge.
 export async function nodeNetworkHostStatus(){if(!isTauri())throw new Error('Open the native Portal app to inspect this machine.');return invoke('portal_nodenetwork_status');}
 export async function nodeNetworkReviewMaster(){if(!isTauri())throw new Error('Open the native Portal app to inspect the node master.');return invoke('portal_nodenetwork_review_master');}

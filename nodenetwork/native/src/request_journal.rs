@@ -8,9 +8,9 @@ const MAX_RECORDS: usize = 256;
 const MAX_BYTES: u64 = 4096;
 static SERIAL: Mutex<()> = Mutex::new(());
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Record {
+pub(super) struct Record {
     version: u8,
     id: String,
     target_digest: String,
@@ -20,6 +20,10 @@ struct Record {
     observed_at_ms: Option<u64>,
     state: String,
     response_ok: Option<bool>,
+}
+
+impl Record {
+    pub(super) fn request_digest(&self) -> &str { &self.request_digest }
 }
 
 fn digest(value: &Value) -> String { format!("{:x}", Sha256::digest(value.to_string().as_bytes())) }
@@ -165,14 +169,26 @@ impl Dispatch {
     }
 }
 
-pub fn inspect(base: &Path) -> Result<Value, String> {
+fn inspect_records(base: &Path) -> Result<Vec<Record>, String> {
     let _serial = SERIAL.lock().map_err(|_| failure())?;
     let lock = base.join("nodenetwork-requests-v1.lock");
     match fs::symlink_metadata(&lock) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
         _ => return Err("Local request journal writer is busy or interrupted. History is unavailable; no empty state is inferred.".into()),
     }
-    let records = match directory(base, false)? { Some(path) => load(&path)?, None => Vec::new() };
+    match directory(base, false)? { Some(path) => load(&path), None => Ok(Vec::new()) }
+}
+
+pub(super) fn unresolved_genesis_stage(base: &Path, target: &Value, record_id: &str) -> Result<Record, String> {
+    if !pin(record_id) { return Err("Select an exact local Genesis staging journal entry.".into()); }
+    let target_digest = digest(target);
+    inspect_records(base)?.into_iter().find(|record| record.id == record_id && record.target_digest == target_digest
+        && record.operation == "genesis_stage" && matches!(record.state.as_str(), "dispatch_intent" | "uncertain"))
+        .ok_or_else(|| "The unresolved Genesis staging entry does not match this target. Refresh local history and select it again.".into())
+}
+
+pub fn inspect(base: &Path) -> Result<Value, String> {
+    let records = inspect_records(base)?;
     Ok(json!({"schema":"nodenetwork-local-requests-v1", "records":records, "limit":MAX_RECORDS,
         "remoteJobRecovery":false, "automaticReplay":false}))
 }

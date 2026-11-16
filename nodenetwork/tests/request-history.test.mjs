@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {filterRequests, matchesUnresolvedServiceDispatch, parseRequestHistory, requestStatusLabel, retainsServiceDispatch, reviewRequestSelection} from '../src/request-history.js';
+import {filterRequests, matchesUnresolvedGenesisStage, matchesUnresolvedServiceDispatch, parseRequestHistory, requestStatusLabel, retainsUnresolvedDispatch, reviewRequestSelection} from '../src/request-history.js';
 
 const targetA = 'a'.repeat(64);
 const targetB = 'b'.repeat(64);
@@ -57,16 +57,28 @@ test('requires the exact still-unresolved service operation for the selected con
   assert.equal(matchesUnresolvedServiceDispatch(reviewed, targetB), true);
   assert.equal(matchesUnresolvedServiceDispatch({...unknown, operation}, targetB), true);
   assert.equal(matchesUnresolvedServiceDispatch(reviewed, targetA), false);
-  assert.equal(retainsServiceDispatch([{...reviewed}], reviewed, targetB), true);
-  assert.equal(retainsServiceDispatch([{...reviewed}], reviewed, targetA), false);
+  assert.equal(retainsUnresolvedDispatch([{...reviewed}], reviewed, targetB), true);
+  assert.equal(retainsUnresolvedDispatch([{...reviewed}], reviewed, targetA), false);
   const received = {...reviewed, state:'response_received', response_ok:true};
   for (const changed of [received, {...reviewed, state:'dispatch_intent', observed_at_ms:null},
    {...reviewed, id:accepted.id}, {...reviewed, operation:differentServiceOperation}, {...reviewed, recorded_at_ms:1001},
    {...reviewed, observed_at_ms:1002}, {...reviewed, target_digest:targetA}, {...reviewed, request_digest:targetA}]) {
-   assert.equal(retainsServiceDispatch([changed], reviewed, targetB), false);
+   assert.equal(retainsUnresolvedDispatch([changed], reviewed, targetB), false);
   }
-  assert.equal(retainsServiceDispatch([], reviewed, targetB), false);
+  assert.equal(retainsUnresolvedDispatch([], reviewed, targetB), false);
  }
+});
+
+test('admits only the exact unresolved Genesis staging dispatch for receipt inspection', () => {
+ const staged = {...unknown, operation:'genesis_stage'};
+ assert.equal(matchesUnresolvedGenesisStage(staged, targetB), true);
+ assert.equal(matchesUnresolvedGenesisStage({...staged, state:'uncertain', observed_at_ms:1001}, targetB), true);
+ assert.equal(matchesUnresolvedGenesisStage(staged, targetA), false);
+ for (const record of [null, {...staged, operation:'genesis_bind'}, {...staged, state:'response_received', response_ok:true}]) {
+  assert.equal(matchesUnresolvedGenesisStage(record, targetB), false);
+ }
+ assert.equal(retainsUnresolvedDispatch([staged], staged, targetB), true);
+ assert.equal(retainsUnresolvedDispatch([{...staged, request_digest:targetA}], staged, targetB), false);
 });
 
 test('unsupported envelopes never yield actionable or empty history', () => {

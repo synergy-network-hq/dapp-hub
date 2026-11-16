@@ -32,14 +32,21 @@ export function filterRequests(records, {status, operation, target}) {
  );
 }
 
-export function matchesUnresolvedServiceDispatch(record, fingerprint) {
- return Boolean(record && fingerprint && record.target_digest === fingerprint && ['register', 'start', 'restart', 'stop'].includes(record.operation)
-  && ['dispatch_intent', 'uncertain'].includes(record.state));
+function matchesUnresolvedDispatch(record, fingerprint) {
+ return Boolean(record && fingerprint && record.target_digest === fingerprint && ['dispatch_intent', 'uncertain'].includes(record.state));
 }
 
-export function retainsServiceDispatch(records, reviewed, fingerprint) {
+export function matchesUnresolvedServiceDispatch(record, fingerprint) {
+ return matchesUnresolvedDispatch(record, fingerprint) && ['register', 'start', 'restart', 'stop'].includes(record.operation);
+}
+
+export function matchesUnresolvedGenesisStage(record, fingerprint) {
+ return matchesUnresolvedDispatch(record, fingerprint) && record.operation === 'genesis_stage';
+}
+
+export function retainsUnresolvedDispatch(records, reviewed, fingerprint) {
  const record = records.find(entry => entry.id === reviewed.id);
- return matchesUnresolvedServiceDispatch(reviewed, fingerprint) && matchesUnresolvedServiceDispatch(record, fingerprint)
+ return matchesUnresolvedDispatch(reviewed, fingerprint) && matchesUnresolvedDispatch(record, fingerprint)
   && ['operation', 'request_digest', 'state', 'recorded_at_ms', 'observed_at_ms'].every(field => record[field] === reviewed[field]);
 }
 

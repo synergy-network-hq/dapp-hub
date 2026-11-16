@@ -4,7 +4,7 @@ import {NodeNetworkPanelCard} from './NodeNetworkPanelFrame.jsx';
 import {nodeNetworkController, nodeNetworkRequests} from './native-services.js';
 import {installedControllerRead, targetControllerObservation} from './target-observation.js';
 import {diagnosticSeverity, nodeServiceState, serviceRegistrationAttribution, targetDiagnosticsObservation} from './target-diagnostics.js';
-import {retainsServiceDispatch} from './request-history.js';
+import {retainsUnresolvedDispatch} from './request-history.js';
 
 const serviceColumns = [
  {key: 'label', label: 'Service'}, {key: 'state', label: 'Reported state'}, {key: 'restarts', label: 'Restarts'},
@@ -86,7 +86,7 @@ export function ServiceDispatchDiagnosticsReview({target, record, fingerprint, t
  const operation = registration ? 'registration' : record.operation;
  const report = useResource(signal => requested ? readTargetDiagnostics(target, signal, targetScopeCurrent, async () => {
   const journal = await nodeNetworkRequests().catch(() => {throw Error(`The local ${operation} dispatch could not be rechecked. Refresh local history.`);});
-  if (!retainsServiceDispatch(journal.records, record, fingerprint)) {
+  if (!retainsUnresolvedDispatch(journal.records, record, fingerprint)) {
    throw Error(`The selected ${operation} dispatch changed. Refresh local history and select it again.`);
   }
  }) : null, requested);

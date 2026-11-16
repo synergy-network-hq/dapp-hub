@@ -731,6 +731,20 @@ fn genesis_binding_reply(reply: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
+pub(super) fn supports_genesis_stage_receipt_review(reply: &Value) -> bool {
+    qualified_software_target(reply, true, &[("genesis_binding_preflight", "read")])
+}
+
+pub(super) fn genesis_stage_receipt_status(reply: &Value, expected_request_digest: &str) -> &'static str {
+    if genesis_binding_reply(reply).is_err() { return "unsupported"; }
+    // The pinned owner's genesis_stage_request() validates the retained three files and receipt.
+    match reply["result"].get("stage_request_sha256").and_then(Value::as_str) {
+        Some(value) if value == expected_request_digest => "match",
+        Some(_) => "different",
+        None => "absent",
+    }
+}
+
 fn genesis_bind_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
     const UNCERTAIN: &str = "Genesis binding outcome is uncertain. Preserve pending custody and review its binding status before another change.";
     if reply["ok"] == false {
@@ -972,6 +986,13 @@ pub(super) async fn execute_genesis_stage_locked(target:&Target,wire:&str,contro
     // Controller counts the trailing LF in the full staging wire limit.
     if wire.is_empty() || wire.len() >= GENESIS_STAGE_WIRE_LIMIT { return Err("The exact Genesis request exceeds its encoded byte limit.".into()); }
     exchange(target,wire.as_bytes(),180,control_dir,None).await
+}
+
+pub(super) async fn execute_genesis_binding_preflight_raw_locked(target:&Target,control_dir:&Path,
+    _serial:&tokio::sync::MutexGuard<'_, ()>) -> Result<Value,String> {
+    // Only the native journal comparison consumes this unprojected, fixed read.
+    let request=Request{version:1,operation:"genesis_binding_preflight".into(),parameters:json!({})};
+    exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None).await
 }
 
 async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known_hosts:Option<&Path>) -> Result<Value,String> {

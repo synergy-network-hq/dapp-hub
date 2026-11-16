@@ -4,6 +4,7 @@ import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {ownerMultiAssetObservation, RPC_MULTI_ASSET_LIMIT} from './collectible-observations.js';
 import {useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
 import {WalletMultiAssetItemCheck} from './WalletMultiAssetItemCheck.jsx';
+import {WalletMultiAssetHolding} from './WalletMultiAssetHolding.jsx';
 
 const columns = [{key: 'itemId', label: 'Item ID'}, {key: 'collectionId', label: 'Collection'},
   {key: 'amount', label: 'Reported atomic quantity'}];
@@ -52,6 +53,7 @@ export function WalletMultiAssetInventory({account, endpoint, canRead}) {
         <p>The balance response supplies atomic quantities. Select an item to check its reported type and decimal precision.</p>
         <MultiAssetRows inventory={value} {...{endpoint, canRead}}/>
       </>}</Resource>}
+      <WalletMultiAssetHolding {...{account, endpoint, canRead}}/>
     </> : <p>A current protected Wallet address is required for this check.</p>}
   </Card>;
 }

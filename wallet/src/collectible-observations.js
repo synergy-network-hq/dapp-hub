@@ -230,16 +230,12 @@ const multiAssetItemTypes = {fungible: 'Fungible', non_fungible: 'Non-fungible',
 const multiAssetTransferPolicies = {open: 'Open', non_transferable: 'Non-transferable', authority_only: 'Authority only'};
 
 // Testnet-v3 release a6a434f2, sts_multi_asset_item_json and sts_multi_asset_item_item_json.
-export function multiAssetItemObservation(response, selected, inventory, readiness) {
+export function multiAssetItemDefinition(response, selected, readiness) {
   const snapshot = collectibleSnapshot(response, readiness, 'multi-asset item');
   const item = response.value.item;
   if (item?.asset_kind !== 'multi_asset_item' || item.collection_id !== selected.collectionId ||
       !isStsMultiAssetCollectionId(item.collection_id) || exactRpcAmount(item.item_id, maxU64) !== selected.itemId) {
     throw Error('The selected RPC did not return the selected collection and item ID.');
-  }
-  if (BigInt(snapshot.snapshotHeight) < BigInt(inventory.snapshotHeight) ||
-      (snapshot.snapshotHeight === inventory.snapshotHeight && snapshot.snapshotHash !== inventory.snapshotHash)) {
-    throw Error('The item definition snapshot is older or conflicts with the selected holding. Check the holdings again.');
   }
   const {item_type, decimals, transfer_policy, metadata_hash} = item;
   const total = exactRpcAmount(item.total_supply, maxU128), maximum = exactRpcAmount(item.max_supply, maxU128);
@@ -250,6 +246,29 @@ export function multiAssetItemObservation(response, selected, inventory, readine
       (metadata_hash !== null && !metadataHash(metadata_hash))) {
     throw Error('The selected RPC returned unsupported item definition fields.');
   }
-  return {...snapshot, type: multiAssetItemTypes[item_type], policy: multiAssetTransferPolicies[transfer_policy],
+  return {...snapshot, source: response.value.source, type: multiAssetItemTypes[item_type], policy: multiAssetTransferPolicies[transfer_policy],
     decimals, total, maximum, metadataHash: metadata_hash};
+}
+
+export function multiAssetItemObservation(response, selected, inventory, readiness) {
+  const definition = multiAssetItemDefinition(response, selected, readiness);
+  if (BigInt(definition.snapshotHeight) < BigInt(inventory.snapshotHeight) ||
+      (definition.snapshotHeight === inventory.snapshotHeight && definition.snapshotHash !== inventory.snapshotHash)) {
+    throw Error('The item definition snapshot is older or conflicts with the selected holding. Check the holdings again.');
+  }
+  return definition;
+}
+
+export function exactMultiAssetHolding(response, owner, selected, definition, readiness) {
+  const snapshot = collectibleSnapshot(response, readiness, 'multi-asset balance');
+  const {value} = response;
+  const amount = exactRpcAmount(value.amount, maxU128);
+  if (value.owner !== owner || value.collection_id !== selected.collectionId || value.collection_address !== selected.collectionId ||
+      exactRpcAmount(value.item_id, maxU64) !== selected.itemId || amount === null) {
+    throw Error('The selected RPC did not return the requested owner, collection and item balance.');
+  }
+  if (value.source !== definition.source || snapshot.snapshotHeight !== definition.snapshotHeight || snapshot.snapshotHash !== definition.snapshotHash) {
+    throw Error('The item definition and balance did not report the same snapshot. Check the holding again.');
+  }
+  return {...snapshot, amount, type: definition.type, decimals: definition.decimals, policy: definition.policy};
 }
