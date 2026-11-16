@@ -7,6 +7,7 @@ import {WalletSparkMintAuthorityCheck} from './WalletSparkMintAuthorityCheck.jsx
 import {WalletSparkMintReceiptCheck} from './WalletSparkMintReceiptCheck.jsx';
 import {WalletSparkLaunchDefinitionCheck} from './WalletSparkLaunchDefinitionCheck.jsx';
 import {WalletSparkSaleEvidenceReview} from './WalletSparkSaleEvidenceReview.jsx';
+import {WalletSparkNativeInspectionReview} from './WalletSparkNativeInspectionReview.jsx';
 import {useWalletReadScope} from './wallet-account-read.js';
 
 export function WalletSparkDraftReview() {
@@ -36,7 +37,7 @@ export function WalletSparkDraftReview() {
     if (current !== revision.current) return;
     try {
       const value = inspectSparkDraft(bytes);
-      setReview({status: 'checked', value, revision: current, draftBytes: value.action === 'buy' ? bytes : null});
+      setReview({status: 'checked', value, revision: current, draftBytes: value.action === 'launch' ? null : bytes});
     } catch (error) {
       setReview({status: 'failed', message: error.message});
     }
@@ -60,6 +61,8 @@ export function WalletSparkDraftReview() {
     {value?.action === 'launch' && <LaunchDraftSummary value={value} isCurrent={() => revision.current === review.revision}/>}
     {value?.action === 'mint' && <MintDraftSummary value={value} isCurrent={() => revision.current === review.revision}/>}
     {value && Object.hasOwn(saleActions, value.action) && <SaleDraftSummary value={value} draftBytes={review.draftBytes}
+      isCurrent={() => revision.current === review.revision}/>}
+    {review.draftBytes && <WalletSparkNativeInspectionReview key={review.revision} draftBytes={review.draftBytes}
       isCurrent={() => revision.current === review.revision}/>}
   </Card>;
 }

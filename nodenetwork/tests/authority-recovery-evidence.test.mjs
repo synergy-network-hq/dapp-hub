@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {authorityRecoveryScope,compareAuthorityRecoveryPublicFile,readAuthorityRecoveryCompletion,readAuthorityRecoveryPlan} from '../src/authority-recovery-evidence.js';
+import {authorityRecoveryScope,authorityRecoveryStartupFindings,compareAuthorityRecoveryPublicFile,compareAuthorityRecoveryStartupFile,
+ readAuthorityRecoveryCompletion,readAuthorityRecoveryPlan} from '../src/authority-recovery-evidence.js';
 import {authorityRecoveryFixture,authorityRecoveryHash} from './fixtures/authority-recovery.mjs';
 
 const file=raw=>new Blob([raw]);
@@ -13,7 +14,7 @@ test('supports exactly the owner validator, relay and gateway plan scopes with a
  const normal=authorityRecoveryFixture();
  assert.deepEqual((await inspect(normal)).findings,defaultFindings);
  const relay=await inspect(authorityRecoveryFixture({relay:true,priorCertificate:true}));
- assert.deepEqual(relay.findings,{...defaultFindings,plannedFiles:7,changedFiles:7,priorCertificateRecorded:true});
+ assert.deepEqual(relay.findings,{...defaultFindings,plannedFiles:7,changedFiles:6,priorCertificateRecorded:true});
  const gateway=await inspect(authorityRecoveryFixture({role:'rpc_gateway'}));
  assert.deepEqual(gateway.findings,{...defaultFindings,role:'rpc_gateway'});
  assert.doesNotMatch(JSON.stringify(gateway.findings),/[a-f0-9]{64}|fixture|\.json/);
@@ -67,6 +68,69 @@ test('matches exact public evidence and both certificate bindings without accept
  assert.ok(new Uint8Array(bytes).every(byte=>byte===0));
 });
 
+const startupKinds=['configuration','receipt','policy'];
+const startupMatches={stage:'after',identityMatches:true,certificateReferencesMatch:true,networkBindingsMatch:true};
+async function startupReview(snapshot,plan) {
+ const parts=await Promise.all(startupKinds.map(async kind=>[kind,await compareAuthorityRecoveryStartupFile(file(snapshot[kind]),kind,plan)]));
+ return authorityRecoveryStartupFindings(Object.fromEntries(parts));
+}
+
+test('classifies exact startup files against prior and planned snapshots with unchanged files supported',async()=>{
+ const fixture=authorityRecoveryFixture();
+ const plan=await inspect(fixture);
+ const {before,after}=fixture.startup;
+ assert.deepEqual(await startupReview(after,plan),startupMatches);
+ assert.deepEqual(await startupReview(before,plan),{stage:'before'});
+ assert.deepEqual(await startupReview({...after,receipt:before.receipt},plan),{stage:'mixed'});
+ assert.deepEqual(await startupReview({...after,receipt:after.receipt.trim()},plan),{stage:'unavailable'});
+ const ongoing=authorityRecoveryFixture({priorCertificate:true});
+ const reviewed=await inspect(ongoing);
+ assert.equal((await compareAuthorityRecoveryStartupFile(file(ongoing.startup.before.configuration),'configuration',reviewed)).stage,'unchanged');
+ assert.deepEqual(await startupReview(ongoing.startup.before,reviewed),{stage:'before'});
+ assert.deepEqual(await startupReview(ongoing.startup.after,reviewed),startupMatches);
+ const gateway=await inspect(authorityRecoveryFixture({role:'rpc_gateway'}));
+ await assert.rejects(compareAuthorityRecoveryStartupFile(file(after.policy),'policy',gateway),/validator authority-recovery plan/);
+});
+
+test('checks exact network, package, certificate references and the full fixed public pin set',async()=>{
+ const changes=[
+  ['identityMatches',after=>{after.receipt.package_sha256='a'.repeat(64);}],
+  ['identityMatches',after=>{after.policy.network_id='foreign-network';}],
+  ['identityMatches',after=>{after.configuration.chain_id='99999';}],
+  ['identityMatches',after=>{after.receipt.role='rpc_gateway';}],
+  ['certificateReferencesMatch',after=>{after.configuration.consensus.authority_recovery_certificate_path='/tmp/recovery.json';}],
+  ['certificateReferencesMatch',after=>{after.receipt.authority_recovery_certificate_sha256='b'.repeat(64);}],
+  ['certificateReferencesMatch',after=>{delete after.policy.authority_recovery_certificate_sha256;}],
+  ['networkBindingsMatch',after=>{after.configuration.apqe_transport.registry_path='/tmp/registry.json';}],
+  ['networkBindingsMatch',after=>{after.configuration.consensus.authority_binding='/tmp/authority.json';}],
+  ['networkBindingsMatch',after=>{after.policy.public_file_sha256['transport-registry.json']='c'.repeat(64);}],
+  ['networkBindingsMatch',after=>{after.policy.public_file_sha256['authority.json']='d'.repeat(64);}],
+  ['networkBindingsMatch',after=>{after.policy.public_file_sha256['genesis.json']='e'.repeat(64);}],
+  ['networkBindingsMatch',after=>{after.policy.public_file_sha256['other.json']='f'.repeat(64);}],
+ ];
+ for(const [clause,change] of changes) {
+  const fixture=authorityRecoveryFixture({alterStartup:change});
+  const result=await startupReview(fixture.startup.after,await inspect(fixture));
+  assert.deepEqual(result,{...startupMatches,[clause]:false});
+  assert.doesNotMatch(JSON.stringify(result),/[a-f0-9]{64}|fiction|synthetic|\/opt\//);
+ }
+});
+
+test('retires pending startup files and rejects ambiguous or oversized selected content',async()=>{
+ const normal=authorityRecoveryFixture();
+ const duplicate=normal.startup.after.policy.replace('"chain_id":99999','"chain_id":99999,"chain_\\u0069d":99999');
+ const ambiguous=authorityRecoveryFixture({alterPlan:p=>{p.after['config/start-authorized.json']=authorityRecoveryHash(duplicate);}});
+ const plan=await inspect(ambiguous);
+ assert.deepEqual(await startupReview({...ambiguous.startup.after,policy:duplicate},plan),{stage:'after'});
+ const oversized={size:256*1024+1,arrayBuffer:()=>assert.fail('oversized policy was opened')};
+ await assert.rejects(compareAuthorityRecoveryStartupFile(oversized,'policy',plan),/at most/);
+ let live=true;
+ const bytes=await file(ambiguous.startup.after.configuration).arrayBuffer();
+ assert.equal(await compareAuthorityRecoveryStartupFile({size:bytes.byteLength,arrayBuffer:async()=>{live=false;return bytes;}},
+  'configuration',plan,()=>live),null);
+ assert.ok(new Uint8Array(bytes).every(byte=>byte===0));
+});
+
 const ownerFixture=process.env.SYNERGY_AUTHORITY_RECOVERY_OWNER_DIR;
 test('matches the pinned owner prepare and load_plan artifacts, completion and public binding bytes', {skip:!ownerFixture},async()=>{
  const raw=name=>readFileSync(`${ownerFixture}/${name}`);
@@ -77,4 +141,20 @@ test('matches the pinned owner prepare and load_plan artifacts, completion and p
  assert.deepEqual(await readAuthorityRecoveryCompletion(file(raw('authority-recovery-completed.json')),reviewed),{nativePreflightReported:true});
  assert.deepEqual(await compareAuthorityRecoveryPublicFile(file(raw('authority-recovery-certificate.json')),'certificate',reviewed),{matches:true,bindings:'matches'});
  assert.deepEqual(await compareAuthorityRecoveryPublicFile(file(raw('authority.json')),'authority',reviewed),{matches:true});
+});
+
+const startupOwnerFixture=process.env.SYNERGY_AUTHORITY_RECOVERY_STARTUP_OWNER_DIR;
+test('classifies all three exact startup files emitted by the pinned owner', {skip:!startupOwnerFixture},async()=>{
+ const raw=name=>readFileSync(`${startupOwnerFixture}/${name}`);
+ const planBytes=raw('public/authority-recovery-plan.json');
+ const {network_id:network,package_sha256:packagePin}=JSON.parse(planBytes);
+ const plan=await readAuthorityRecoveryPlan(file(planBytes),authorityRecoveryHash(planBytes),{network,packagePin});
+ const paths={configuration:'config--node.json',receipt:'installation.json',policy:'config--start-authorized.json'};
+ const snapshot=phase=>Object.fromEntries(startupKinds.map(kind=>[kind,raw(`stage/${phase}-${paths[kind]}`)]));
+ const before=snapshot('before'),after=snapshot('after');
+ assert.deepEqual(await startupReview(before,plan),{stage:'before'});
+ assert.deepEqual(await startupReview({...after,receipt:before.receipt},plan),{stage:'mixed'});
+ // The pinned writer exercised a contained fixture, so its host paths are not the canonical installation paths.
+ assert.deepEqual(await startupReview(after,plan),{...startupMatches,identityMatches:false,certificateReferencesMatch:false,networkBindingsMatch:false});
+ assert.equal((await compareAuthorityRecoveryStartupFile(file(after.policy),'policy',plan)).checks.networkBindings,true);
 });

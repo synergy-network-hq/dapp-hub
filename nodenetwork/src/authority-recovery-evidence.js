@@ -9,8 +9,11 @@ const root='/opt/Synergy';
 const format='synergy-authority-recovery-activation-v1';
 const certificate='network/authority-recovery-certificate.json';
 const authority='network/authority.json';
+const registry='network/transport-registry.json';
 const admission='network/rpc-gateway-admission.json';
-const required=['config/node.json','installation.json',authority,'network/transport-registry.json',certificate];
+const startupFiles={configuration:'config/node.json',receipt:'installation.json',policy:'config/start-authorized.json'};
+const startupLimits={configuration:4*1024*1024,receipt:2*1024*1024,policy:256*1024};
+const required=[startupFiles.configuration,startupFiles.receipt,authority,registry,certificate];
 const immutable=['genesis.json','authority-root.pub','network-manifest.json','transport-root.pub'];
 const planError='The selected file is not a supported Canary authority-recovery plan.';
 const completionError='The selected file is not a supported authority-recovery completion receipt.';
@@ -46,7 +49,7 @@ export async function readAuthorityRecoveryPlan(file,expected,scope,current=()=>
    || !validInstallNetworkId(p.network_id) || !digest(p.package_sha256) || !object(p.after)
    || !keysMatch(p.immutable_network,immutable) || !immutable.every(name=>digest(p.immutable_network[name]))) throw Error(planError);
   const names=[...required];
-  if (p.role==='validator') names.push('config/start-authorized.json');
+  if (p.role==='validator') names.push(startupFiles.policy);
   if (Object.hasOwn(p.after,admission)) names.push(admission);
   if ((p.role==='rpc_gateway' && !names.includes(admission)) || !keysMatch(p.before,names) || !keysMatch(p.after,names)
    || !names.every(name=>digest(p.after[name]) && (digest(p.before[name]) || (name===certificate && p.before[name]===null)))) {
@@ -60,6 +63,12 @@ export async function readAuthorityRecoveryPlan(file,expected,scope,current=()=>
     changedFiles:names.filter(name=>p.before[name]!==p.after[name]).length,priorCertificateRecorded:p.before[certificate]!==null},
    planPin:pin,packagePin:p.package_sha256,certificatePin:p.after[certificate],authorityPin:p.after[authority],
    previousAuthorityPin:p.before[authority],
+   startup:p.role==='validator' ? {
+    network:p.network_id,
+    files:Object.fromEntries(Object.entries(startupFiles).map(([kind,name])=>
+     [kind,{before:p.before[name],after:p.after[name]}])),
+    publicPins:{...p.immutable_network,'authority.json':p.after[authority],'transport-registry.json':p.after[registry]},
+   } : null,
   };
  } finally {
   new Uint8Array(selected.bytes).fill(0);
@@ -133,4 +142,62 @@ export async function compareAuthorityRecoveryPublicFile(file,kind,plan,current=
  } finally {
   if (bytes instanceof ArrayBuffer) new Uint8Array(bytes).fill(0);
  }
+}
+
+// lifecycle.py::_start_check_locked / verify_authority_recovery_pin and
+// activate_authority_recovery.py::_semantic. Review saved clauses only.
+function startupFileChecks(value,kind,plan) {
+ const chainMatches=exactObservationU64(value.chain_id)==='99999';
+ const networkMatches=value.network_id===plan.startup.network && chainMatches;
+ if (kind==='configuration') {
+  return {identity:networkMatches,
+   certificateReference:value.consensus?.authority_recovery_certificate_path===`${root}/${certificate}`,
+   networkBindings:value.genesis_path===`${root}/network/genesis.json` && value.manifest_path===`${root}/network/network-manifest.json`
+    && value.consensus?.authority_binding===`${root}/${authority}`
+    && value.consensus?.authority_trust_key_path===`${root}/network/authority-root.pub`
+    && value.apqe_transport?.registry_path===`${root}/${registry}`};
+ }
+ if (kind==='receipt') {
+  return {identity:networkMatches && value.format==='synergy-universal-linux-v1' && value.root===root
+    && value.role==='validator' && value.package_sha256===plan.packagePin,
+   certificateReference:value.authority_recovery_certificate_sha256===plan.certificatePin};
+ }
+ const expected=plan.startup.publicPins;
+ const names=Object.keys(expected);
+ return {identity:networkMatches,certificateReference:value.authority_recovery_certificate_sha256===plan.certificatePin,
+  networkBindings:keysMatch(value.public_file_sha256,names)
+   && names.every(name=>value.public_file_sha256[name]===expected[name])};
+}
+
+export async function compareAuthorityRecoveryStartupFile(file,kind,plan,current=()=>true) {
+ const pins=Object.hasOwn(startupFiles,kind) && plan?.startup?.files[kind];
+ if (!digest(pins?.before) || !digest(pins.after)) throw Error('Review the validator authority-recovery plan before selecting startup files.');
+ const selected=await readUpgradeJsonFile(file,startupLimits[kind],current);
+ if (!selected) return null;
+ try {
+  if (!current()) return null;
+  const actual=await localSha256(selected.bytes);
+  if (!current()) return null;
+  if (actual!==pins.after) return {stage:actual===pins.before?'before':'different',checks:null};
+  const stage=actual===pins.before?'unchanged':'after';
+  let value;
+  try {value=parseExactNumbers(selected.raw,32);} catch {return {stage,checks:null};}
+  return {stage,checks:object(value)?startupFileChecks(value,kind,plan):null};
+ } finally {
+  new Uint8Array(selected.bytes).fill(0);
+ }
+}
+
+export function authorityRecoveryStartupFindings({configuration,receipt,policy}) {
+ const files=[configuration,receipt,policy];
+ if (files.some(file=>!file || file.stage==='different')) return {stage:'unavailable'};
+ const stages=new Set(files.map(file=>file.stage));
+ if (stages.has('before')) return {stage:stages.has('after')?'mixed':'before'};
+ const result={stage:'after'};
+ if (files.every(file=>file.checks)) {
+  result.identityMatches=files.every(file=>file.checks.identity);
+  result.certificateReferencesMatch=files.every(file=>file.checks.certificateReference);
+  result.networkBindingsMatch=configuration.checks.networkBindings && policy.checks.networkBindings;
+ }
+ return result;
 }

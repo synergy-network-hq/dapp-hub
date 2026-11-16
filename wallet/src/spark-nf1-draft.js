@@ -156,6 +156,11 @@ export function inspectSparkNf1MintDraft(bytes) {
 }
 
 export function inspectSparkNf1Draft(bytes) {
-  const draft = readDraft(bytes);
-  return draft.kind === MINT ? {action: 'mint', ...inspectMint(bytes, draft)} : inspectSale(bytes, draft);
+  return readSparkNf1DraftReview(bytes).draft;
+}
+
+export function readSparkNf1DraftReview(bytes) {
+  const source = readDraft(bytes);
+  const draft = source.kind === MINT ? {action: 'mint', ...inspectMint(bytes, source)} : inspectSale(bytes, source);
+  return {draft, payloadJson: source.payload.slice(PAYLOAD_PREFIX.length)};
 }
