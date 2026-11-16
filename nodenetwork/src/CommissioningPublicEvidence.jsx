@@ -1,9 +1,37 @@
-import {useState} from 'react';
-import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
-import {commissioningDraftIdentity,commissioningPublicArtifacts,readCommissioningManifest,readCommissioningStartupPolicy,
+import {Fragment,useState} from 'react';
+import {Card,Detail,ErrorMessage,Table} from '@synergy-network/portal-native/dapp-sdk';
+import {commissioningDraftIdentity,commissioningPublicArtifacts,readCommissioningConfiguration,readCommissioningManifest,readCommissioningStartupPolicy,
  reviewCommissioningPublicArtifacts} from './commissioning-public-evidence.js';
 import {genesisDigest} from './genesis-pin.js';
 import {useObservationFile} from './useObservationFile.js';
+
+const configurationChecks = [
+ ['identity','Deployment identity','Matches reviewed draft','Different network, chain or node'],
+ ['profile','Engineering transport profile','Matches owner profile','Missing or different profile'],
+ ['transportPaths','APQE transport paths','Canonical','Missing or different path'],
+ ['runtimePaths','Identity, admin and storage paths','Canonical','Missing or different path'],
+ ['networkPaths','Public network paths','Canonical','Missing or different path'],
+ ['directKeyOverrides','Direct signing and custody overrides','Absent','Present or unsupported'],
+ ['publicTrustAnchors','Public trust-anchor digests','Match manifest pins','Missing or different digest'],
+ ['providerReference','APQE provider report reference','Canonical path and digest format','Missing or unsupported reference'],
+];
+const configurationColumns = [{key:'check',label:'Check'},{key:'status',label:'Finding'}];
+
+function ConfigurationFile({form,manifest,canRead}) {
+ const {result,error,reading,clear,select} = useObservationFile((file,current)=>
+  readCommissioningConfiguration(file,manifest,form,()=>current() && canRead()));
+ return <>
+  <label>Saved commissioning node configuration JSON <input type="file" accept=".json,application/json" onChange={select}/></label>
+  {(reading || error || result) && <button onClick={clear}>Clear configuration review</button>}
+  {reading && <p role="status">Checking the selected configuration…</p>}
+  <ErrorMessage error={error}/>
+  {result && <section aria-label="Commissioning configuration findings">
+   <p role="status">The configuration SHA-256 matches the commissioning manifest.</p>
+   <Table columns={configurationColumns} rows={configurationChecks.map(([id,check,match,mismatch])=>({id,check,status:result[id]?match:mismatch}))}/>
+   <p>Verify provider report bytes and native signatures separately.</p>
+  </section>}
+ </>;
+}
 
 function PublicFindings({result}) {
  return <section aria-label="Commissioning public evidence findings">
@@ -56,7 +84,10 @@ function ManifestFile({pin,form,canRead}) {
   <ErrorMessage error={error}/>
   {result && <>
    <p role="status">The commissioning manifest matches the supplied digest and current draft identity.</p>
-   <StartupFile key={revision} manifest={result} canRead={canRead}/>
+   <Fragment key={revision}>
+    <ConfigurationFile form={form} manifest={result} canRead={canRead}/>
+    <StartupFile manifest={result} canRead={canRead}/>
+   </Fragment>
   </>}
  </>;
 }

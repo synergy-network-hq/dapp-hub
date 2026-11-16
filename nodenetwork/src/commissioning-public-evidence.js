@@ -3,7 +3,9 @@ import {genesisDigest} from './genesis-pin.js';
 import {localSha256} from './local-sha256.js';
 import {exactObservationU64,parseExactNumbers} from './validator-operations-observation.js';
 
-// Testnet v3 613fa6ab: apqe_layout.py::seal_commissioning and lifecycle.py::_authorized_validator_ids.
+// Testnet v3 613fa6ab: apqe_layout.py::seal_commissioning/validate_stage/validate_layout
+// and lifecycle.py::_authorized_validator_ids.
+const root = '/opt/Synergy';
 const profile = 'engineering_canary_pq_vsession_v1';
 export const commissioningPublicArtifacts = Object.freeze([
  ...genesisStageFiles.map(({name,maxBytes})=>({name,maxBytes})),
@@ -16,18 +18,22 @@ const contents = ['config/node.json','config/start-authorized.json',...publicNam
  ...['validator.pub.json','enrollment.json','custody.json','unlock'].map(name=>`keys/apqe/${name}`)];
 const manifestLimit = 32 * 1024;
 const startupLimit = 256 * 1024;
+const configurationLimit = 4 * 1024 * 1024;
 const maxValidators = 256;
 const statuses = new Set(['active','shadow','jailed','removed']);
 const manifestError = 'The file is not a supported APQE commissioning manifest.';
+const configurationError = 'The selected file is not a supported commissioning configuration JSON object.';
 const policyError = 'The file is not a supported engineering startup policy.';
 const authorityError = 'The selected authority file has an unsupported public roster.';
-const object = value=>value && typeof value==='object' && !Array.isArray(value);
+const object = value=>value != null && typeof value==='object' && !Array.isArray(value);
 const fieldsMatch = (value,names)=>object(value) && Object.keys(value).length===names.length
  && names.every(name=>Object.hasOwn(value,name));
 const isDigest = value=>typeof value==='string' && genesisDigest(value)===value;
 const validatorId = value=>typeof value==='string' && value.length<=128 && Boolean(value.trim())
  && !/[\x00-\x20\x7f\u202a-\u202e\u2066-\u2069]/.test(value);
 const decoder = new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
+const canonicalPaths = (value, paths) => object(value)
+ && Object.entries(paths).every(([field, path]) => value[field] === `${root}/${path}`);
 
 export function commissioningDraftIdentity(form) {
  const {network_id:network,chain_id:chain,node_name:node} = form ?? {};
@@ -65,13 +71,53 @@ export async function readCommissioningManifest(file,pin,form,current = ()=>true
  if (sha256!==expected) throw Error('The selected commissioning manifest SHA-256 differs from the independently supplied digest.');
  const value = parsed(bytes,manifestError);
  if (!fieldsMatch(value,['format','root','network_id','chain_id','node_name','files'])
-  || value.format!=='synergy-apqe-commissioning-v1' || value.root!=='/opt/Synergy'
+  || value.format!=='synergy-apqe-commissioning-v1' || value.root!==root
   || !fieldsMatch(value.files,contents) || contents.some(name=>!isDigest(value.files[name]))) throw Error(manifestError);
  if (value.network_id!==draft.network || exactObservationU64(value.chain_id)!==draft.chain || value.node_name!==draft.node) {
   throw Error('The commissioning network, chain, or node name differs from the current provisioning draft.');
  }
  return {network:draft.network,chain:draft.chain,policyPin:value.files['config/start-authorized.json'],
+  configurationPin:value.files['config/node.json'],
   publicPins:Object.fromEntries(publicNames.map(name=>[name,value.files[`network/${name}`]]))};
+}
+
+export async function readCommissioningConfiguration(file,manifest,form,current = ()=>true) {
+ const draft = commissioningDraftIdentity(form);
+ if (!draft || draft.network!==manifest.network || draft.chain!==manifest.chain) {
+  throw Error('Review the commissioning manifest for the current provisioning draft first.');
+ }
+ const bytes = await selectedBytes(file,configurationLimit,current);
+ if (!bytes) return null;
+ try {
+  if (!current()) return null;
+  const sha256 = await localSha256(bytes);
+  if (!current()) return null;
+  if (sha256!==manifest.configurationPin) throw Error('The selected configuration SHA-256 differs from the commissioning manifest.');
+  const config = parsed(bytes,configurationError,32);
+  if (!object(config)) throw Error(configurationError);
+  const {apqe_transport:transport, consensus, storage, aegis_provider:provider} = config;
+  const etdag = Object.hasOwn(config,'etdag') ? config.etdag : {};
+  return {
+   identity:config.network_id===draft.network && exactObservationU64(config.chain_id)===draft.chain && config.node_name===draft.node,
+   profile:object(transport) && transport.profile===profile,
+   transportPaths:canonicalPaths(transport,{
+    registry_path:'network/transport-registry.json',registry_trust_key_path:'network/transport-root.pub',
+    enrollment_path:'keys/apqe/enrollment.json',custody_path:'keys/apqe/custody.json',custody_unlock_path:'keys/apqe/unlock',
+   }),
+   runtimePaths:canonicalPaths(config,{public_identity_path:'keys/apqe/validator.pub.json',admin_socket_path:'run/admin.sock'})
+    && canonicalPaths(storage,{data_directory:'data'}),
+   networkPaths:canonicalPaths(config,{genesis_path:'network/genesis.json',manifest_path:'network/network-manifest.json'})
+    && canonicalPaths(consensus,{authority_binding:'network/authority.json',authority_trust_key_path:'network/authority-root.pub'}),
+   directKeyOverrides:config.aegis_signing_key_path==null && config.aegis_key_bindings_path==null && object(consensus)
+    && consensus.signing_key_path==null && object(etdag) && etdag.ingress_kem_secret_key_path==null,
+   publicTrustAnchors:object(transport) && transport.registry_trust_key_sha256===manifest.publicPins['transport-root.pub']
+    && transport.genesis_trust_key_sha256===manifest.publicPins['authority-root.pub'],
+   providerReference:canonicalPaths(provider,{report_path:'lib/apqe/build-report.json'})
+    && isDigest(provider.authenticated_report_sha256),
+  };
+ } finally {
+  new Uint8Array(bytes).fill(0);
+ }
 }
 
 export async function readCommissioningStartupPolicy(file,manifest,current = ()=>true) {

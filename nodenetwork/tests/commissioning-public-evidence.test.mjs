@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {commissioningDraftIdentity,commissioningPublicArtifacts,readCommissioningManifest,readCommissioningStartupPolicy,
+import {commissioningDraftIdentity,commissioningPublicArtifacts,readCommissioningConfiguration,readCommissioningManifest,readCommissioningStartupPolicy,
  reviewCommissioningPublicArtifacts} from '../src/commissioning-public-evidence.js';
 import {commissioningDraftFixture,commissioningFixture,commissioningPin} from './fixtures/commissioning-public-evidence.mjs';
 
 const file = raw=>new Blob([raw]);
 const named = (name,raw)=>Object.assign(file(raw),{name});
 const selections = publicFiles=>Object.entries(publicFiles).map(([name,raw])=>named(name,raw));
+const configurationMatches={identity:true,profile:true,transportPaths:true,runtimePaths:true,networkPaths:true,
+ directKeyOverrides:true,publicTrustAnchors:true,providerReference:true};
 
 async function ready(fixture) {
  const manifest=await readCommissioningManifest(file(fixture.commissioning),fixture.expected,fixture.draft);
@@ -66,6 +68,60 @@ test('distinguishes different equal-sized rosters, duplicate IDs and foreign rep
  await assert.rejects(reviewCommissioningPublicArtifacts(selections(other.publicFiles),mixed.manifest,mixed.policy),/authority file network or chain differs/);
 });
 
+test('checks byte identity, exact u64 scope and owner configuration clauses without exposing raw values',async()=>{
+ const fixture=commissioningFixture();
+ const {manifest}=await ready(fixture);
+ const status=await readCommissioningConfiguration(file(fixture.configuration),manifest,fixture.draft);
+ assert.deepEqual(status,configurationMatches);
+ assert.doesNotMatch(JSON.stringify(status),/fixture|\/opt\/|[a-f0-9]{64}/);
+ await assert.rejects(readCommissioningConfiguration(file(fixture.configuration.trim()),manifest,fixture.draft),/configuration SHA-256 differs/);
+ const chain='18446744073709551615';
+ const exactConfiguration=fixture.configuration.replace('"chain_id":99999',`"chain_id":${chain}`);
+ const exactManifest=fixture.commissioning.replace('"chain_id":99999',`"chain_id":${chain}`)
+  .replace(manifest.configurationPin,commissioningPin(exactConfiguration));
+ const draft={...fixture.draft,chain_id:chain};
+ const scoped=await readCommissioningManifest(file(exactManifest),commissioningPin(exactManifest),draft);
+ assert.deepEqual(await readCommissioningConfiguration(file(exactConfiguration),scoped,draft),configurationMatches);
+});
+
+test('reports each configuration discrepancy even when the bytes are correctly pinned',async()=>{
+ const bad=commissioningFixture({alterConfiguration:config=>{
+  config.node_name='private-fixture-different-node';
+  config.apqe_transport.profile='non-owner-profile';
+  config.apqe_transport.custody_unlock_path='/private/foreign-fixture/never-read';
+  config.apqe_transport.genesis_trust_key_sha256='f'.repeat(64);
+  config.consensus.authority_binding='/private/foreign-fixture/authority.json';
+  config.storage.data_directory='/private/foreign-fixture/data';
+  config.etdag={ingress_kem_secret_key_path:'/private/foreign-fixture/secret'};
+  config.aegis_provider.authenticated_report_sha256='bad-reference';
+ }});
+ const {manifest}=await ready(bad);
+ const verdict=await readCommissioningConfiguration(file(bad.configuration),manifest,bad.draft);
+ assert.deepEqual(verdict,Object.fromEntries(Object.keys(configurationMatches).map(key=>[key,false])));
+ assert.doesNotMatch(JSON.stringify(verdict),/foreign-fixture|non-owner|secret|bad-reference/);
+ for (const change of [
+  config=>{config.aegis_signing_key_path='/fixture/private';},config=>{config.aegis_key_bindings_path='/fixture/private';},
+  config=>{config.consensus.signing_key_path='/fixture/private';},
+ ]) {
+  const scoped=commissioningFixture({alterConfiguration:change});
+  assert.equal((await readCommissioningConfiguration(file(scoped.configuration),(await ready(scoped)).manifest,scoped.draft)).directKeyOverrides,false);
+ }
+});
+
+test('refuses oversized and malformed selected configs and clears retired buffers',async()=>{
+ const fixture=commissioningFixture();
+ const {manifest}=await ready(fixture);
+ const oversized={size:4*1024*1024+1,arrayBuffer:()=>assert.fail('unexpected file read')};
+ await assert.rejects(readCommissioningConfiguration(oversized,manifest,fixture.draft),/at most 4,194,304 bytes/);
+ const duplicate=fixture.configuration.replace('"chain_id":99999','"chain_id":99999,"cha\\u0069n_id":99999');
+ await assert.rejects(readCommissioningConfiguration(file(duplicate),{...manifest,configurationPin:commissioningPin(duplicate)},fixture.draft),/not a supported commissioning configuration JSON object/);
+ let current=true;
+ const bytes=await file(fixture.configuration).arrayBuffer();
+ const pending={size:bytes.byteLength,arrayBuffer:async()=>{current=false;return bytes;}};
+ assert.equal(await readCommissioningConfiguration(pending,manifest,fixture.draft,()=>current),null);
+ assert.ok(new Uint8Array(bytes).every(value=>value===0));
+});
+
 test('rejects extra, missing and duplicate selections before reads and retires a pending file',async()=>{
  const fixture=commissioningFixture();
  const {manifest,policy}=await ready(fixture);
@@ -93,4 +149,16 @@ test('uses the pinned owner seal and active-roster decisions', {skip:!ownerDir},
  const verdict=await reviewCommissioningPublicArtifacts(publicFiles,manifest,policy);
  const {activeCount}=JSON.parse(readFileSync(`${ownerDir}/owner-verdict.json`,'utf8'));
  assert.deepEqual(verdict,{status:'compared',allPublicDigestsMatch:true,policyCount:activeCount,activeCount,rosterMatches:true});
+});
+
+const ownerLayoutDir=process.env.SYNERGY_COMMISSIONING_LAYOUT_OWNER_FIXTURES;
+test('matches pinned owner validate_stage configuration findings', {skip:!ownerLayoutDir}, async()=>{
+ for (const [name,expected] of [ ['valid',configurationMatches], ['noncanonical-path',{...configurationMatches,transportPaths:false}],
+  ['different-anchor',{...configurationMatches,publicTrustAnchors:false}] ]) {
+  const folder=`${ownerLayoutDir}/${name}`;
+  const raw=readFileSync(`${folder}/commissioning.json`);
+  const manifest=await readCommissioningManifest(file(raw),commissioningPin(raw),commissioningDraftFixture);
+  const configuration=readFileSync(`${folder}/config/node.json`);
+  assert.deepEqual(await readCommissioningConfiguration(file(configuration),manifest,commissioningDraftFixture),expected,name);
+ }
 });
