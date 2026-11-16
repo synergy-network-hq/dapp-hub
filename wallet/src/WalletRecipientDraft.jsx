@@ -6,6 +6,7 @@ import {parseSnrgDraftAmount} from './send-draft-amount.js';
 import {WalletDraftBalanceComparison} from './WalletDraftBalanceComparison.jsx';
 import {WalletDraftAccountObservation} from './WalletDraftAccountObservation.jsx';
 import {WalletDraftFeeSchedule} from './WalletDraftFeeSchedule.jsx';
+import {WalletOrdinaryFeeEstimate} from './WalletOrdinaryFeeEstimate.jsx';
 
 function contactStillSaved(contact) {
   try {
@@ -82,8 +83,10 @@ function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
       {isProtectedWalletAddress(account) && <WalletDraftAccountObservation key={`account:${review.revision}`}
         account={account} endpoint={endpoint} canCheck={canUseReview}
         ordinaryDraftNwei={isBurn ? null : review.nwei}/>}
-      {!isBurn && <WalletDraftFeeSchedule key={`fee:${review.revision}`} endpoint={endpoint}
-        draftNwei={review.nwei} canCheck={canUseReview}/>}
+      {!isBurn && <>
+        <WalletDraftFeeSchedule key={`fee:${review.revision}`} endpoint={endpoint} draftNwei={review.nwei} canCheck={canUseReview}/>
+        <WalletOrdinaryFeeEstimate key={`estimate:${review.revision}`} endpoint={endpoint} draftNwei={review.nwei} canCheck={canUseReview}/>
+      </>}
     </section>}
   </>;
 }

@@ -319,9 +319,15 @@ pub(super) fn require_staged_install_target(reply: &Value) -> Result<(), &'stati
         .ok_or("The controller no longer reports an uninstalled Linux x86-64 target with qualified installation and preflight operations.")
 }
 
-pub(super) fn require_commission_target(reply: &Value) -> Result<(), &'static str> {
-    qualified_software_target(reply, true, &[("commission", "mutation")]).then_some(())
-        .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified validator commissioning.")
+pub(super) fn require_commission_target(reply: &Value, pending_formation: bool) -> Result<(), &'static str> {
+    let required = [("commission", "mutation"), ("formation_status", "read"),
+        ("vpn_status", "read"), ("genesis_binding_preflight", "read")];
+    let operations = if pending_formation { &required[..] } else { &required[..2] };
+    (reply.as_object().is_some_and(|fields| fields.len() == 3)
+        && reply["result"].as_object().is_some_and(|fields| fields.len() == 8)
+        && reply["result"]["communityEnrollment"] == false
+        && qualified_software_target(reply, true, operations)).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified validator commissioning and its required reads.")
 }
 
 pub(super) fn require_custody_preparation_target(request: &Request, review: &CustodyPreparationReview, reply: &Value) -> Result<(), &'static str> {
@@ -594,10 +600,20 @@ fn projected_vpn_status(reply: &Value) -> Option<&Value> {
         && status["schema"] == "nodenetwork-vpn-status-v1" && VPN_STATUS_FIELDS.iter().all(|key| status[*key].is_boolean())).then_some(status)
 }
 
-pub(super) fn require_service_start_vpn(reply: &Value) -> Result<(), &'static str> {
+fn confirmed_bound_vpn(reply: &Value) -> bool {
     projected_vpn_status(reply).filter(|status| status["service_registered"] == true && status["enrollment_recorded"] == true
         && status["reconciliation_required"] == false && status["server_bound"] == true && status["connected"] == true)
-        .map(|_| ()).ok_or("The current controller VPN report could not confirm the startup prerequisites. Read VPN status again before starting or restarting.")
+        .is_some()
+}
+
+pub(super) fn require_service_start_vpn(reply: &Value) -> Result<(), &'static str> {
+    confirmed_bound_vpn(reply).then_some(())
+        .ok_or("The current controller VPN report could not confirm the startup prerequisites. Read VPN status again before starting or restarting.")
+}
+
+pub(super) fn require_formation_commission_vpn(reply: &Value) -> Result<(), &'static str> {
+    confirmed_bound_vpn(reply).then_some(())
+        .ok_or("The controller could not confirm bound VPN connectivity for formation commissioning. Review VPN status again.")
 }
 
 pub(super) fn require_staged_vpn_enrollment(reply: &Value) -> Result<(), &'static str> {
@@ -803,8 +819,11 @@ fn formation_request_digest(pin: &Value) -> String {
     Request {version:1, operation:"formation_prepare".into(), parameters:json!({"formation_sha256":pin})}.approval_id()
 }
 
-fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
+fn custody_status_fields<'a>(operation: &str, reply: &'a Value) -> Result<&'a Value, &'static str> {
     const UNSUPPORTED: &str = "The selected controller returned unsupported pending custody evidence.";
+    if operation == "formation_status" && (reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3)) {
+        return Err(UNSUPPORTED);
+    }
     if reply["ok"] != true {
         if reply["error"]["code"] == "reconciliation_required" {
             return Err("The controller could not verify pending custody. Preserve it and contact the node operator for reconciliation.");
@@ -814,7 +833,7 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
     let result = &reply["result"];
     let fields = result.as_object().ok_or(UNSUPPORTED)?;
     if result["pending"] == false && fields.len() == 1 {
-        return Ok(json!({"version":1,"ok":true,"result":result}));
+        return Ok(result);
     }
     if result["pending"] != true || !validator_network_context(result) || !validator_address(&result["address"])
         || result["possession_verified"] != true || result["membership_granted"] != false {
@@ -829,7 +848,28 @@ fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'stati
         _ => false,
     };
     if !valid_kind { return Err(UNSUPPORTED); }
-    Ok(json!({"version":1,"ok":true,"result":result}))
+    Ok(result)
+}
+
+fn custody_status_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
+    Ok(json!({"version":1,"ok":true,"result":custody_status_fields(operation,reply)?}))
+}
+
+pub(super) fn commission_pending_formation(reply: &Value) -> Result<Option<&Value>, &'static str> {
+    let status = custody_status_fields("formation_status", reply)?;
+    Ok((status["pending"] == true).then_some(status))
+}
+
+pub(super) fn require_formation_commission_binding(formation: &Value, reply: &Value) -> Result<(), &'static str> {
+    // This consumes the native projection. The transport verifies the owner's
+    // public enrollment and request digests and omits them from this response.
+    let binding = &reply["result"];
+    let matches = reply["version"] == 1 && reply["ok"] == true && reply.as_object().is_some_and(|fields| fields.len() == 3)
+        && binding.as_object().is_some_and(|fields| fields.len() == 9) && binding["schema"] == "nodenetwork-genesis-binding-v1"
+        && binding["bound"] == true && binding["genesis_authority_verified"] == true && binding["membership_verified"] == true
+        && lowercase_digest(&binding["genesis_sha256"]) && binding["stage_receipt_verified"].is_boolean()
+        && ["network_id", "chain_id", "address"].iter().all(|key| binding[*key] == formation[*key]);
+    matches.then_some(()).ok_or("The controller could not confirm bound Genesis custody for the pending formation. Review custody before commissioning.")
 }
 
 fn identity_generation_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
@@ -1376,6 +1416,8 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
             "schema":"nodenetwork-formation-v1","formation_sha256":"a".repeat(64),"formation_id":"b".repeat(64),
             "request_sha256":"3d1a736fbc86a3e25a10764739cb3b53e31e4d070c3dfe546b648e73c8b7979d","address":"synv1".to_string()+&"a".repeat(36),
             "possession_verified":true,"membership_granted":false});
+        assert!(custody_status_reply("formation_status", &reply).is_err());
+        reply.as_object_mut().unwrap().remove("internal");
         assert!(custody_status_reply("formation_status", &reply).is_ok());
         assert!(custody_status_reply("identity_status", &reply).is_err());
         reply["result"]["request_sha256"] = json!("c".repeat(64));

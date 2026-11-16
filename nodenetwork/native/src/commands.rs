@@ -190,7 +190,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
    .unwrap_or_else(||format!("\nParameters: {}",request.parameters));
   let effect=match request.operation.as_str() {
    "install"=>"This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations.",
-   "commission"=>"This commissions the installed validator using inputs and custody already staged on the host. The controller can initialize node data and remove the staged inputs and temporary custody after applying them. A matching one-use host grant is required. Service startup and production approval are separate.",
+   "commission"=>"This commissions the installed validator using inputs and custody already staged on the host. Portal rechecks the installed target and, for pending formation, bound VPN connectivity and matching Genesis custody after confirmation. The controller can initialize node data and remove staged inputs and temporary custody. A matching one-use host grant is required. Service startup and production approval are separate.",
    "identity_generate"|"formation_prepare"=>"This prepares host-local validator custody from the reviewed inputs. Portal rechecks the installed controller and the exact preflight after confirmation. A matching one-use host grant is required. Validator membership is a separate operation.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
    "start"|"restart"=>"This requests a service start or restart on the selected validator. Portal rechecks controller qualification and current VPN readiness after confirmation. A matching one-use host grant is required. Read target health separately after the request.",
@@ -239,10 +239,30 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
 async fn dispatch_reviewed_software<Fut>(target:&node_controller::Target,request:&node_controller::Request,
  journal:&Path,mut execute:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
 where Fut:Future<Output=Result<Value,String>> {
- let fresh_target=execute(node_controller::Request{version:1,operation:"target".into(),parameters:serde_json::json!({})}).await
+ let read=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
+ let fresh_target=execute(read("target")).await
   .map_err(|_|"The controller could not recheck the selected target.")?;
  match request.operation.as_str() {
-  "commission"=>node_controller::require_commission_target(&fresh_target)?,
+  "commission"=>{
+   node_controller::require_commission_target(&fresh_target,false)?;
+   let formation_reply=execute(read("formation_status")).await
+    .map_err(|_|"The controller could not recheck pending formation custody. Review custody before commissioning.")?;
+   let pending=node_controller::commission_pending_formation(&formation_reply)?;
+   if let Some(formation)=pending {
+    // Testnet v3 613fa6ab controller.py rechecks these conditions before
+    // authorizing its formation branch. The owner still checks public pins.
+    node_controller::require_commission_target(&fresh_target,true)?;
+    let vpn=execute(read("vpn_status")).await
+     .map_err(|_|"The controller could not recheck bound VPN connectivity for formation commissioning.")?;
+    node_controller::require_formation_commission_vpn(&vpn)?;
+    let binding=execute(read("genesis_binding_preflight")).await
+     .map_err(|_|"The controller could not recheck Genesis custody. Review custody before commissioning.")?;
+    node_controller::require_formation_commission_binding(formation,&binding)?;
+   }
+   let current_target=execute(read("target")).await
+    .map_err(|_|"The controller could not recheck commissioning qualification after reviewing custody.")?;
+   node_controller::require_commission_target(&current_target,pending.is_some())?;
+  },
   "register"=>node_controller::require_service_registration_target(&fresh_target)?,
   "start"|"restart"=>{
    node_controller::require_service_start_target(&request.operation,&fresh_target)?;
@@ -842,10 +862,31 @@ mod tests {
  fn reviewed_commission_fixture() -> (Target, Request, PathBuf, Value, Value) {
   let (target,_,journal,mut report,_,_)=reviewed_install_fixture();
   report["result"]["installed"]=json!(true);
-  report["result"]["operations"]=json!([{"operation":"commission","kind":"mutation","available":true,"blocker":null}]);
+  report["result"]["communityEnrollment"]=json!(false);
+  report["result"]["operations"]=json!([{"operation":"commission","kind":"mutation","available":true,"blocker":null},
+   {"operation":"formation_status","kind":"read","available":true,"blocker":null}]);
   let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
   let receipt=json!({"version":1,"ok":true,"result":{"commissioned":true,"consensus_started":false,"production_approved":false}});
   (target,request,journal,report,receipt)
+ }
+
+ fn formation_absent()->Value {
+  json!({"version":1,"ok":true,"result":{"pending":false}})
+ }
+
+ fn commission_formation_scope(report:&mut Value)->(Value,Value,Value) {
+  let operations=report["result"]["operations"].as_array_mut().unwrap();
+  for operation in ["vpn_status","genesis_binding_preflight"] {
+   operations.push(json!({"operation":operation,"kind":"read","available":true,"blocker":null}));
+  }
+  let preparation=Request{version:1,operation:"formation_prepare".into(),parameters:json!({"formation_sha256":"b".repeat(64)})};
+  let formation=json!({"version":1,"ok":true,"result":{"pending":true,"schema":"nodenetwork-formation-v1",
+   "network_id":"fixture-formation","chain_id":"99999","formation_sha256":"b".repeat(64),"formation_id":"c".repeat(64),
+   "request_sha256":preparation.approval_id(),"address":"synv1".to_owned()+&"a".repeat(36),
+   "possession_verified":true,"membership_granted":false}});
+  let vpn=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-status-v1","service_registered":true,
+   "enrollment_staged":false,"enrollment_recorded":true,"reconciliation_required":false,"server_bound":true,"connected":true}});
+  (formation,vpn,genesis_binding_projection(true))
  }
 
  #[test]
@@ -861,10 +902,13 @@ mod tests {
   unavailable["result"]["operations"][0]["available"]=json!(false);
   let mut duplicate=report.clone();
   let operations=duplicate["result"]["operations"].as_array_mut().unwrap();
-  operations.push(operations[0].clone());
+  operations.push(operations[1].clone());
   let mut invalid_reports=vec![wrong_read,unavailable,duplicate];
+  let mut missing_formation=report.clone();
+  missing_formation["result"]["operations"].as_array_mut().unwrap().pop();
+  invalid_reports.push(missing_formation);
   for (field,value) in [("installed",json!(false)),("controllerVersion",json!(2)),("platform",json!("darwin")),
-   ("architecture",json!("aarch64")),("root",json!("/opt/synergy")),("localValidatorSupported",json!(false))] {
+   ("architecture",json!("aarch64")),("root",json!("/opt/synergy")),("localValidatorSupported",json!(false)),("communityEnrollment",json!(true))] {
    let mut invalid=report.clone();
    invalid["result"][field]=value;
    invalid_reports.push(invalid);
@@ -877,6 +921,102 @@ mod tests {
    }));
    assert!(outcome.unwrap_err().contains("qualified validator commissioning"));
    assert_eq!(wire,[json!({"version":1,"operation":"target","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn reviewed_commission_refuses_ambiguous_formation_status_before_vpn_or_journal() {
+  let (target,request,journal,mut report,_)=reviewed_commission_fixture();
+  let (mut unsupported,_,_)=commission_formation_scope(&mut report);
+  unsupported["result"]["request_sha256"]=json!("1".repeat(64));
+  let mut extra=formation_absent();
+  extra["raw"]=json!("private fixture");
+  let mut wrong_version=formation_absent();
+  wrong_version["version"]=json!(2);
+  let mut extra_result=formation_absent();
+  extra_result["result"]["name"]=json!("private fixture");
+  let refused=json!({"version":1,"ok":false,"error":{"code":"reconciliation_required","message":"private fixture"}});
+  for invalid in [Ok(unsupported),Ok(extra),Ok(wrong_version),Ok(extra_result),Ok(refused),Err("private fixture".into())] {
+   let mut wire=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    wire.push(query.canonical());
+    std::future::ready(if query.operation=="target" {Ok(report.clone())} else {invalid.clone()})
+   }));
+   assert!(!outcome.unwrap_err().contains("private fixture"));
+   assert_eq!(wire,[json!({"version":1,"operation":"target","parameters":{}}),
+    json!({"version":1,"operation":"formation_status","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn reviewed_commission_accepts_only_current_pending_formation_vpn_and_binding() {
+  let (target,request,journal,mut report,receipt)=reviewed_commission_fixture();
+  let (formation,vpn,binding)=commission_formation_scope(&mut report);
+  let mut wire=Vec::new();
+  let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+   wire.push(query.canonical());
+   std::future::ready(Ok(match query.operation.as_str() {
+    "target"=>report.clone(),"formation_status"=>formation.clone(),"vpn_status"=>vpn.clone(),
+    "genesis_binding_preflight"=>binding.clone(),"commission"=>receipt.clone(),_=>panic!("unadmitted method"),
+   }))
+  }));
+  assert_eq!(wire,["target","formation_status","vpn_status","genesis_binding_preflight","target","commission"]
+   .map(|operation|json!({"version":1,"operation":operation,"parameters":{}})));
+  let reply=outcome.unwrap();
+  assert_eq!(reply["result"]["schema"],"nodenetwork-commissioning-v1");
+  assert_eq!(reply["result"]["commissioned"],true);
+  assert_eq!(reply["result"]["consensus_started"],false);
+  let history=request_journal::inspect(&journal).unwrap();
+  assert_eq!(history["records"][0]["request_digest"],request.approval_id());
+  assert_eq!(history["records"][0]["state"],"response_received");
+  for retained in [&reply,&history] {
+   let representation=retained.to_string();
+   assert!(!representation.contains("fixture-formation") && !representation.contains("genesis_sha256"));
+  }
+  std::fs::remove_dir_all(&journal).unwrap();
+ }
+
+ #[test]
+ fn reviewed_commission_refuses_formation_scope_and_late_target_drift_without_dispatch() {
+  let (target,request,journal,mut report,_)=reviewed_commission_fixture();
+  let (formation,vpn,binding)=commission_formation_scope(&mut report);
+  let mut no_binding_read=report.clone();
+  no_binding_read["result"]["operations"].as_array_mut().unwrap().pop();
+  let mut lost_commission=report.clone();
+  lost_commission["result"]["operations"][0]["available"]=json!(false);
+  let mut cases=vec![(no_binding_read.clone(),vpn.clone(),binding.clone(),report.clone(),2),
+   (report.clone(),vpn.clone(),binding.clone(),no_binding_read,5),
+   (report.clone(),vpn.clone(),binding.clone(),lost_commission,5)];
+  for (field,wrong) in [("service_registered",false),("enrollment_recorded",false),("reconciliation_required",true),
+   ("server_bound",false),("connected",false)] {
+   let mut invalid=vpn.clone();
+   invalid["result"][field]=json!(wrong);
+   cases.push((report.clone(),invalid,binding.clone(),report.clone(),3));
+  }
+  for (field,wrong) in [("bound",json!(false)),("network_id",json!("foreign-fixture")),("chain_id",json!("1266")),
+   ("address",json!("synv1".to_owned()+&"b".repeat(36))),("membership_verified",json!(false)),
+   ("genesis_authority_verified",json!(false)),("genesis_sha256",json!("invalid")),("stage_receipt_verified",json!(null)),
+   ("leak",json!("private fixture"))] {
+   let mut invalid=binding.clone();
+   invalid["result"][field]=wrong;
+   cases.push((report.clone(),vpn.clone(),invalid,report.clone(),4));
+  }
+  for (initial,vpn,binding,final_target,seen) in cases {
+   let mut wire=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    wire.push(query.canonical());
+    std::future::ready(Ok(match query.operation.as_str() {
+     "target" if wire.len()==1=>initial.clone(),"target"=>final_target.clone(),
+     "formation_status"=>formation.clone(),"vpn_status"=>vpn.clone(),"genesis_binding_preflight"=>binding.clone(),
+     _=>panic!("scope drift must refuse before dispatch"),
+    }))
+   }));
+   assert!(!outcome.unwrap_err().contains("private fixture"));
+   let intended=["target","formation_status","vpn_status","genesis_binding_preflight","target"]
+    .map(|operation|json!({"version":1,"operation":operation,"parameters":{}}));
+   assert_eq!(wire,&intended[..seen]);
    assert!(!journal.exists());
   }
  }
@@ -907,10 +1047,12 @@ mod tests {
    let mut wire=Vec::new();
    let result=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
     wire.push(query.canonical());
-    std::future::ready(if query.operation=="target" {Ok(report.clone())} else {raw.clone()})
+    std::future::ready(match query.operation.as_str(){
+     "target"=>Ok(report.clone()),"formation_status"=>Ok(formation_absent()),"commission"=>raw.clone(),_=>panic!("unadmitted method"),
+    })
    }));
-   assert_eq!(wire,[json!({"version":1,"operation":"target","parameters":{}}),request.canonical()]);
-   assert_eq!(wire[1].to_string(),r#"{"operation":"commission","parameters":{},"version":1}"#);
+   assert_eq!(wire,["target","formation_status","target","commission"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}})));
+   assert_eq!(wire[3].to_string(),r#"{"operation":"commission","parameters":{},"version":1}"#);
    let history=request_journal::inspect(&journal).unwrap();
    let record=&history["records"][0];
    assert_eq!(record["response_ok"],json!(observed));
@@ -924,10 +1066,11 @@ mod tests {
      assert_eq!(result.unwrap_err(),node_controller::COMMISSION_UNCERTAIN);
      let mut attempted=Vec::new();
      let next=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+      let response=if query.operation=="formation_status" {formation_absent()} else {report.clone()};
       attempted.push(query.operation);
-      std::future::ready(Ok(report.clone()))
+      std::future::ready(Ok(response))
      }));
-     assert_eq!(attempted,["target"]);
+     assert_eq!(attempted,["target","formation_status","target"]);
      assert!(next.unwrap_err().contains("earlier local dispatch"));
     },
    }
