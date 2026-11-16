@@ -31,14 +31,46 @@ pub async fn portal_nodenetwork_review_formation_receipt(window:tauri::WebviewWi
 #[tauri::command]
 pub async fn portal_nodenetwork_review_upgrade_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
  target:node_controller::Target,record_id:String,release_id:String,manifest_sha256:String)->Result<Value,String>{
- main_only(&window)?;
- target.validate()?;
  let selection=node_controller::Request{version:1,operation:"upgrade".into(),
   parameters:serde_json::json!({"release_id":release_id,"manifest_sha256":manifest_sha256})};
+ read_software_receipt(window,app,target,record_id,selection).await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct InstallReceiptSelection {
+ release_id:String,
+ manifest_sha256:String,
+ network_id:String,
+ chain_id:String,
+ node_name:String,
+}
+
+impl InstallReceiptSelection {
+ fn request(self)->Result<node_controller::Request,String>{
+  let chain=self.chain_id.parse::<u64>().ok().filter(|value|*value>0&&value.to_string()==self.chain_id)
+   .ok_or("Enter the exact nonzero recorded chain ID in unsigned decimal.")?;
+  Ok(node_controller::Request{version:1,operation:"install".into(),parameters:serde_json::json!({
+   "release_id":self.release_id,"manifest_sha256":self.manifest_sha256,"network_id":self.network_id,
+   "chain_id":chain,"node_name":self.node_name,
+  })})
+ }
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_review_install_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
+ target:node_controller::Target,record_id:String,selection:InstallReceiptSelection)->Result<Value,String>{
+ read_software_receipt(window,app,target,record_id,selection.request()?).await
+}
+
+async fn read_software_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,
+ record_id:String,selection:node_controller::Request)->Result<Value,String>{
+ main_only(&window)?;
+ target.validate()?;
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
  let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable.")?;
  let serial=node_controller::SERIAL.lock().await;
- review_upgrade_receipt(&target,&record_id,&selection,&journal,|request| {
+ review_software_receipt(&target,&record_id,&selection,&journal,|request| {
   let (target,directory,serial)=(&target,&directory,&serial);
   async move {
    if request.operation=="target" {
@@ -50,17 +82,23 @@ pub async fn portal_nodenetwork_review_upgrade_receipt(window:tauri::WebviewWind
  }).await
 }
 
-async fn review_upgrade_receipt<Fut>(target:&node_controller::Target,record_id:&str,selection:&node_controller::Request,
+async fn review_software_receipt<Fut>(target:&node_controller::Target,record_id:&str,selection:&node_controller::Request,
  journal:&Path,mut read:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
 where Fut:Future<Output=Result<Value,String>> {
- if selection.operation!="upgrade" || !selection.validate()? {return Err("Select an exact upgrade request review.".into());}
+ let operation=selection.operation.as_str();
+ let schema=match operation {
+  "install"=>"nodenetwork-install-receipt-review-v1",
+  "upgrade"=>"nodenetwork-upgrade-receipt-review-v1",
+  _=>return Err("Select a supported installation receipt review.".into()),
+ };
+ selection.validate()?;
  let fingerprint=target.journal_identity();
  let digest=selection.approval_id();
- let lookup=||request_journal::unresolved_upgrade_receipt(journal,&fingerprint,record_id,&digest);
+ let lookup=||request_journal::unresolved_software_receipt(journal,&fingerprint,record_id,operation,&digest);
  let record=lookup()?;
  let recheck=|| {
   if lookup()?==record {return Ok(());}
-  Err("The selected upgrade dispatch changed. Refresh local history and select it again.".to_owned())
+  Err(format!("The selected {operation} dispatch changed. Refresh local history and select it again."))
  };
  let query=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
  let controller=read(query("target")).await;
@@ -68,9 +106,9 @@ where Fut:Future<Output=Result<Value,String>> {
  let status=if controller.as_ref().is_ok_and(|reply|node_controller::supports_receipt_review(reply,"diagnostics")) {
   let diagnostics=read(query("diagnostics")).await;
   recheck()?;
-  diagnostics.as_ref().map_or("unavailable",|reply|crate::node_diagnostics::upgrade_receipt_status(reply,&selection.parameters["manifest_sha256"]))
+  diagnostics.as_ref().map_or("unavailable",|reply|crate::node_diagnostics::software_receipt_status(reply,selection))
  } else {"unavailable"};
- Ok(serde_json::json!({"schema":"nodenetwork-upgrade-receipt-review-v1","status":status}))
+ Ok(serde_json::json!({"schema":schema,"status":status}))
 }
 
 async fn read_custody_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,
@@ -1464,6 +1502,85 @@ mod tests {
   (target,selection,journal,report,diagnostics)
  }
 
+ fn install_receipt_selection(chain:&str)->InstallReceiptSelection {
+  serde_json::from_value(json!({"releaseId":"fixture-release","manifestSha256":"a".repeat(64),
+   "networkId":"fixture-network","chainId":chain,"nodeName":"fixture-private-node"})).unwrap()
+ }
+
+ #[test]
+ fn reviewed_install_receipt_uses_the_pinned_owner_hash_and_exact_decimal_u64() {
+  let parsed=install_receipt_selection("18446744073709551615").request().unwrap();
+  assert_eq!(parsed.validate(),Ok(true));
+  assert_eq!(parsed.parameters["chain_id"].as_u64(),Some(u64::MAX));
+  assert_eq!(parsed.approval_id(),"798042cdf35369cf2f7d329f5e8ce145841cf5b40d03458b3efc93812c497ce0");
+  for wrong in ["0","-1","+1266","01266","1266\n","18446744073709551616","1e3"] {
+   assert!(install_receipt_selection(wrong).request().is_err(),"{wrong:?}");
+  }
+ }
+
+ #[test]
+ fn reviewed_install_receipt_checks_all_identity_fields_and_preserves_the_exact_journal() {
+  let (target,_,journal,report,diagnostics)=upgrade_receipt_fixture();
+  let selection=install_receipt_selection("18446744073709551615").request().unwrap();
+  request_journal::Dispatch::begin(&journal,&target.journal_identity(),"install",&selection.canonical()).unwrap()
+   .finish(&Err("unknown outcome".into())).unwrap();
+  let history=request_journal::inspect(&journal).unwrap();
+  let record_id=history["records"][0]["id"].as_str().unwrap();
+  let path=journal.join("nodenetwork-requests-v1").join(format!("{record_id}.json"));
+  let original=std::fs::read(&path).unwrap();
+  let mut replies=vec![(diagnostics.clone(),"match")];
+  for (field,value) in [("role",json!("rpc_gateway")),("network_id",json!("different-network")),
+   ("chain_id",json!("18446744073709551614")),("node_name",json!("other-validator")),("package_sha256",json!("b".repeat(64)))] {
+   let mut changed=diagnostics.clone();
+   changed["result"]["installation"][field]=value;
+   replies.push((changed,"different"));
+  }
+  let mut malformed=diagnostics;
+  malformed["result"]["installation"]["chain_id"]=json!(18446744073709551615_u64);
+  replies.push((malformed,"unavailable"));
+  for (reply,status) in replies {
+   let mut calls=Vec::new();
+   let result=tauri::async_runtime::block_on(review_software_receipt(&target,record_id,&selection,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(Ok(match query.operation.as_str(){"target"=>report.clone(),"diagnostics"=>reply.clone(),_=>panic!("unadmitted request")}))
+   })).unwrap();
+   assert_eq!(result,json!({"schema":"nodenetwork-install-receipt-review-v1","status":status}));
+   assert_eq!(calls,["target","diagnostics"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}})));
+   assert_eq!(std::fs::read(&path).unwrap(),original);
+  }
+  assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"install",&selection.canonical()).is_err());
+  assert_eq!(request_journal::inspect(&journal).unwrap(),history);
+  std::fs::remove_dir_all(journal).unwrap();
+ }
+
+ #[test]
+ fn reviewed_install_receipt_excludes_bootstrap_wrong_digest_and_late_record_drift() {
+  let (target,_,journal,report,diagnostics)=upgrade_receipt_fixture();
+  let selection=install_receipt_selection("18446744073709551615").request().unwrap();
+  let fingerprint=target.journal_identity();
+  let mut fixtures=Vec::new();
+  for operation in ["bootstrap","install"] {
+   let directory=journal.join(operation);
+   let dispatch=request_journal::Dispatch::begin(&directory,&fingerprint,operation,&selection.canonical()).unwrap();
+   let history=request_journal::inspect(&directory).unwrap();
+   fixtures.push((directory,history["records"][0]["id"].as_str().unwrap().to_owned(),dispatch));
+  }
+  let (bootstrap,id,_)=&fixtures[0];
+  let never_read=|_| -> std::future::Ready<Result<Value,String>> {panic!("unmatched request must refuse before transport")};
+  assert!(tauri::async_runtime::block_on(review_software_receipt(&target,id,&selection,bootstrap,never_read)).is_err());
+  let (directory,id,dispatch)=fixtures.pop().unwrap();
+  let wrong=install_receipt_selection("18446744073709551614").request().unwrap();
+  assert!(tauri::async_runtime::block_on(review_software_receipt(&target,&id,&wrong,&directory,never_read))
+   .unwrap_err().contains("do not match this install dispatch"));
+  let mut pending=Some(dispatch);
+  let result=tauri::async_runtime::block_on(review_software_receipt(&target,&id,&selection,&directory,|query| {
+   if query.operation=="diagnostics" {pending.take().unwrap().finish(&Err("record progressed".into())).unwrap();}
+   std::future::ready(Ok(if query.operation=="target" {report.clone()} else {diagnostics.clone()}))
+  }));
+  assert!(result.unwrap_err().contains("selected install dispatch changed"));
+  std::fs::remove_dir_all(journal).unwrap();
+ }
+
  #[test]
  fn reviewed_upgrade_receipt_compares_only_reported_installation_and_preserves_journal_bytes() {
   let (target,selection,journal,report,diagnostics)=upgrade_receipt_fixture();
@@ -1485,7 +1602,7 @@ mod tests {
    (report.clone(),Ok(invalid),"unavailable",2),(report,Err("private fixture".into()),"unavailable",2),
    (unsupported,Err("not admitted".into()),"unavailable",1)] {
    let mut calls=Vec::new();
-   let result=tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&selection,&journal,|query| {
+   let result=tauri::async_runtime::block_on(review_software_receipt(&target,record_id,&selection,&journal,|query| {
     calls.push(query.canonical());
     std::future::ready(match query.operation.as_str(){"target"=>Ok(controller.clone()),"diagnostics"=>reply.clone(),_=>panic!("unadmitted request")})
    })).unwrap();
@@ -1508,19 +1625,19 @@ mod tests {
    let record_id=history["records"][0]["id"].as_str().unwrap();
    let mut wrong=selection.clone();
    wrong.parameters["release_id"]=json!("other-fixture-release");
-   let denied=tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&wrong,&journal,
+   let denied=tauri::async_runtime::block_on(review_software_receipt(&target,record_id,&wrong,&journal,
     |_| -> std::future::Ready<Result<Value,String>> {panic!("wrong release must refuse before transport")}));
    assert!(denied.unwrap_err().contains("do not match this upgrade dispatch"));
    wrong.parameters["release_id"]=selection.parameters["release_id"].clone();
    wrong.parameters["manifest_sha256"]=json!("z".repeat(64));
-   assert!(tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&wrong,&journal,
+   assert!(tauri::async_runtime::block_on(review_software_receipt(&target,record_id,&wrong,&journal,
     |_| -> std::future::Ready<Result<Value,String>> {panic!("invalid digest must refuse before transport")})).is_err());
    let foreign=Target{kind:"remote".into(),host:Some("another-fixture.invalid".into()),port:None,root:ROOT.into()};
-   assert!(tauri::async_runtime::block_on(review_upgrade_receipt(&foreign,record_id,&selection,&journal,
+   assert!(tauri::async_runtime::block_on(review_software_receipt(&foreign,record_id,&selection,&journal,
     |_| -> std::future::Ready<Result<Value,String>> {panic!("wrong target must refuse before transport")})).is_err());
    let mut pending=Some(dispatch);
    let mut calls=Vec::new();
-   let drift=tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&selection,&journal,|query| {
+   let drift=tauri::async_runtime::block_on(review_software_receipt(&target,record_id,&selection,&journal,|query| {
     if query.operation==changed_at {pending.take().unwrap().finish(&Err("record progressed".into())).unwrap();}
     calls.push(query.operation.clone());
     std::future::ready(Ok(if query.operation=="target" {report.clone()} else {diagnostics.clone()}))

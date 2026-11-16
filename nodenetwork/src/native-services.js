@@ -21,14 +21,17 @@ export async function nodeNetworkReviewCustodyReceipt(target, recordId, operatio
  }
  return reply.status;
 }
-export async function nodeNetworkReviewUpgradeReceipt(target,recordId,selection) {
- if (!isTauri()) throw Error('The upgrade receipt review requires the native Portal app.');
- const reply=await invoke('portal_nodenetwork_review_upgrade_receipt',{
-  target,recordId,releaseId:selection.release_id,manifestSha256:selection.manifest_sha256,
- });
+export async function nodeNetworkReviewSoftwareReceipt(target,recordId,operation,selection) {
+ if (!['install','upgrade'].includes(operation)) throw Error('Select a supported installation receipt review.');
+ if (!isTauri()) throw Error(`The ${operation} receipt review requires the native Portal app.`);
+ const {release_id:releaseId,manifest_sha256:manifestSha256}=selection;
+ const args=operation==='install'?{
+  target,recordId,selection:{releaseId,manifestSha256,networkId:selection.network_id,chainId:selection.chain_id,nodeName:selection.node_name},
+ }:{target,recordId,releaseId,manifestSha256};
+ const reply=await invoke(`portal_nodenetwork_review_${operation}_receipt`,args);
  if (!reply || typeof reply!=='object' || Array.isArray(reply) || Object.keys(reply).length!==2
-  || reply.schema!=='nodenetwork-upgrade-receipt-review-v1' || !['match','different','unavailable'].includes(reply.status)) {
-  throw Error('The native bridge returned unsupported upgrade receipt evidence.');
+  || reply.schema!==`nodenetwork-${operation}-receipt-review-v1` || !['match','different','unavailable'].includes(reply.status)) {
+  throw Error(`The native bridge returned unsupported ${operation} receipt evidence.`);
  }
  return reply.status;
 }

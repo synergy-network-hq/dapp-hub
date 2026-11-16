@@ -7,6 +7,7 @@ import {WalletDraftBalanceComparison} from './WalletDraftBalanceComparison.jsx';
 import {WalletDraftAccountObservation} from './WalletDraftAccountObservation.jsx';
 import {WalletDraftFeeSchedule} from './WalletDraftFeeSchedule.jsx';
 import {WalletOrdinaryFeeEstimate} from './WalletOrdinaryFeeEstimate.jsx';
+import {WalletSynIdRecipient} from './WalletSynIdRecipient.jsx';
 
 function contactStillSaved(contact) {
   try {
@@ -21,6 +22,8 @@ function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
   const [input, setInput] = useState('');
   const [review, setReview] = useState(null);
   const [error, setError] = useState(null);
+  const [recipientRevision, setRecipientRevision] = useState(0);
+  const recipientInput = useRef(null);
   const errorId = useId();
   const isBurn = review !== null && contactAddressProfile(review.recipient) === 'burn';
   const draftRevision = useRef(0);
@@ -31,6 +34,17 @@ function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
     draftRevision.current++;
     setReview(null);
     setError(null);
+  }
+
+  function changeRecipient(value) {
+    setAddress(value);
+    setRecipientRevision(revision => revision + 1);
+    clearReview();
+  }
+
+  function useSynIdAddress(value) {
+    changeRecipient(value);
+    recipientInput.current?.focus();
   }
 
   function reviewDraft(event) {
@@ -59,15 +73,16 @@ function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
 
   return <>
     <form noValidate onSubmit={reviewDraft}>
-      {!contact && <label>Recipient address<input value={address} autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={100}
+      {!contact && <label>Recipient address<input ref={recipientInput} value={address} autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={100}
         aria-invalid={error?.field === 'recipient'} aria-describedby={error?.field === 'recipient' ? errorId : undefined}
-        onChange={event => { setAddress(event.target.value); clearReview(); }}/></label>}
+        onChange={event => changeRecipient(event.target.value)}/></label>}
       <label>Amount (SNRG)<input value={input} autoComplete="off" inputMode="decimal" maxLength={64}
         aria-invalid={error?.field === 'amount'} aria-describedby={error?.field === 'amount' ? errorId : undefined}
         onChange={event => { setInput(event.target.value); clearReview(); }}/></label>
       {error && <p role="alert" id={errorId}>{error.message}</p>}
       <button type="submit">Review local draft</button>
     </form>
+    {!contact && <WalletSynIdRecipient key={recipientRevision} endpoint={endpoint} canReview={canReview} onUse={useSynIdAddress}/>}
     {review && <section aria-label="Reviewed local SNRG draft">
       <h4>Local draft review</h4>
       <dl className="native-details">

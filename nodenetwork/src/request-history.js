@@ -46,8 +46,8 @@ export function matchesUnresolvedCustodyReceipt(record, fingerprint) {
  return matchesUnresolvedDispatch(record, fingerprint) && custodyReceiptOperations.includes(record.operation);
 }
 
-export function matchesUnresolvedUpgradeReceipt(record, fingerprint) {
- return matchesUnresolvedDispatch(record, fingerprint) && record.operation === 'upgrade';
+export function matchesUnresolvedSoftwareReceipt(record, fingerprint) {
+ return matchesUnresolvedDispatch(record, fingerprint) && ['install','upgrade'].includes(record.operation);
 }
 
 export function retainsUnresolvedDispatch(records, reviewed, fingerprint) {

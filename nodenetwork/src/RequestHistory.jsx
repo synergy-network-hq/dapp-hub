@@ -2,10 +2,10 @@ import {useState} from 'react';
 import {Card, Detail, ErrorMessage, ModalDialog, Resource, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {downloadJson} from './download-json.js';
 import {nodeNetworkRequests} from './native-services.js';
-import {configuredTargetFingerprint, custodyReceiptOperations, filterRequests, matchesUnresolvedCustodyReceipt, matchesUnresolvedServiceDispatch, matchesUnresolvedUpgradeReceipt, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
+import {configuredTargetFingerprint, custodyReceiptOperations, filterRequests, matchesUnresolvedCustodyReceipt, matchesUnresolvedServiceDispatch, matchesUnresolvedSoftwareReceipt, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
 import {ServiceDispatchDiagnosticsReview} from './TargetDiagnostics.jsx';
 import {CustodyReceiptReview} from './CustodyReceiptReview.jsx';
-import {UpgradeReceiptReview} from './UpgradeReceiptReview.jsx';
+import {SoftwareReceiptReview} from './SoftwareReceiptReview.jsx';
 
 const allRequests = {status: 'all', operation: 'all', target: null};
 const configuredTarget = 'configured';
@@ -146,7 +146,7 @@ function RequestHistoryView({permitted, target, targetScopeCurrent}) {
       key={current.id} target={target} record={current} fingerprint={configured.data} targetScopeCurrent={targetScopeCurrent}/>}
      {target && filterConfigured && matchesUnresolvedCustodyReceipt(current, configured.data) && <CustodyReceiptReview
       key={current.id} target={target} record={current} fingerprint={configured.data} targetScopeCurrent={targetScopeCurrent}/>}
-     {target && filterConfigured && matchesUnresolvedUpgradeReceipt(current, configured.data) && <UpgradeReceiptReview
+     {target && filterConfigured && matchesUnresolvedSoftwareReceipt(current, configured.data) && <SoftwareReceiptReview
       key={current.id} target={target} record={current} fingerprint={configured.data} targetScopeCurrent={targetScopeCurrent}/>}
     </div>}
    </>;

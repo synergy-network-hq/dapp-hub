@@ -196,10 +196,14 @@ pub(super) fn unresolved_custody_receipt(base: &Path, target: &Value, record_id:
     unresolved_dispatch(base,target,record_id,kind.operation(),kind.label())
 }
 
-pub(super) fn unresolved_upgrade_receipt(base: &Path, target: &Value, record_id: &str, request_digest: &str) -> Result<Record, String> {
-    let record=unresolved_dispatch(base,target,record_id,"upgrade","upgrade")?;
+pub(super) fn unresolved_software_receipt(base: &Path, target: &Value, record_id: &str, operation: &str, request_digest: &str) -> Result<Record, String> {
+    if !matches!(operation,"install"|"upgrade") { return Err("Select a supported installation receipt review.".into()); }
+    let record=unresolved_dispatch(base,target,record_id,operation,operation)?;
     if record.request_digest!=request_digest {
-        return Err("The entered release and manifest do not match this upgrade dispatch.".into());
+        return Err(match operation {
+            "install"=>"The entered references and validator identity do not match this install dispatch.",
+            _=>"The entered release and manifest do not match this upgrade dispatch.",
+        }.into());
     }
     Ok(record)
 }

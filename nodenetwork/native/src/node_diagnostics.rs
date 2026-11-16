@@ -172,9 +172,16 @@ pub(super) fn reply(value: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
-pub(super) fn upgrade_receipt_status(value: &Value, expected_pin: &Value) -> &'static str {
+pub(super) fn software_receipt_status(value: &Value, selection: &crate::node_controller::Request) -> &'static str {
     if reply(value).is_err() { return "unavailable"; }
-    if &value["result"]["installation"]["package_sha256"] == expected_pin { "match" } else { "different" }
+    let installed=&value["result"]["installation"];
+    let expected=&selection.parameters;
+    let pin_matches=installed["package_sha256"]==expected["manifest_sha256"];
+    // This path consumes a Request validated against the exact owner v1 parameters.
+    let identity_matches=selection.operation=="upgrade" || (installed["role"]=="validator"
+        && installed["network_id"]==expected["network_id"] && installed["node_name"]==expected["node_name"]
+        && installed["chain_id"]==expected["chain_id"].to_string());
+    if pin_matches && identity_matches { "match" } else { "different" }
 }
 
 #[cfg(test)]
