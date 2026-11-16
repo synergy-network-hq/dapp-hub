@@ -5,6 +5,8 @@ const BECH32M_ADDRESS_LENGTH = 41;
 const BECH32M_SEPARATOR_AND_CHECKSUM_LENGTH = 7;
 const PROTECTED_ADDRESS_LENGTH = 44;
 const BURN_ADDRESS = 'syn0000000000000000000000000000000';
+// Canonical chain-1266 STS Genesis from the Wallet inspector at 134cfa2.
+export const STS_TESTNET_GENESIS = '2272fe2b48c6e2019b27223f61ba8d8a82b58656fe9daab50c81f224a301ca74';
 
 // Current address namespaces from the Wallet owner at e7af1fce62c396a95e989cec33edc333eb405a05.
 const activeBech32mPrefixes = new Set([
@@ -27,6 +29,15 @@ export function isProtectedWalletAddress(address) {
   }).join('');
   return body === expected;
 }
+
+// Testnet-v3 runtime/src/address.rs generates this exact legacy STS wallet format.
+export function isLegacyStsWalletAddress(address) {
+  if (typeof address !== 'string' || address.length !== BECH32M_ADDRESS_LENGTH || address !== address.toLowerCase()) return false;
+  const decoded = bech32m.decodeUnsafe(address);
+  return decoded?.prefix === 'synw' && decoded.words.length === 30;
+}
+
+export const isNftWalletOwner = address => isProtectedWalletAddress(address) || isLegacyStsWalletAddress(address);
 
 function stsObjectPrefix(address) {
   if (typeof address !== 'string' || (address.length !== 43 && address.length !== 44) || address !== address.toLowerCase()) return null;

@@ -1,6 +1,6 @@
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {blockHeight, comparableTransactionHash} from './transaction-observation.js';
-import {isProtectedWalletAddress, isStsMultiAssetCollectionId, isStsNftObjectId} from './wallet-address.js';
+import {isLegacyStsWalletAddress, isNftWalletOwner, isStsMultiAssetCollectionId, isStsNftObjectId, STS_TESTNET_GENESIS} from './wallet-address.js';
 import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
 
 // Atlas's public token registry projects at most 250 recent STS NFT instances.
@@ -91,6 +91,10 @@ export function collectibleObservations(value, account) {
 // Testnet-v3 RPC STS owner reply at 05610db7 and the public chain 1266 snapshot projection.
 export function ownerCollectibleObservation(response, account, readiness) {
   const snapshot = ownerCollectibleSnapshot(response, account, readiness, RPC_OWNER_NFT_LIMIT, 'NFT');
+  if (!isNftWalletOwner(account) ||
+      (isLegacyStsWalletAddress(account) && snapshot.chainContext.genesis !== STS_TESTNET_GENESIS)) {
+    throw Error('The selected RPC did not return evidence for a supported NFT owner.');
+  }
   const seen = new Set();
   const items = snapshot.items.map(item => {
     const tokenClass = nftClass(item?.class);
@@ -182,7 +186,8 @@ export function nftInstanceObservation(response, selection, inventory, readiness
   const serial = exactRpcAmount(item.serial_number, maxU64);
   const expiry = exactRpcAmount(item.expires_at, 9999999999n);
   if (serial === null || serial === '0' || (item.expires_at !== null && (expiry === null || expiry === '0')) ||
-      (owner !== null && !isProtectedWalletAddress(owner)) ||
+      (owner !== null && (!isNftWalletOwner(owner) ||
+        (isLegacyStsWalletAddress(owner) && snapshot.chainContext.genesis !== STS_TESTNET_GENESIS))) ||
       (metadata_hash !== null && !metadataHash(metadata_hash)) ||
       ![burned, frozen, revoked, used, transferable, requires_issuer_approval, metadata_mutable,
         metadata_reference_present].every(flag => typeof flag === 'boolean')) {

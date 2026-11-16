@@ -3,7 +3,8 @@ import {Card, Detail, Resource, chainIdNumber, rpc, rpcNftInventoryObservation, 
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {ATLAS_NFT_LIMIT, RPC_OWNER_NFT_LIMIT, collectibleObservations, ownerCollectibleObservation} from './collectible-observations.js';
 import {requireAtlasAccountKey} from './atlas-account.js';
-import {useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
+import {readNftWalletReadiness, useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
+import {isNftWalletOwner} from './wallet-address.js';
 import {WalletRpcCollectionCheck} from './WalletRpcCollectionCheck.jsx';
 import {WalletRpcNftInstanceCheck} from './WalletRpcNftInstanceCheck.jsx';
 
@@ -125,6 +126,7 @@ export function WalletCollectibles({account, endpoint, readRpc, readAtlas}) {
 export function WalletOwnerCollectibles({account, endpoint, canRead}) {
   const {observation, requested, check, supportedAccount} = useWalletOwnerSnapshot({account, endpoint, canRead,
     read: rpcNftInventoryObservation, parse: ownerCollectibleObservation, limit: RPC_OWNER_NFT_LIMIT,
+    supportsOwner: isNftWalletOwner, readReadiness: readNftWalletReadiness,
     unavailable: 'The owner NFT snapshot is unavailable from the selected RPC.'});
 
   return <Card title="Selected RPC collectibles">
@@ -138,6 +140,6 @@ export function WalletOwnerCollectibles({account, endpoint, canRead}) {
         {value.items.length === RPC_OWNER_NFT_LIMIT && <p>The response reached the limit of {RPC_OWNER_NFT_LIMIT} records. Additional records may be available.</p>}
         <CollectibleList items={value.items} receivedAt={value.receivedAt} indexed={false} ownerSnapshot={value} {...{endpoint, canRead}}/>
       </>}</Resource>}
-    </> : <p>A current protected Wallet address is required for this check.</p>}
+    </> : <p>A protected Wallet address or a checksummed legacy Testnet Wallet address is required.</p>}
   </Card>;
 }

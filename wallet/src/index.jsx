@@ -49,6 +49,7 @@ export function WalletApp() {
   const atlasKey = `${atlasScope}:${revision}`;
   const draftScope = JSON.stringify([scope, n.endpoint.chainId, n.endpoint.genesisHash, n.walletConsentSession]);
   const canReadWallet = () => !n.recoverySuspended && n.permit('wallet', 'readWallet');
+  const canReadWalletNfts = useWalletReadScope(draftScope, canReadWallet);
   const canReadAtlasAccount = useWalletReadScope(atlasKey, () => canReadWalletAtlas(n));
   if (recipientDraft && recipientDraft.scope !== draftScope) setRecipientDraft(null);
 
@@ -89,7 +90,7 @@ export function WalletApp() {
         return <>
           {atlasReady ? <WalletCollectibles key={atlasKey} account={connection.address} endpoint={n.endpoint} readAtlas={readAtlas}/>
             : <Card title="Collectibles"><p>{atlasEndpointRequired}</p></Card>}
-          <WalletOwnerCollectibles key={`owner-nfts:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+          <WalletOwnerCollectibles key={`owner-nfts:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWalletNfts}/>
           <WalletMultiAssetInventory key={`owner-multi-assets:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
         </>;
       case 'Activity':

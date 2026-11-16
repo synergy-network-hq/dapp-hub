@@ -1,7 +1,6 @@
 import {sha256} from '@noble/hashes/sha256';
 import {bytesToHex, hexToBytes} from '@noble/hashes/utils';
-import {bech32m} from 'bech32';
-import {isStsNftObjectId} from './wallet-address.js';
+import {isLegacyStsWalletAddress as isSparkNf1WalletAddress, isStsNftObjectId} from './wallet-address.js';
 
 export const MAX_SPARK_MINT_DRAFT_BYTES = 24 * 1024;
 const MAX_PAYLOAD_BYTES = 4096;
@@ -14,11 +13,7 @@ const unsupportedDraft = 'Choose a supported unsigned Spark NF1 mint draft expor
 
 // Spark fe1d099 and the native Wallet inspector 134cfa2 use the local STS
 // Bech32m wallet namespace for this file format.
-export function isSparkNf1WalletAddress(value) {
-  if (typeof value !== 'string' || value.length !== 41 || value !== value.toLowerCase()) return false;
-  const decoded = bech32m.decodeUnsafe(value);
-  return decoded?.prefix === 'synw' && decoded.words.length === 30;
-}
+export {isSparkNf1WalletAddress};
 
 function jsonFile(source, error) {
   try {

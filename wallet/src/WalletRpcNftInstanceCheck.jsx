@@ -4,7 +4,7 @@ import {bytesToHex} from '@noble/hashes/utils';
 import {Detail, Resource, rpcNftInstanceObservation, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {matchesCollectibleReadiness, nftInstanceObservation} from './collectible-observations.js';
-import {readProtectedWalletReadiness} from './wallet-owner-readiness.js';
+import {readNftWalletReadiness} from './wallet-owner-readiness.js';
 
 const MAX_METADATA_FILE_BYTES = 256 * 1024;
 
@@ -22,7 +22,7 @@ export function WalletRpcNftInstanceCheck({endpoint, selection, inventory, canRe
       signal.throwIfAborted();
       if (!mounted.current || !canRead()) throw Error('The selected Wallet collectible changed.');
     }
-    const readiness = await readProtectedWalletReadiness(selection.ownerAddress, endpoint, signal, checkScope);
+    const readiness = await readNftWalletReadiness(selection.ownerAddress, endpoint, signal, checkScope);
     if (!matchesCollectibleReadiness(inventory.chainContext, readiness)) {
       throw Error('The selected RPC chain identity changed. Refresh the owner NFT snapshot before checking this NFT.');
     }

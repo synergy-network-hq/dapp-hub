@@ -1,9 +1,8 @@
 import {useLayoutEffect, useRef, useState} from 'react';
-import {Detail, Resource, rpc, rpcNftCollectionObservation, useResource} from '@synergy-network/portal-native/dapp-sdk';
-import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
+import {Detail, Resource, rpcNftCollectionObservation, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {matchesCollectibleReadiness, nftCollectionObservation} from './collectible-observations.js';
-import {checkConfiguredReceiptGenesis as checkConfiguredGenesis, rpcReceiptReadiness as testnetReadiness} from './rpc-receipt-observation.js';
+import {readNftWalletReadiness} from './wallet-owner-readiness.js';
 
 const yesNo = flag => flag ? 'Yes' : 'No';
 
@@ -21,14 +20,7 @@ export function WalletRpcCollectionCheck({endpoint, selection, inventory, canRea
       signal.throwIfAborted();
       if (!mounted.current || !canRead()) throw Error('The selected Wallet collectible changed.');
     }
-    checkScope();
-    const readiness = await readProtocolObservation(async (method, params, options) => {
-      checkScope();
-      const result = await rpc(method, params, options);
-      checkScope();
-      return result;
-    }, 'synergy_getReadiness', endpoint, signal, testnetReadiness);
-    checkConfiguredGenesis(readiness.chain, endpoint.genesisHash);
+    const readiness = await readNftWalletReadiness(selection.ownerAddress, endpoint, signal, checkScope);
     if (!matchesCollectibleReadiness(inventory.chainContext, readiness)) {
       throw Error('The selected RPC chain identity changed. Refresh the owner NFT snapshot before checking the collection.');
     }
