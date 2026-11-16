@@ -66,7 +66,7 @@ const progress = oneOf('ADVANCING', 'STABLE', 'STALLED', 'UNKNOWN');
 const certificate = oneOf('MISSING', 'COLLECTING', 'FORMED', 'REJECTED');
 const preflight = shape({id: text, status: oneOf('PASS', 'FAIL', 'UNKNOWN'), detail: text});
 const releaseFields = {
- release_id: nonempty, release_tag: nonempty, binary_sha256: value => text(value) && /^[a-fA-F0-9]{64}$/.test(value),
+ release_id: nonempty, release_tag: nonempty, binary_sha256: value => text(value) && value.length === 64 && /^[a-fA-F0-9]{64}$/.test(value),
  core_revision: nonempty, synq_revision: nonempty, aegis_revision: nonempty, genesis_hash: nonempty, protocol_version: nonempty,
  protected_pipeline_version: nonempty, validator_config_version: nonempty,
 };
@@ -209,7 +209,10 @@ function parseObservationContract(raw) {
 }
 
 export function parseValidatorObservation(raw) {
- const value = parseObservationContract(raw);
+ return projectValidatorObservation(parseObservationContract(raw));
+}
+
+function projectValidatorObservation(value) {
  const {discovery, chain, service, peers, posy, release: reportedRelease, expected_release: expected, protected_pipeline: pipeline} = value;
  const mismatches = expected == null ? null : Object.keys(releaseFields).filter(key => expected[key] !== reportedRelease[key]);
  return {
@@ -237,6 +240,17 @@ export function parseValidatorObservation(raw) {
   missingTransition: firstMissingTransition(value),
   savedPreflight: projectSavedHostPreflight(value.preflight),
  };
+}
+
+export function projectSavedValidatorStatus(status) {
+ const value = {
+  schema_version:status?.schema_version, observed_at_utc:status?.generated_at_utc,
+  discovery:status?.discovery, release:status?.release, service:status?.service, peers:status?.peers, chain:status?.chain,
+  posy:status?.posy, protected_pipeline:status?.protected_pipeline, resources:status?.resources, preflight:status?.preflight,
+ };
+ if (!observation(value) || !Array.isArray(value.preflight) || !consistent(value)) throw Error(unsupported);
+ const {headHeight, finalizedHeight, syncTargetHeight, serviceState, missingTransition, savedPreflight} = projectValidatorObservation(value);
+ return {headHeight, finalizedHeight, syncTargetHeight, serviceState, missingTransition, savedPreflight};
 }
 
 async function readObservationText(file) {

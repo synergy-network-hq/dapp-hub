@@ -1,4 +1,5 @@
 import {captureTime, exactObservationU64, parseExactNumbers} from './validator-operations-observation.js';
+import {projectSavedDiagnosticSnapshot} from './saved-validator-diagnostics.js';
 
 const schema = 'synergy.validator-operations.v1';
 const unsupported = 'The file is not a supported saved Validator Operations log observation.';
@@ -56,8 +57,13 @@ function projectLogs(value) {
   previous = current;
   return {sequence,severity:row.severity,subsystem:row.subsystem,ownerMarkedRedacted:row.redacted};
  });
+ let diagnostics = null;
+ if (snapshot) {
+  try {diagnostics = projectSavedDiagnosticSnapshot(value.status, value.preflight);}
+  catch { /* The independently supported log metadata remains available. */ }
+ }
  return {source:snapshot ? 'Saved diagnostic snapshot' : 'Saved structured log response', capturedAt,
-  collectedAt, truncated:logs.truncated, rows};
+  collectedAt, truncated:logs.truncated, rows, diagnostics};
 }
 
 export function parseSavedValidatorLogs(raw) {

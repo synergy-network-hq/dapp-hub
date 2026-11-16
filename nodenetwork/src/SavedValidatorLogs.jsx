@@ -3,6 +3,7 @@ import {ErrorMessage, ModalDialog, Table} from '@synergy-network/portal-native/d
 import {NodeNetworkPanelCard} from './NodeNetworkPanelFrame.jsx';
 import {downloadJson} from './download-json.js';
 import {useObservationFile} from './useObservationFile.js';
+import {SavedDiagnosticFindings} from './SavedDiagnosticFindings.jsx';
 import {
  filterSavedValidatorLogs, readSavedValidatorLogs, reviewSavedValidatorLogs, savedLogSeverities, savedLogSubsystems,
 } from './saved-validator-logs.js';
@@ -14,16 +15,19 @@ export function SavedValidatorLogs({permitted}) {
 }
 
 function FileReview() {
- const {result, error, reading, clear, select} = useObservationFile(readSavedValidatorLogs);
+ const {result, error, reading, revision, clear, select} = useObservationFile(readSavedValidatorLogs);
  return <>
-  <p>Choose a saved Validator Operations v1 log response or diagnostic snapshot. Portal shows only log metadata from the file.</p>
+  <p>Choose a saved Validator Operations v1 log response or diagnostic snapshot. A supported snapshot also shows captured status and host preflight findings.</p>
   <div className="native-actions">
    <label>Saved validator logs JSON<input type="file" accept=".json,application/json" onChange={select}/></label>
    {(reading || result || error) && <button onClick={clear}>Clear saved logs</button>}
   </div>
   {reading && <p role="status">Reading the selected logs…</p>}
   <ErrorMessage error={error}/>
-  {result && <LogReview observation={result}/>}
+  {result && <>
+   {result.capturedAt && <SavedDiagnosticFindings key={`diagnostic:${revision}`} capturedAt={result.capturedAt} diagnostics={result.diagnostics}/>}
+   <LogReview key={`logs:${revision}`} observation={result}/>
+  </>}
  </>;
 }
 

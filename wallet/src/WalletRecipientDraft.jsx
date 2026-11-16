@@ -4,6 +4,7 @@ import {CONTACT_KEY, matchesReviewedContact, readContacts} from './wallet-contac
 import {canSaveContactAddress, contactAddressProfile} from './wallet-address.js';
 import {parseSnrgDraftAmount} from './send-draft-amount.js';
 import {WalletDraftBalanceComparison} from './WalletDraftBalanceComparison.jsx';
+import {WalletDraftFeeSchedule} from './WalletDraftFeeSchedule.jsx';
 
 function contactStillSaved(contact) {
   try {
@@ -20,6 +21,8 @@ function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
   const [error, setError] = useState(null);
   const errorId = useId();
   const draftRevision = useRef(0);
+  const canUseReview = () => review !== null && draftRevision.current === review.revision && canReview() &&
+    (!contact || contactStillSaved(contact));
 
   function clearReview() {
     draftRevision.current++;
@@ -73,7 +76,9 @@ function AmountDraft({contact, account, endpoint, canReview, onInvalidate}) {
       {!contact && contactAddressProfile(review.recipient) === 'burn' && <p>Canonical burn address</p>}
       <p>Input checks are local. Fees, spendable balance and simulation remain unverified.</p>
       <WalletDraftBalanceComparison key={review.revision} account={account} endpoint={endpoint} draftNwei={review.nwei}
-        canCompare={() => draftRevision.current === review.revision && canReview() && (!contact || contactStillSaved(contact))}/>
+        canCompare={canUseReview}/>
+      {contactAddressProfile(review.recipient) !== 'burn' && <WalletDraftFeeSchedule key={`fee:${review.revision}`} endpoint={endpoint}
+        draftNwei={review.nwei} canCheck={canUseReview}/>}
     </section>}
   </>;
 }
