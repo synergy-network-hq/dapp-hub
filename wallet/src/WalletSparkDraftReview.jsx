@@ -5,6 +5,7 @@ import {inspectSparkDraft} from './spark-sts-launch-draft.js';
 import {STS_TESTNET_GENESIS} from './wallet-address.js';
 import {WalletSparkMintAuthorityCheck} from './WalletSparkMintAuthorityCheck.jsx';
 import {WalletSparkMintReceiptCheck} from './WalletSparkMintReceiptCheck.jsx';
+import {WalletSparkLaunchDefinitionCheck} from './WalletSparkLaunchDefinitionCheck.jsx';
 import {WalletSparkSaleEvidenceReview} from './WalletSparkSaleEvidenceReview.jsx';
 import {useWalletReadScope} from './wallet-account-read.js';
 
@@ -56,14 +57,14 @@ export function WalletSparkDraftReview() {
     {review.status !== 'empty' && <button type="button" onClick={clearFile}>Clear draft file</button>}
     {review.status === 'reading' && <p role="status">Reading draft…</p>}
     {review.status === 'failed' && <p role="alert" className="native-error">{review.message}</p>}
-    {value?.action === 'launch' && <LaunchDraftSummary value={value}/>}
+    {value?.action === 'launch' && <LaunchDraftSummary value={value} isCurrent={() => revision.current === review.revision}/>}
     {value?.action === 'mint' && <MintDraftSummary value={value} isCurrent={() => revision.current === review.revision}/>}
     {value && Object.hasOwn(saleActions, value.action) && <SaleDraftSummary value={value} draftBytes={review.draftBytes}
       isCurrent={() => revision.current === review.revision}/>}
   </Card>;
 }
 
-function LaunchDraftSummary({value}) {
+function LaunchDraftSummary({value, isCurrent}) {
   return <section aria-label="Unsigned B1 token launch review">
     <p role="status">Unsigned B1 token launch draft</p>
     <dl className="native-details">
@@ -72,7 +73,7 @@ function LaunchDraftSummary({value}) {
       <div><dt>Draft creator</dt><dd><code>{value.creatorAddress}</code></dd></div>
       <div><dt>Expected token ID</dt><dd><code>{value.expectedTokenId}</code></dd></div>
       <div><dt>Token decimals</dt><dd>{value.decimals}</dd></div>
-      <div><dt>Fixed supply (atomic units)</dt><dd>{value.supply}</dd></div>
+      <div><dt>Initial supply and cap (atomic units)</dt><dd>{value.supply}</dd></div>
       <div><dt>STS creator nonce</dt><dd>{value.nonce}</dd></div>
       <div><dt>Creation timestamp</dt><dd>{value.createdAt} Unix seconds</dd></div>
       <div><dt>Metadata URI</dt><dd>{value.metadataUri === null ? 'Unset' : <bdi>{value.metadataUri}</bdi>}</dd></div>
@@ -86,6 +87,7 @@ function LaunchDraftSummary({value}) {
       <div><dt>STS payload SHA-256</dt><dd><code>{value.payloadSha256}</code></dd></div>
     </dl>
     {value.exceedsCliV20Supply && <p>This supply exceeds the STS CLI v20 draft limit.</p>}
+    <SparkDraftRpcChecks draft={value} isCurrent={isCurrent}/>
     <p>The token ID is derived from this draft. Signing and deployment require a compatible Wallet.</p>
   </section>;
 }
@@ -107,7 +109,7 @@ function MintDraftSummary({value, isCurrent}) {
       <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
     </dl>
     <SparkMintPairingComparison draft={value}/>
-    <SparkMintRpcChecks draft={value} isCurrent={isCurrent}/>
+    <SparkDraftRpcChecks draft={value} isCurrent={isCurrent}/>
     <p>Signer identity, fees and transaction approval still require independent verification.</p>
   </section>;
 }
@@ -133,7 +135,7 @@ function SaleDraftSummary({value, draftBytes, isCurrent}) {
   </section>;
 }
 
-function SparkMintRpcChecks({draft, isCurrent}) {
+function SparkDraftRpcChecks({draft, isCurrent}) {
   const native = useNative();
   const {endpoint, walletConsentSession: consent, wallet: {connection, connectionRevision, isCurrentConnection}} = native;
   const scope = JSON.stringify([draft.sha256, native.endpointId, endpoint?.id, endpoint?.rpc, endpoint?.networkKey,
@@ -143,6 +145,7 @@ function SparkMintRpcChecks({draft, isCurrent}) {
     Number(endpoint?.chainId) === 1266 && Number.isSafeInteger(connectionRevision) &&
     typeof isCurrentConnection === 'function' && isCurrentConnection(connectionRevision, connection.address, connection.chainId);
   const canRead = useWalletReadScope(scope, allowed);
+  if (draft.action === 'launch') return allowed() && <WalletSparkLaunchDefinitionCheck key={scope} {...{draft, endpoint, canRead}}/>;
   return allowed() && <Fragment key={scope}>
     <WalletSparkMintAuthorityCheck {...{draft, endpoint, canRead}}/>
     <WalletSparkMintReceiptCheck {...{draft, endpoint, canRead}}/>

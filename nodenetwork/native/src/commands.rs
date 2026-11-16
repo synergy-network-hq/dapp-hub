@@ -3,7 +3,7 @@ use std::{future::Future, path::{Path, PathBuf}};
 use tauri::Manager;
 use crate::{node_network,node_controller,node_bootstrap,request_journal};
 use crate::genesis_stage::{GenesisStageReview, PreparedGenesisStage, INPUTS as GENESIS_INPUTS};
-use crate::request_journal::GenesisReceiptKind;
+use crate::request_journal::CustodyReceiptKind;
 #[tauri::command]
 pub fn portal_nodenetwork_requests(window:tauri::WebviewWindow,app:tauri::AppHandle)->Result<Value,String>{
  main_only(&window)?;
@@ -13,55 +13,64 @@ pub fn portal_nodenetwork_requests(window:tauri::WebviewWindow,app:tauri::AppHan
 #[tauri::command]
 pub async fn portal_nodenetwork_review_genesis_stage_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
  target:node_controller::Target,record_id:String)->Result<Value,String>{
- read_genesis_receipt(window,app,target,record_id,GenesisReceiptKind::Staging).await
+ read_custody_receipt(window,app,target,record_id,CustodyReceiptKind::GenesisStaging).await
 }
 
 #[tauri::command]
 pub async fn portal_nodenetwork_review_genesis_binding_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
  target:node_controller::Target,record_id:String)->Result<Value,String>{
- read_genesis_receipt(window,app,target,record_id,GenesisReceiptKind::Binding).await
+ read_custody_receipt(window,app,target,record_id,CustodyReceiptKind::GenesisBinding).await
 }
 
-async fn read_genesis_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,
- record_id:String,kind:GenesisReceiptKind)->Result<Value,String>{
+#[tauri::command]
+pub async fn portal_nodenetwork_review_formation_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
+ target:node_controller::Target,record_id:String)->Result<Value,String>{
+ read_custody_receipt(window,app,target,record_id,CustodyReceiptKind::Formation).await
+}
+
+async fn read_custody_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,
+ record_id:String,kind:CustodyReceiptKind)->Result<Value,String>{
  main_only(&window)?;
  target.validate()?;
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
  let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable.")?;
  let serial=node_controller::SERIAL.lock().await;
- review_genesis_receipt(&target,&record_id,&journal,kind,|request| {
+ review_custody_receipt(&target,&record_id,&journal,kind,|request| {
   let (target,directory,serial)=(&target,&directory,&serial);
   async move {
-   if request.operation=="genesis_binding_preflight" {
-    node_controller::execute_genesis_binding_preflight_raw_locked(target,directory,serial).await
-   } else {
+   if request.operation=="target" {
     node_controller::execute_locked(target,&request,directory,None,serial).await
+   } else {
+    node_controller::execute_custody_receipt_raw_locked(target,&request,directory,serial).await
    }
   }
  }).await
 }
 
-async fn review_genesis_receipt<Fut>(target:&node_controller::Target,record_id:&str,journal:&Path,kind:GenesisReceiptKind,
+async fn review_custody_receipt<Fut>(target:&node_controller::Target,record_id:&str,journal:&Path,kind:CustodyReceiptKind,
  mut read:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
 where Fut:Future<Output=Result<Value,String>> {
  let fingerprint=target.journal_identity();
- let record=request_journal::unresolved_genesis_receipt(journal,&fingerprint,record_id,kind)?;
+ let record=request_journal::unresolved_custody_receipt(journal,&fingerprint,record_id,kind)?;
  let recheck=|| {
-  let current=request_journal::unresolved_genesis_receipt(journal,&fingerprint,record_id,kind)?;
+  let current=request_journal::unresolved_custody_receipt(journal,&fingerprint,record_id,kind)?;
   if current==record {return Ok(());}
-  Err(format!("The selected Genesis {} dispatch changed. Refresh local history and select it again.",kind.label()))
+  Err(format!("The selected {} dispatch changed. Refresh local history and select it again.",kind.label()))
  };
  let query=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
  let controller=read(query("target")).await;
  recheck()?;
- let (schema,receipt_field)=match kind {
-  GenesisReceiptKind::Staging=>("nodenetwork-genesis-stage-receipt-review-v1","stage_request_sha256"),
-  GenesisReceiptKind::Binding=>("nodenetwork-genesis-binding-receipt-review-v1","request_sha256"),
+ let (schema,read_operation)=match kind {
+  CustodyReceiptKind::GenesisStaging=>("nodenetwork-genesis-stage-receipt-review-v1","genesis_binding_preflight"),
+  CustodyReceiptKind::GenesisBinding=>("nodenetwork-genesis-binding-receipt-review-v1","genesis_binding_preflight"),
+  CustodyReceiptKind::Formation=>("nodenetwork-formation-receipt-review-v1","formation_status"),
  };
- let status=if controller.as_ref().is_ok_and(node_controller::supports_genesis_receipt_review) {
-  match read(query("genesis_binding_preflight")).await {
-   Ok(reply)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),receipt_field),
-   Err(_)=>"unsupported",
+ let status=if controller.as_ref().is_ok_and(|reply|node_controller::supports_custody_receipt_review(reply,read_operation)) {
+  match (read(query(read_operation)).await,kind) {
+   (Ok(reply),CustodyReceiptKind::GenesisStaging)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),"stage_request_sha256"),
+   (Ok(reply),CustodyReceiptKind::GenesisBinding)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),"request_sha256"),
+   (Ok(reply),CustodyReceiptKind::Formation)=>node_controller::formation_receipt_status(&reply,record.request_digest()),
+   (Err(_),_)=>"unsupported",
   }
  } else {"unsupported"};
  recheck()?;
@@ -1181,6 +1190,90 @@ mod tests {
   retained
  }
 
+ fn reviewed_formation_receipt_fixture()->(Target,PathBuf,Value) {
+  let (target,_,journal,mut controller,_,_)=reviewed_install_fixture();
+  controller["result"]["installed"]=json!(true);
+  controller["result"]["operations"]=json!([{"operation":"formation_status","kind":"read","available":true,"blocker":null}]);
+  (target,journal,controller)
+ }
+
+ fn retained_formation(pin:&str)->Value {
+  let request=Request{version:1,operation:"formation_prepare".into(),parameters:json!({"formation_sha256":pin})};
+  json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-formation-v1","network_id":"fixture-network",
+   "chain_id":"18446744073709551615","formation_sha256":pin,"formation_id":"b".repeat(64),"pending":true,
+   "address":"synv1".to_owned()+&"a".repeat(36),"possession_verified":true,"membership_granted":false,"request_sha256":request.approval_id()}})
+ }
+
+ #[test]
+ fn reviewed_formation_receipt_compares_verified_pending_custody_without_touching_journal() {
+  let (target,journal,controller)=reviewed_formation_receipt_fixture();
+  let retained=retained_formation(&"a".repeat(64));
+  let request_digest="3d1a736fbc86a3e25a10764739cb3b53e31e4d070c3dfe546b648e73c8b7979d";
+  assert_eq!(retained["result"]["request_sha256"],request_digest);
+  let dispatch=request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),"formation_prepare",request_digest.into()).unwrap();
+  dispatch.finish(&Err("fixture uncertainty".into())).unwrap();
+  let previous=request_journal::inspect(&journal).unwrap();
+  let id=previous["records"][0]["id"].as_str().unwrap();
+  let different=retained_formation(&"d".repeat(64));
+  let absent=json!({"version":1,"ok":true,"result":{"pending":false}});
+  let mut wrong_request=retained.clone();
+  wrong_request["result"]["request_sha256"]=json!("c".repeat(64));
+  let mut unauthorized=retained.clone();
+  unauthorized["result"]["membership_granted"]=json!(true);
+  let mut exposed=retained.clone();
+  exposed["result"]["registration_json"]=json!("native-only fixture");
+  let mut envelope=retained.clone();
+  envelope["metadata"]=json!("native-only fixture");
+  let partial=json!({"version":1,"ok":false,"error":{"code":"reconciliation_required","message":"fixture private owner details"}});
+  for (raw,status) in [(Ok(retained),"match"),(Ok(different),"different"),(Ok(absent),"absent"),
+   (Ok(wrong_request),"unsupported"),(Ok(unauthorized),"unsupported"),(Ok(exposed),"unsupported"),
+   (Ok(envelope),"unsupported"),(Ok(partial),"unsupported"),(Err("fixture private transport details".into()),"unsupported")] {
+   let mut calls=Vec::new();
+   let result=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::Formation,|query| {
+    calls.push(query.canonical());
+    std::future::ready(if query.operation=="target" {Ok(controller.clone())} else {raw.clone()})
+   })).unwrap();
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),json!({"version":1,"operation":"formation_status","parameters":{}})]);
+   assert_eq!(result,json!({"schema":"nodenetwork-formation-receipt-review-v1","status":status}));
+   assert_eq!(request_journal::inspect(&journal).unwrap(),previous);
+  }
+  assert!(request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),"formation_prepare",request_digest.into()).is_err());
+  std::fs::remove_dir_all(&journal).unwrap();
+ }
+
+ #[test]
+ fn reviewed_formation_receipt_requires_current_scope_before_dispatch_and_publication() {
+  for drift in ["target","formation_status"] {
+   let (target,journal,controller)=reviewed_formation_receipt_fixture();
+   let digest=retained_formation(&"a".repeat(64))["result"]["request_sha256"].as_str().unwrap().to_owned();
+   let dispatch=request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),"formation_prepare",digest).unwrap();
+   let history=request_journal::inspect(&journal).unwrap();
+   let id=history["records"][0]["id"].as_str().unwrap();
+   for wrong_kind in [CustodyReceiptKind::GenesisStaging,CustodyReceiptKind::GenesisBinding] {
+    let denied=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,wrong_kind,
+     |_| -> std::future::Ready<Result<Value,String>> {panic!("mismatched receipt operation must not reach the controller")}));
+    assert!(denied.is_err());
+   }
+   let mut unsupported=controller.clone();
+   unsupported["result"]["operations"][0]["operation"]=json!("genesis_binding_preflight");
+   let result=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::Formation,|query| {
+    assert_eq!(query.operation,"target");
+    std::future::ready(Ok(unsupported.clone()))
+   })).unwrap();
+   assert_eq!(result["status"],"unsupported");
+   let mut dispatch=Some(dispatch);
+   let mut calls=Vec::new();
+   let denied=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::Formation,|query| {
+    calls.push(query.operation.clone());
+    if query.operation==drift {dispatch.take().unwrap().finish(&Err("fixture record progressed".into())).unwrap();}
+    std::future::ready(Ok(if query.operation=="target" {controller.clone()} else {retained_formation(&"a".repeat(64))}))
+   }));
+   assert!(denied.unwrap_err().contains("selected formation preparation dispatch changed"));
+   assert_eq!(calls,if drift=="target" {vec!["target"]} else {vec!["target","formation_status"]});
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
+ }
+
  #[test]
  fn reviewed_genesis_binding_receipt_compares_only_verified_retained_binding() {
   let (target,_,_,journal)=genesis_bind_scope_fixture();
@@ -1210,7 +1303,7 @@ mod tests {
    (Ok(wrong_binding),"unsupported"),(Ok(wrong_enrollment),"unsupported"),(Ok(wrong_custody),"unsupported"),
    (Err("private transport error".into()),"unsupported")] {
    let mut calls=Vec::new();
-   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Binding,|query| {
+   let response=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::GenesisBinding,|query| {
     calls.push(query.canonical());
     std::future::ready(if query.operation=="target" {Ok(controller.clone())} else {raw.clone()})
    })).unwrap();
@@ -1231,7 +1324,7 @@ mod tests {
    if settled {dispatch.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();}
    let history=request_journal::inspect(&journal).unwrap();
    let id=history["records"][0]["id"].as_str().unwrap();
-   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Binding,
+   let response=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::GenesisBinding,
     |_| -> std::future::Ready<Result<Value,String>> {panic!("wrong operation or settled record must not contact controller")}));
    assert!(response.unwrap_err().contains("unresolved Genesis binding entry"));
    assert_eq!(request_journal::inspect(&journal).unwrap(),history);
@@ -1257,7 +1350,7 @@ mod tests {
   for (raw,status) in [(Ok(retained),"match"),(Ok(different),"different"),(Ok(absent),"absent"),
    (Ok(malformed),"unsupported"),(Ok(private),"unsupported"),(Err("private transport error".into()),"unsupported")] {
    let mut calls=Vec::new();
-   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Staging,|query| {
+   let response=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::GenesisStaging,|query| {
     calls.push(query.canonical());
     std::future::ready(if query.operation=="target" {Ok(controller.clone())} else {raw.clone()})
    })).unwrap();
@@ -1282,14 +1375,14 @@ mod tests {
   let stage_id=rows.iter().find(|row|row["operation"]=="genesis_stage").unwrap()["id"].as_str().unwrap();
   let unrelated_id=rows.iter().find(|row|row["operation"]=="genesis_bind").unwrap()["id"].as_str().unwrap();
   for (test_target,id) in [(&target,"bad id"),(&target,unrelated_id),(&other,stage_id),(&other,unrelated_id)] {
-   let response=tauri::async_runtime::block_on(review_genesis_receipt(test_target,id,&journal,GenesisReceiptKind::Staging,
+   let response=tauri::async_runtime::block_on(review_custody_receipt(test_target,id,&journal,CustodyReceiptKind::GenesisStaging,
     |_| -> std::future::Ready<Result<Value,String>> {panic!("unmatched record must not contact controller")}));
    assert!(response.is_err());
   }
   let mut unavailable=controller;
   unavailable["result"]["operations"][0]["available"]=json!(false);
   let mut calls=Vec::new();
-  let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,stage_id,&journal,GenesisReceiptKind::Staging,|query| {
+  let response=tauri::async_runtime::block_on(review_custody_receipt(&target,stage_id,&journal,CustodyReceiptKind::GenesisStaging,|query| {
    calls.push(query.canonical());
    std::future::ready(Ok(unavailable.clone()))
   })).unwrap();
@@ -1298,7 +1391,7 @@ mod tests {
   assert_eq!(request_journal::inspect(&journal).unwrap(),history);
   stage.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
   unrelated.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
-  let result=tauri::async_runtime::block_on(review_genesis_receipt(&target,stage_id,&journal,GenesisReceiptKind::Staging,|_|std::future::ready(Err("unexpected".into()))));
+  let result=tauri::async_runtime::block_on(review_custody_receipt(&target,stage_id,&journal,CustodyReceiptKind::GenesisStaging,|_|std::future::ready(Err("unexpected".into()))));
   assert!(result.unwrap_err().contains("unresolved Genesis staging entry"));
   std::fs::remove_dir_all(&journal).unwrap();
  }
@@ -1312,7 +1405,7 @@ mod tests {
    let id=history["records"][0]["id"].as_str().unwrap();
    let mut dispatch=Some(dispatch);
    let mut calls=Vec::new();
-   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Staging,|query| {
+   let response=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::GenesisStaging,|query| {
     calls.push(query.operation.clone());
     if query.operation==drift {dispatch.take().unwrap().finish(&Err("record progressed".into())).unwrap();}
     std::future::ready(Ok(if query.operation=="target" {controller.clone()} else {retained.clone()}))

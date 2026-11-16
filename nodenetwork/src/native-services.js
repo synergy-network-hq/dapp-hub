@@ -5,18 +5,19 @@ export async function nodeNetworkRequests(){
  if(!isTauri())throw Error('Local request history requires the native Portal app. No native history has been read.');
  return parseRequestHistory(await invoke('portal_nodenetwork_requests'));
 }
-const genesisReceiptPorts = {
- genesis_stage:{command:'portal_nodenetwork_review_genesis_stage_receipt',schema:'nodenetwork-genesis-stage-receipt-review-v1',label:'staging'},
- genesis_bind:{command:'portal_nodenetwork_review_genesis_binding_receipt',schema:'nodenetwork-genesis-binding-receipt-review-v1',label:'binding'},
+const custodyReceiptPorts = {
+ genesis_stage:{command:'portal_nodenetwork_review_genesis_stage_receipt',schema:'nodenetwork-genesis-stage-receipt-review-v1',label:'Genesis staging'},
+ genesis_bind:{command:'portal_nodenetwork_review_genesis_binding_receipt',schema:'nodenetwork-genesis-binding-receipt-review-v1',label:'Genesis binding'},
+ formation_prepare:{command:'portal_nodenetwork_review_formation_receipt',schema:'nodenetwork-formation-receipt-review-v1',label:'formation preparation'},
 };
-export async function nodeNetworkReviewGenesisReceipt(target, recordId, operation) {
- if (!Object.hasOwn(genesisReceiptPorts, operation)) throw Error('Select a supported Genesis receipt review.');
- const {command,schema,label}=genesisReceiptPorts[operation];
- if (!isTauri()) throw Error(`Genesis ${label} receipt review requires the native Portal app.`);
+export async function nodeNetworkReviewCustodyReceipt(target, recordId, operation) {
+ if (!Object.hasOwn(custodyReceiptPorts, operation)) throw Error('Select a supported custody receipt review.');
+ const {command,schema,label}=custodyReceiptPorts[operation];
+ if (!isTauri()) throw Error(`The ${label} receipt review requires the native Portal app.`);
  const reply=await invoke(command,{target,recordId});
  if (!reply || typeof reply !== 'object' || Array.isArray(reply) || Object.keys(reply).length !== 2
   || reply.schema !== schema || !['match','different','absent','unsupported'].includes(reply.status)) {
-  throw Error(`The native bridge returned unsupported Genesis ${label} receipt evidence.`);
+  throw Error(`The native bridge returned unsupported ${label} receipt evidence.`);
  }
  return reply.status;
 }

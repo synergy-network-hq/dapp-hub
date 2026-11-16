@@ -180,25 +180,25 @@ fn inspect_records(base: &Path) -> Result<Vec<Record>, String> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum GenesisReceiptKind { Staging, Binding }
+pub(super) enum CustodyReceiptKind { GenesisStaging, GenesisBinding, Formation }
 
-impl GenesisReceiptKind {
+impl CustodyReceiptKind {
     pub(super) fn operation(self) -> &'static str {
-        match self { Self::Staging => "genesis_stage", Self::Binding => "genesis_bind" }
+        match self { Self::GenesisStaging => "genesis_stage", Self::GenesisBinding => "genesis_bind", Self::Formation => "formation_prepare" }
     }
 
     pub(super) fn label(self) -> &'static str {
-        match self { Self::Staging => "staging", Self::Binding => "binding" }
+        match self { Self::GenesisStaging => "Genesis staging", Self::GenesisBinding => "Genesis binding", Self::Formation => "formation preparation" }
     }
 }
 
-pub(super) fn unresolved_genesis_receipt(base: &Path, target: &Value, record_id: &str, kind: GenesisReceiptKind) -> Result<Record, String> {
+pub(super) fn unresolved_custody_receipt(base: &Path, target: &Value, record_id: &str, kind: CustodyReceiptKind) -> Result<Record, String> {
     let label = kind.label();
-    if !pin(record_id) { return Err(format!("Select an exact local Genesis {label} journal entry.")); }
+    if !pin(record_id) { return Err(format!("Select an exact local {label} journal entry.")); }
     let target_digest = digest(target);
     inspect_records(base)?.into_iter().find(|record| record.id == record_id && record.target_digest == target_digest
         && record.operation == kind.operation() && matches!(record.state.as_str(), "dispatch_intent" | "uncertain"))
-        .ok_or_else(|| format!("The unresolved Genesis {label} entry does not match this target. Refresh local history and select it again."))
+        .ok_or_else(|| format!("The unresolved {label} entry does not match this target. Refresh local history and select it again."))
 }
 
 pub fn inspect(base: &Path) -> Result<Value, String> {

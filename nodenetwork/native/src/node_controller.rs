@@ -731,8 +731,8 @@ fn genesis_binding_reply(reply: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
-pub(super) fn supports_genesis_receipt_review(reply: &Value) -> bool {
-    qualified_software_target(reply, true, &[("genesis_binding_preflight", "read")])
+pub(super) fn supports_custody_receipt_review(reply: &Value, read: &str) -> bool {
+    qualified_software_target(reply, true, &[(read, "read")])
 }
 
 pub(super) fn genesis_receipt_status(reply: &Value, expected_request_digest: &str, receipt_field: &str) -> &'static str {
@@ -744,6 +744,14 @@ pub(super) fn genesis_receipt_status(reply: &Value, expected_request_digest: &st
         Some(_) => "different",
         None => "absent",
     }
+}
+
+pub(super) fn formation_receipt_status(reply: &Value, expected_request_digest: &str) -> &'static str {
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) { return "unsupported"; }
+    let Ok(report) = custody_status_reply("formation_status", reply) else { return "unsupported"; };
+    let result = &report["result"];
+    if result["pending"] == false { return "absent"; }
+    if result["request_sha256"] == expected_request_digest { "match" } else { "different" }
 }
 
 fn genesis_bind_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
@@ -989,10 +997,12 @@ pub(super) async fn execute_genesis_stage_locked(target:&Target,wire:&str,contro
     exchange(target,wire.as_bytes(),180,control_dir,None).await
 }
 
-pub(super) async fn execute_genesis_binding_preflight_raw_locked(target:&Target,control_dir:&Path,
+pub(super) async fn execute_custody_receipt_raw_locked(target:&Target,request:&Request,control_dir:&Path,
     _serial:&tokio::sync::MutexGuard<'_, ()>) -> Result<Value,String> {
-    // Only the native journal comparison consumes this unprojected, fixed read.
-    let request=Request{version:1,operation:"genesis_binding_preflight".into(),parameters:json!({})};
+    // Only the native journal comparison consumes these unprojected, fixed reads.
+    if !matches!(request.operation.as_str(),"genesis_binding_preflight"|"formation_status") || request.validate()? {
+        return Err("Unsupported custody receipt read.".into());
+    }
     exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None).await
 }
 

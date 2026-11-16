@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {filterRequests, matchesUnresolvedGenesisReceipt, matchesUnresolvedServiceDispatch, parseRequestHistory, requestStatusLabel, retainsUnresolvedDispatch, reviewRequestSelection} from '../src/request-history.js';
+import {filterRequests, matchesUnresolvedCustodyReceipt, matchesUnresolvedServiceDispatch, parseRequestHistory, requestStatusLabel, retainsUnresolvedDispatch, reviewRequestSelection} from '../src/request-history.js';
 
 const targetA = 'a'.repeat(64);
 const targetB = 'b'.repeat(64);
@@ -69,14 +69,14 @@ test('requires the exact still-unresolved service operation for the selected con
  }
 });
 
-test('admits only the exact unresolved Genesis staging or binding dispatch for receipt inspection', () => {
- for (const operation of ['genesis_stage','genesis_bind']) {
+test('admits only the exact unresolved custody dispatch for receipt inspection', () => {
+ for (const operation of ['genesis_stage','genesis_bind','formation_prepare']) {
   const selected = {...unknown, operation};
-  assert.equal(matchesUnresolvedGenesisReceipt(selected, targetB), true);
-  assert.equal(matchesUnresolvedGenesisReceipt({...selected, state:'uncertain', observed_at_ms:1001}, targetB), true);
-  assert.equal(matchesUnresolvedGenesisReceipt(selected, targetA), false);
-  for (const record of [null, {...selected, operation:'formation_prepare'}, {...selected, state:'response_received', response_ok:true}]) {
-   assert.equal(matchesUnresolvedGenesisReceipt(record, targetB), false);
+  assert.equal(matchesUnresolvedCustodyReceipt(selected, targetB), true);
+  assert.equal(matchesUnresolvedCustodyReceipt({...selected, state:'uncertain', observed_at_ms:1001}, targetB), true);
+  assert.equal(matchesUnresolvedCustodyReceipt(selected, targetA), false);
+  for (const record of [null, {...selected, operation:'identity_generate'}, {...selected, state:'response_received', response_ok:true}]) {
+   assert.equal(matchesUnresolvedCustodyReceipt(record, targetB), false);
   }
   assert.equal(retainsUnresolvedDispatch([selected], selected, targetB), true);
   const otherOperation = operation === 'genesis_stage' ? 'genesis_bind' : 'genesis_stage';

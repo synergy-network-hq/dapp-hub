@@ -98,7 +98,7 @@ export function rpcSingleTokenBalance(response, account, readiness, tokenId) {
 }
 
 // Pinned owner's STS definition, with only the reviewed public fields in the host projection.
-export function rpcTokenDefinition(response, selected, inventory, readiness) {
+export function rpcTokenDefinitionEvidence(response, tokenId, readiness) {
   const {value, chainContext} = response;
   if (!matchesTokenReadiness(chainContext, readiness)) {
     throw Error('The token definition does not match the selected RPC readiness identity.');
@@ -106,18 +106,20 @@ export function rpcTokenDefinition(response, selected, inventory, readiness) {
   const replay = value?.replay;
   const height = blockHeight(replay?.latest_height);
   const digest = value => typeof value === 'string' && value.length === 64 && /^[0-9a-f]{64}$/.test(value);
-  if (value?.success !== true || !rpcSnapshotSources.has(value.source) || replay?.source !== value.source ||
+  if (!rpcSnapshotSources.has(value?.source) || replay?.source !== value.source ||
       replay.complete !== true || height === null || !digest(replay.snapshot_block_hash)) {
     throw Error('The selected RPC did not return a supported token definition snapshot.');
   }
-  if (BigInt(height) < BigInt(inventory.snapshotHeight) ||
-      (height === inventory.snapshotHeight && replay.snapshot_block_hash !== inventory.snapshotHash)) {
-    throw Error('The token definition snapshot conflicts with the selected balance. Check the owner inventory again.');
+  const snapshot = {snapshotHeight: height, snapshotHash: replay.snapshot_block_hash, receivedAt: Date.now()};
+  if (value.success === false && value.token_ref === tokenId && value.item === null && isStsFungibleObjectId(tokenId)) {
+    return {...snapshot, state: 'absent'};
   }
   const item = value.item;
-  if (item?.asset_kind !== 'sts' || item.token_id !== selected.tokenId || item.token_address !== selected.tokenAddress ||
+  if (value.success !== true || item?.asset_kind !== 'sts' || item.token_id !== tokenId ||
       item.token_address !== item.token_id || !isStsFungibleObjectId(item.token_id) || !['b1','b2','b3'].includes(item.class) ||
-      !item.token_id.startsWith(`syn${item.class}1`) || item.symbol !== selected.symbol || item.decimals !== selected.decimals) {
+      !item.token_id.startsWith(`syn${item.class}1`) || typeof item.symbol !== 'string' || item.symbol.trim() !== item.symbol ||
+      !/^[A-Z][A-Z0-9]{1,11}$/.test(item.symbol) || item.symbol.includes('SNRG') ||
+      !Number.isInteger(item.decimals) || item.decimals < 0 || item.decimals > 9) {
     throw Error('The selected RPC definition does not match this token identity and precision.');
   }
   const total = exactRpcAmount(item.total_supply, maxU128);
@@ -127,9 +129,21 @@ export function rpcTokenDefinition(response, selected, inventory, readiness) {
       (item.metadata_hash !== null && !digest(item.metadata_hash)) || (item.image_hash !== null && !digest(item.image_hash))) {
     throw Error('The selected RPC returned unsupported token definition fields.');
   }
-  return {tokenClass: item.class, total, maximum, verified: item.verified, paused: item.paused,
-    metadataHash: item.metadata_hash, imageHash: item.image_hash, snapshotHeight: height,
-    snapshotHash: replay.snapshot_block_hash, receivedAt: Date.now()};
+  return {...snapshot, state: 'definition', tokenClass: item.class, symbol: item.symbol, decimals: item.decimals, total, maximum,
+    verified: item.verified, paused: item.paused, metadataHash: item.metadata_hash, imageHash: item.image_hash};
+}
+
+export function rpcTokenDefinition(response, selected, inventory, readiness) {
+  const definition = rpcTokenDefinitionEvidence(response, selected.tokenId, readiness);
+  if (definition.state === 'absent') throw Error('The selected token definition is unavailable from this RPC.');
+  if (BigInt(definition.snapshotHeight) < BigInt(inventory.snapshotHeight) ||
+      (definition.snapshotHeight === inventory.snapshotHeight && definition.snapshotHash !== inventory.snapshotHash)) {
+    throw Error('The token definition snapshot conflicts with the selected balance. Check the owner inventory again.');
+  }
+  if (selected.tokenAddress !== selected.tokenId || definition.symbol !== selected.symbol || definition.decimals !== selected.decimals) {
+    throw Error('The selected RPC definition does not match this token identity and precision.');
+  }
+  return definition;
 }
 
 export async function readAtlasTokenBalances(request, account, {signal} = {}) {
