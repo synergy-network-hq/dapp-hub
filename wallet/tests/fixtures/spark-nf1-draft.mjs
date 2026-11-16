@@ -5,6 +5,7 @@ export const mintCollection = 'synn11vlvh33fjfqzek8kagaltcsfsqxmw7wyke88y57';
 export const mintTimestamp = 1794761001;
 export const mintPayload = 'synergy-sts-v1:{"version":1,"chain_id":1266,"network":"synergy-testnet-v3","tx":{"op":"mint_nft","data":{"collection_id":"synn11vlvh33fjfqzek8kagaltcsfsqxmw7wyke88y57","to":"synw1ylcxlewqxgnz76tkqycp8julzgp9jg0ppacu","metadata_uri":null,"metadata_hash":null,"metadata_mutable":false,"transferable":null,"requires_issuer_approval":null,"expires_at":null,"minted_at":1794761001}}}';
 export const mintFileSha256 = '70292ed86ae10b7f70b2f031367ad493d9d1d0d73710fb53b26fed3c086c18e5';
+export const mintPayloadSha256 = '06b95049f301ba6aa6c10b332f32c78426593c608d8b6a80f3f5f352b2f31888';
 
 export function mintDraftText(payload = mintPayload, changes = {}) {
   return JSON.stringify({

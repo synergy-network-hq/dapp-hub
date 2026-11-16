@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {inspectSparkNf1MintDraft, MAX_SPARK_MINT_DRAFT_BYTES} from '../src/spark-nf1-draft.js';
-import {mintCollection, mintDraftText, mintFileSha256, mintPayload, mintSender, mintTimestamp} from './fixtures/spark-nf1-draft.mjs';
+import {mintCollection, mintDraftText, mintFileSha256, mintPayload, mintPayloadSha256, mintSender, mintTimestamp} from './fixtures/spark-nf1-draft.mjs';
 
 const inspect = text => inspectSparkNf1MintDraft(new TextEncoder().encode(text));
 
@@ -9,12 +9,13 @@ test('checks the pinned Wallet v20 payload in the exact Spark export and hashes 
   const text = mintDraftText();
   assert.equal(Buffer.byteLength(text), 1002);
   assert.deepEqual(inspect(text), {
-    sha256: mintFileSha256, chainId: 1266, network: 'synergy-testnet-v3', sender: mintSender, recipient: mintSender,
+    sha256: mintFileSha256, payloadSha256: mintPayloadSha256, chainId: 1266, network: 'synergy-testnet-v3', sender: mintSender, recipient: mintSender,
     collectionId: mintCollection, mintedAt: mintTimestamp, metadataUri: null, metadataSha3: null,
   });
   const replacement = mintDraftText(mintPayload.replace('1794761001', '1794761002'));
   assert.equal(inspect(replacement).mintedAt, 1794761002);
   assert.notEqual(inspect(replacement).sha256, mintFileSha256);
+  assert.notEqual(inspect(replacement).payloadSha256, mintPayloadSha256);
 });
 
 test('requires the exact unsigned Spark version, address, outer shape and bytes', () => {
