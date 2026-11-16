@@ -1,7 +1,13 @@
 import {useState} from 'react';
 import {Card, Detail, ModalDialog} from '@synergy-network/portal-native/dapp-sdk';
-import {controllerOperation, releaseReferenceChecks, sameUpgradeParameters, upgradeParameters} from './nodeNetwork.js';
-import {installedControllerRead} from './target-observation.js';
+import {releaseReferenceChecks, sameUpgradeParameters, upgradeParameters} from './nodeNetwork.js';
+import {installedControllerMutation, installedControllerRead} from './target-observation.js';
+
+const upgradeOutcomes = {
+ already_current: 'The controller reports this package was already current.',
+ completed: 'The controller reports the software upgrade completed.',
+ resumed: 'The controller reports the interrupted software upgrade resumed and completed.',
+};
 
 export function UpdatePackage({form, setForm}) {
  const invalid = releaseReferenceChecks(form).filter(check => !check.valid);
@@ -21,16 +27,17 @@ export function UpdatePackage({form, setForm}) {
  </Card>;
 }
 
-export function ControllerUpdate({form, target, permitted, busy, controller, result, run}) {
+export function ControllerUpdate({form, target, permitted, busy, controller, result, upgradeResult, upgradeContext, run}) {
  const [review, setReview] = useState(null);
  const valid = releaseReferenceChecks(form).every(check => check.valid);
  const parameters = valid ? upgradeParameters(form) : null;
  const preflight = installedControllerRead(controller, 'upgrade_preflight');
- const apply = controllerOperation(controller, 'upgrade');
+ const apply = installedControllerMutation(controller, 'upgrade');
  const response = result?.operation === 'upgrade_preflight' ? result : null;
- const currentResponse = preflight.available && response && sameUpgradeParameters(response.submitted, parameters);
+ const currentResponse = preflight.available && response && response.upgradeContext === upgradeContext
+  && sameUpgradeParameters(response.submitted, parameters);
  const canReview = permitted && !busy && apply.available && valid && (!response || currentResponse);
- const currentReview = canReview && review && review.receipt === response && review.controller === controller
+ const currentReview = canReview && review && review.receipt === response && review.controller === controller && review.context === upgradeContext
   && sameUpgradeParameters(review.parameters, parameters);
 
  return <Card title="Controlled master update">
@@ -47,8 +54,16 @@ export function ControllerUpdate({form, target, permitted, busy, controller, res
   <button disabled={!permitted || busy || !valid || !preflight.available}
    onClick={() => run('upgrade_preflight', parameters)}>Verify staged update</button>
   {!preflight.available && <p>{preflight.blocker}</p>}
-  <button disabled={!canReview} onClick={() => setReview({parameters, receipt:response, controller})}>Apply approved update</button>
+  <button disabled={!canReview} onClick={() => setReview({parameters, receipt:response, controller, context:upgradeContext})}>Apply approved update</button>
   {!apply.available && <p>{apply.blocker}</p>}
+  {upgradeResult&&<section aria-label="Reported software upgrade">
+   <p role="status">{upgradeOutcomes[upgradeResult.result.outcome]} Response received {new Date(upgradeResult.receivedAt).toISOString()}.</p>
+   <Detail data={{reviewedRelease:upgradeResult.submitted.release_id,installedManifestSha256:upgradeResult.result.manifest,
+    previousManifestSha256:upgradeResult.result.previous}}/>
+   {upgradeResult.result.vpnRestartRequired===true&&<p>The controller reported that VPN requires a separate restart. Coordinate it with the node operator.</p>}
+   {upgradeResult.result.vpnRestartRequired===false&&<p>The controller reported no VPN restart requirement for this upgrade.</p>}
+   <p>The receipt reports no automatic restart or consensus start. Check current service health separately.</p>
+  </section>}
   {review && <ModalDialog label="Review update request" onClose={() => setReview(null)}>
    <h2>Review update request</h2>
    <Detail data={{
@@ -59,7 +74,7 @@ export function ControllerUpdate({form, target, permitted, busy, controller, res
     manifestSha256: review.parameters.manifest_sha256,
     preflightReceivedAt: review.receipt ? new Date(review.receipt.receivedAt).toISOString() : undefined,
    }}/>
-   {!review.receipt && <p>This review has no verified staged-package preflight. The node operator should verify the current installation or any interrupted upgrade before continuing.</p>}
+   {!review.receipt && <p>This review has no verified staged-package preflight. The controller can resume an interrupted upgrade with the exact recorded package. Review any interrupted operation with the node operator before continuing.</p>}
    <p>The native review confirms this exact request. Host policy must verify the staged release and a matching operator grant.</p>
    {!currentReview && <p role="status">The draft or its preflight changed. Close this review and verify the current package.</p>}
    <div className="native-actions">

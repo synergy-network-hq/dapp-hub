@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {installParameters, sameUpgradeParameters, upgradeParameters} from '../src/nodeNetwork.js';
-import {upgradePreflightObservation} from '../src/upgrade-preflight.js';
+import {upgradeObservation, upgradePreflightObservation} from '../src/upgrade-preflight.js';
 
 const packageReferences = {release_id: 'synergy-linux-test', manifest_sha256: 'a'.repeat(64)};
 
@@ -39,5 +39,22 @@ test('accepts only the owner’s exact release-bound result', () => {
  for (const value of [null, {...receipt,release:'other'}, {...receipt,packageVerified:false},
   {...receipt,automaticRestart:true}, {...receipt,private:'fixture'}]) {
   assert.throws(() => upgradePreflightObservation(value, packageReferences), /unsupported or mismatched update preflight/);
+ }
+});
+
+test('accepts only typed upgrade outcomes for the submitted manifest and keeps restart evidence scoped', () => {
+ const current = {schema:'nodenetwork-software-upgrade-v1',outcome:'already_current',manifest_sha256:packageReferences.manifest_sha256,
+  previous_manifest_sha256:null,vpn_restart_required:null};
+ const prior = 'b'.repeat(64);
+ const completed = {...current,outcome:'completed',previous_manifest_sha256:prior,vpn_restart_required:false};
+ for (const value of [current,completed,{...completed,outcome:'resumed',vpn_restart_required:true}]) {
+  assert.deepEqual(upgradeObservation(value,packageReferences),{outcome:value.outcome,manifest:value.manifest_sha256,
+   previous:value.previous_manifest_sha256,vpnRestartRequired:value.vpn_restart_required});
+ }
+ for (const changed of [{...current,manifest_sha256:prior},{...current,vpn_restart_required:false},
+  {...current,previous_manifest_sha256:prior},{...completed,previous_manifest_sha256:current.manifest_sha256},
+  {...completed,previous_manifest_sha256:prior+'\n'},{...completed,vpn_restart_required:null},
+  {...completed,outcome:'success'},{...completed,automatic_restart:false}]) {
+  assert.throws(()=>upgradeObservation(changed,packageReferences),/Software upgrade outcome is uncertain/);
  }
 });

@@ -10,6 +10,7 @@ const CONTROLLER: &str = "/opt/Synergy/tmp/controller/controller.py";
 const LIMIT: u64 = 1_000_000;
 pub(super) const GENESIS_STAGE_WIRE_LIMIT: usize = 12 * 1024 * 1024;
 pub(super) const REGISTER_UNCERTAIN: &str = "Service registration outcome is uncertain. Inspect the selected target before another change.";
+pub(super) const UPGRADE_UNCERTAIN: &str = "Software upgrade outcome is uncertain. Review the selected installation and its pending upgrade evidence before another change.";
 pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Deserialize)]
@@ -244,6 +245,11 @@ pub(super) fn require_service_registration_target(reply: &Value) -> Result<(), &
         .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified service registration.")
 }
 
+pub(super) fn require_upgrade_target(reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, true, &[("upgrade", "mutation")]).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with a qualified upgrade operation.")
+}
+
 pub(super) fn register_service_reply(reply: &Value) -> Result<Value, &'static str> {
     if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) { return Err(REGISTER_UNCERTAIN); }
     if reply["ok"] == false {
@@ -328,6 +334,43 @@ fn upgrade_preflight_reply(request: &Request, reply: &Value) -> Result<Value, &'
         return Err("The selected controller returned unsupported or mismatched update preflight evidence.");
     }
     Ok(json!({"version":1,"ok":true,"result":result}))
+}
+
+pub(super) fn upgrade_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) { return Err(UPGRADE_UNCERTAIN); }
+    if reply["ok"] == false {
+        let error = &reply["error"];
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) { return Err(UPGRADE_UNCERTAIN); }
+        // These exact owner refusals occur before the upgrade uses the one-use grant.
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("qualification_required"), Some("Release has no authenticated host approval" | "Operation has not passed host qualification")) =>
+                ("qualification_required", "The host did not qualify the staged software or this upgrade operation."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "A matching one-use host grant is required for the software upgrade."),
+            _ => return Err(UPGRADE_UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    let result = &reply["result"];
+    let fields = result.as_object().ok_or(UPGRADE_UNCERTAIN)?;
+    let expected = &request.parameters["manifest_sha256"];
+    if reply["ok"] != true || !lowercase_digest(expected) || result["package_sha256"] != *expected
+        || result["consensus_started"] != false || result["automatic_restart"] != false {
+        return Err(UPGRADE_UNCERTAIN);
+    }
+    let (outcome, previous, vpn_restart) = if fields.len() == 4 && result["already_current"] == true {
+        ("already_current", None, None)
+    } else if fields.len() == 11 && result["format"] == "synergy-software-upgrade-completed-v1" && result["root"] == ROOT
+        && result["new_package_sha256"] == *expected && lowercase_digest(&result["old_package_sha256"])
+        && result["old_package_sha256"] != *expected && result["resumed"].is_boolean() && result["vpn_restart_required"].is_boolean()
+        && result["vpn_stopped"] == false && result["custody_or_state_copied"] == false {
+        let outcome = if result["resumed"] == true { "resumed" } else { "completed" };
+        (outcome, Some(&result["old_package_sha256"]), Some(&result["vpn_restart_required"]))
+    } else {
+        return Err(UPGRADE_UNCERTAIN);
+    };
+    Ok(json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-software-upgrade-v1","outcome":outcome,
+        "manifest_sha256":expected,"previous_manifest_sha256":previous,"vpn_restart_required":vpn_restart}}))
 }
 
 fn recovery_preflight_reply(reply: &Value) -> Result<Value, &'static str> {
@@ -727,6 +770,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "install" => install_reply(request, &value),
         "register" => register_service_reply(&value),
         "upgrade_preflight" => upgrade_preflight_reply(request, &value),
+        "upgrade" => upgrade_reply(request, &value),
         "recovery_preflight" => recovery_preflight_reply(&value),
         "uninstall_preflight" => crate::node_removal_scope::reply(&value),
         "vpn_status" => vpn_status_reply(&value),

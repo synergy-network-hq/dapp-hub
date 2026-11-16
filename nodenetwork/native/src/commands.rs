@@ -120,6 +120,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let effect=match request.operation.as_str() {
    "install"=>"This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
+   "upgrade"=>"This checks and applies the staged software release. The controller can resume its recorded interrupted upgrade with the same exact package. A matching one-use host grant is required. This action does not start consensus or automatically restart services. Confirm maintenance scope and downtime with the operator.",
    _=>"This action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",
   };
   let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: {}{}\nExact request approval ID: {}\n\n{effect}",target.label(),request.operation,reviewed,request.approval_id());
@@ -129,7 +130,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- if matches!(request.operation.as_str(),"install"|"register") {
+ if matches!(request.operation.as_str(),"install"|"register"|"upgrade") {
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
   return dispatch_reviewed_software(&target,&request,&journal,|request| {
@@ -156,18 +157,26 @@ async fn dispatch_reviewed_software<Fut>(target:&node_controller::Target,request
 where Fut:Future<Output=Result<Value,String>> {
  let fresh_target=execute(node_controller::Request{version:1,operation:"target".into(),parameters:serde_json::json!({})}).await
   .map_err(|_|"The controller could not recheck the selected target.")?;
- let registers_services=request.operation=="register";
- if registers_services {
-  node_controller::require_service_registration_target(&fresh_target)?;
- } else {
-  node_controller::require_staged_install_target(&fresh_target)?;
-  let preflight=node_controller::Request{version:1,operation:"install_preflight".into(),parameters:request.parameters.clone()};
-  let fresh_preflight=execute(preflight.clone()).await
-   .map_err(|_|"The controller could not recheck the exact staged package and network policy. Run installation preflight again.")?;
-  node_controller::install_preflight_reply(&preflight,&fresh_preflight)?;
+ match request.operation.as_str() {
+  "register"=>node_controller::require_service_registration_target(&fresh_target)?,
+  // A sealed preflight cannot describe all partially applied upgrades. The owner
+  // mutation verifies its exact staged package and any saved upgrade intent.
+  "upgrade"=>node_controller::require_upgrade_target(&fresh_target)?,
+  "install"=>{
+   node_controller::require_staged_install_target(&fresh_target)?;
+   let preflight=node_controller::Request{version:1,operation:"install_preflight".into(),parameters:request.parameters.clone()};
+   let fresh_preflight=execute(preflight.clone()).await
+    .map_err(|_|"The controller could not recheck the exact staged package and network policy. Run installation preflight again.")?;
+   node_controller::install_preflight_reply(&preflight,&fresh_preflight)?;
+  },
+  _=>return Err("Unsupported reviewed software operation.".into()),
  }
  let dispatch=request_journal::Dispatch::begin(journal,&target.journal_identity(),&request.operation,&request.canonical())?;
- let result=execute(request.clone()).await.map_err(|error|if registers_services {node_controller::REGISTER_UNCERTAIN.into()} else {error});
+ let result=execute(request.clone()).await.map_err(|error|match request.operation.as_str() {
+  "register"=>node_controller::REGISTER_UNCERTAIN.into(),
+  "upgrade"=>node_controller::UPGRADE_UNCERTAIN.into(),
+  _=>error,
+ });
  dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes.")?;
  result
 }
@@ -341,6 +350,92 @@ mod tests {
   let reply=json!({"version":1,"ok":true,"result":{"registered":["/etc/systemd/system/synergy-node.service",
    "/etc/systemd/system/synergy-vpn.service"],"services_started":false,"boot_enabled":false}});
   (target,request,journal,report,reply)
+ }
+
+ fn reviewed_upgrade_fixture() -> (Target, Request, PathBuf, Value, Value, Value) {
+  let (target,_,journal,mut report,_,_)=reviewed_install_fixture();
+  report["result"]["installed"]=json!(true);
+  report["result"]["operations"]=json!([{"operation":"upgrade","kind":"mutation","available":true,"blocker":null}]);
+  let request=Request{version:1,operation:"upgrade".into(),parameters:json!({"release_id":"fixture-release","manifest_sha256":"a".repeat(64)})};
+  let completed=json!({"version":1,"ok":true,"result":{"format":"synergy-software-upgrade-completed-v1","root":"/opt/Synergy",
+   "old_package_sha256":"b".repeat(64),"new_package_sha256":"a".repeat(64),"resumed":false,"consensus_started":false,
+   "automatic_restart":false,"package_sha256":"a".repeat(64),"vpn_stopped":false,"vpn_restart_required":true,"custody_or_state_copied":false}});
+  let current=json!({"version":1,"ok":true,"result":{"package_sha256":"a".repeat(64),"already_current":true,
+   "consensus_started":false,"automatic_restart":false}});
+  (target,request,journal,report,completed,current)
+ }
+
+ #[test]
+ fn reviewed_upgrade_requires_installed_qualified_target_before_journaling() {
+  let (target,request,journal,report,_,_)=reviewed_upgrade_fixture();
+  assert_eq!(request.validate(),Ok(true));
+  let mut unreviewed=request.clone();
+  unreviewed.parameters["resume"]=json!(true);
+  assert!(unreviewed.validate().is_err());
+  for (key,wrong) in [("installed",json!(false)),("architecture",json!("arm64")),("operations",json!([
+   {"operation":"upgrade","kind":"mutation","available":true},{"operation":"upgrade","kind":"read","available":true}
+  ]))] {
+   let mut target_reply=report.clone();
+   target_reply["result"][key]=wrong;
+   let mut calls=Vec::new();
+   let result=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(Ok(target_reply.clone()))
+   }));
+   assert!(result.unwrap_err().contains("qualified upgrade operation"));
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn reviewed_upgrade_accepts_exact_owner_outcomes_without_sealed_preflight_and_fences_drift() {
+  let (target,request,journal,report,completed,current)=reviewed_upgrade_fixture();
+  let mut resumed=completed.clone();
+  resumed["result"]["resumed"]=json!(true);
+  let mut mismatched=completed.clone();
+  mismatched["result"]["new_package_sha256"]=json!("c".repeat(64));
+  let refused=json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Exact request needs one-time host operator authorization"}});
+  let unknown=json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":"installation receipt is outside recorded upgrade"}});
+  for (reply,outcome,journal_state) in [(current.clone(),Some("already_current"),"response_received"),
+   (completed.clone(),Some("completed"),"response_received"),(resumed,Some("resumed"),"response_received"),
+   (refused,None,"response_received"),(mismatched,None,"uncertain"),(unknown,None,"uncertain")] {
+   let mut calls=Vec::new();
+   let response=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(match query.operation.as_str() {
+     "target"=>Ok(report.clone()),"upgrade"=>node_controller::upgrade_reply(&query,&reply).map_err(String::from),_=>unreachable!(),
+    })
+   }));
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),request.canonical()]);
+   assert_eq!(calls[1].to_string(),format!(r#"{{"operation":"upgrade","parameters":{{"manifest_sha256":"{}","release_id":"fixture-release"}},"version":1}}"#,"a".repeat(64)));
+   let history=request_journal::inspect(&journal).unwrap();
+   assert_eq!(history["records"][0]["state"],journal_state);
+   assert_eq!(history["records"][0]["request_digest"],request.approval_id());
+   assert!(!history.to_string().contains("fixture-release"));
+   if let Some(outcome)=outcome {
+    let (previous,vpn)=if outcome=="already_current" {(Value::Null,Value::Null)} else {(json!("b".repeat(64)),json!(true))};
+    assert_eq!(response.unwrap()["result"],json!({"schema":"nodenetwork-software-upgrade-v1","outcome":outcome,
+     "manifest_sha256":"a".repeat(64),"previous_manifest_sha256":previous,"vpn_restart_required":vpn}));
+   } else if journal_state=="uncertain" {
+    assert!(response.unwrap_err().contains("Software upgrade outcome is uncertain"));
+    assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"upgrade",&request.canonical()).is_err());
+   } else {
+    assert_eq!(response.unwrap()["ok"],false);
+   }
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
+  for (key,wrong) in [("package_sha256",json!("c".repeat(64))),("old_package_sha256",json!("a".repeat(64))),
+   ("root",json!("/opt/synergy")),("resumed",json!("true")),("vpn_stopped",json!(true)),
+   ("vpn_restart_required",Value::Null),("consensus_started",json!(true)),("automatic_restart",json!(true)),
+   ("custody_or_state_copied",json!(true)),("already_current",json!(true))] {
+   let mut changed=completed.clone();
+   changed["result"][key]=wrong;
+   assert!(node_controller::upgrade_reply(&request,&changed).is_err(), "{key}");
+  }
+  let mut wrong_current=current;
+  wrong_current["result"]["package_sha256"]=json!("c".repeat(64));
+  assert!(node_controller::upgrade_reply(&request,&wrong_current).is_err());
  }
 
  #[test]
