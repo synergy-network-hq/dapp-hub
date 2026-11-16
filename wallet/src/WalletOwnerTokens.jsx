@@ -3,6 +3,7 @@ import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {rpcTokenBalanceInventory, RPC_TOKEN_INVENTORY_LIMIT} from './token-balance-inventory.js';
 import {useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
 import {WalletTokens} from './WalletTokens.jsx';
+import {WalletRpcTokenBalance} from './WalletRpcTokenBalance.jsx';
 
 export function WalletOwnerTokens({account, endpoint, canRead}) {
   const {observation, requested, check, supportedAccount} = useWalletOwnerSnapshot({account, endpoint, canRead,
@@ -22,6 +23,7 @@ export function WalletOwnerTokens({account, endpoint, canRead}) {
         {inventory.items.length === 1 && <p>The endpoint returned no STS token balances for this snapshot.</p>}
         <WalletTokens {...{inventory, endpoint, canRead}}/>
       </>}</Resource>}
+      <WalletRpcTokenBalance {...{account, endpoint, canRead}}/>
     </> : <p>A current protected Wallet address is required for this check.</p>}
   </Card>;
 }

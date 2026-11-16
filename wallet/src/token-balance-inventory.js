@@ -26,6 +26,18 @@ export function matchesTokenReadiness(chainContext, readiness) {
     chainContext.genesis === chain.genesis.toLowerCase();
 }
 
+function fungibleBalanceRow(row, account) {
+  const balance = exactRpcAmount(row?.balance, maxU128);
+  if (row?.asset_kind !== 'sts' || row.owner !== account || !isStsFungibleObjectId(row.token_id) ||
+      row.token_address !== row.token_id || typeof row.symbol !== 'string' ||
+      row.symbol.trim() !== row.symbol || !/^[A-Z][A-Z0-9]{1,11}$/.test(row.symbol) || row.symbol.includes('SNRG') ||
+      !Number.isInteger(row.decimals) || row.decimals < 0 || row.decimals > 9 || typeof row.frozen !== 'boolean' || balance === null) {
+    throw Error('The selected RPC returned an invalid or ambiguous STS balance row.');
+  }
+  return {source: 'rpc_sts_token_balances', symbol: row.symbol, tokenId: row.token_id,
+    tokenAddress: row.token_address, tokenStandard: 'Native STS fungible', raw: balance, decimals: row.decimals, frozen: row.frozen};
+}
+
 // The chain-1266 owner RPC returns the native ledger row and an exact-owner STS execution snapshot.
 export function rpcTokenBalanceInventory(response, account, readiness) {
   const {value, chainContext} = response;
@@ -55,19 +67,34 @@ export function rpcTokenBalanceInventory(response, account, readiness) {
 
   const seen = new Set();
   const items = sts.map(row => {
-    const balance = exactRpcAmount(row?.balance, maxU128);
-    if (row?.asset_kind !== 'sts' || row.owner !== account || !isStsFungibleObjectId(row.token_id) ||
-        row.token_address !== row.token_id || seen.has(row.token_id) || typeof row.symbol !== 'string' ||
-        row.symbol.trim() !== row.symbol || !/^[A-Z][A-Z0-9]{1,11}$/.test(row.symbol) || row.symbol.includes('SNRG') ||
-        !Number.isInteger(row.decimals) || row.decimals < 0 || row.decimals > 9 || typeof row.frozen !== 'boolean' || balance === null) {
-      throw Error('The selected RPC returned an invalid or ambiguous STS balance row.');
-    }
-    seen.add(row.token_id);
-    return {source: 'rpc_sts_token_balances', symbol: row.symbol, tokenId: row.token_id,
-      tokenAddress: row.token_address, tokenStandard: 'Native STS fungible', raw: balance, decimals: row.decimals, frozen: row.frozen};
+    const item = fungibleBalanceRow(row, account);
+    if (seen.has(item.tokenId)) throw Error('The selected RPC returned an invalid or ambiguous STS balance row.');
+    seen.add(item.tokenId);
+    return item;
   });
   items.unshift({source: 'rpc_native_token_balance', symbol: 'SNRG', raw: nativeAmount, decimals: 9, tokenStandard: 'Native SNRG'});
   return {kind: 'rpc', items, chainContext, snapshotHeight, snapshotHash, receivedAt: Date.now()};
+}
+
+export function rpcSingleTokenBalance(response, account, readiness, tokenId) {
+  const {value, chainContext} = response;
+  if (!matchesTokenReadiness(chainContext, readiness)) {
+    throw Error('The token balance does not match the selected RPC readiness identity.');
+  }
+  if (value?.owner !== account || value.token_id !== tokenId || !isStsFungibleObjectId(tokenId)) {
+    throw Error('The selected RPC did not return the requested Wallet owner and token.');
+  }
+  const replay = value.replay;
+  const height = blockHeight(replay?.latest_height);
+  const hash = replay?.snapshot_block_hash;
+  if (!rpcSnapshotSources.has(value.source) || replay?.source !== value.source || replay.complete !== true ||
+      height === null || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) {
+    throw Error('The selected RPC did not return a supported token balance snapshot.');
+  }
+  const snapshot = {height, hash, receivedAt: Date.now()};
+  if (value.state === 'unknown-token' && value.item === null) return {...snapshot, item: null};
+  if (value.state !== 'balance' || value.item?.token_id !== tokenId) throw Error('The selected RPC returned an invalid token balance.');
+  return {...snapshot, item: fungibleBalanceRow(value.item, account)};
 }
 
 // Pinned owner's STS definition, with only the reviewed public fields in the host projection.

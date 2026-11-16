@@ -125,6 +125,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
    "identity_generate"|"formation_prepare"=>"This prepares host-local validator custody from the reviewed inputs. Portal rechecks the installed controller and the exact preflight after confirmation. A matching one-use host grant is required. Validator membership is a separate operation.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
    "start"|"restart"=>"This requests a service start or restart on the selected validator. Portal rechecks controller qualification and current VPN readiness after confirmation. A matching one-use host grant is required. Read target health separately after the request.",
+   "vpn_enroll"=>"This uses the enrollment input already staged on the selected validator. Portal rechecks controller qualification and current staging eligibility after confirmation. A matching one-use host grant is required. Enrollment, server binding and connectivity are checked separately.",
    "upgrade"=>"This checks and applies the staged software release. The controller can resume its recorded interrupted upgrade with the same exact package. A matching one-use host grant is required. This action does not start consensus or automatically restart services. Confirm maintenance scope and downtime with the operator.",
    "uninstall"=>"This deletes the selected /opt/Synergy installation, including keys, data and signing-safety state. The controller can stop and remove attributed services and remove its dedicated host account. A matching one-use host grant is required. Arrange file retention, VPN retirement and chain exit separately.",
    _=>"This action changes the selected validator. A separate matching host grant is required. No action is retried automatically.",
@@ -136,7 +137,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- if matches!(request.operation.as_str(),"install"|"commission"|"register"|"upgrade"|"uninstall"|"start"|"restart") {
+ if matches!(request.operation.as_str(),"install"|"commission"|"register"|"upgrade"|"uninstall"|"start"|"restart"|"vpn_enroll") {
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
   return dispatch_reviewed_software(&target,&request,&journal,|request| {
@@ -180,6 +181,12 @@ where Fut:Future<Output=Result<Value,String>> {
     .map_err(|_|"The controller could not recheck current VPN status. Read VPN status again before starting or restarting.")?;
    node_controller::require_service_start_vpn(&vpn)?;
   },
+  "vpn_enroll"=>{
+   node_controller::require_vpn_enrollment_target(&fresh_target)?;
+   let vpn=execute(node_controller::Request{version:1,operation:"vpn_status".into(),parameters:serde_json::json!({})}).await
+    .map_err(|_|"The controller could not recheck current VPN status. Read VPN status again before enrolling.")?;
+   node_controller::require_staged_vpn_enrollment(&vpn)?;
+  },
   // A sealed preflight cannot describe all partially applied upgrades. The owner
   // mutation verifies its exact staged package and any saved upgrade intent.
   "upgrade"=>node_controller::require_upgrade_target(&fresh_target)?,
@@ -200,10 +207,12 @@ where Fut:Future<Output=Result<Value,String>> {
   "upgrade"=>node_controller::UPGRADE_UNCERTAIN.into(),
   "uninstall"=>crate::node_removal_scope::REMOVAL_UNCERTAIN.into(),
   "start"|"restart"=>node_controller::NODE_SERVICE_UNCERTAIN.into(),
+  "vpn_enroll"=>node_controller::VPN_ENROLLMENT_UNCERTAIN.into(),
   _=>error,
  }).and_then(|reply|match request.operation.as_str() {
   "commission"=>node_controller::commissioning_reply(&reply).map_err(String::from),
   "start"|"restart"=>node_controller::service_start_reply(&request.operation,&reply).map_err(String::from),
+  "vpn_enroll"=>node_controller::vpn_enrollment_reply(&reply).map_err(String::from),
   _=>Ok(reply),
  });
  dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes.")?;
@@ -318,6 +327,115 @@ mod tests {
    "enrollment_staged":false,"enrollment_recorded":true,"reconciliation_required":false,"server_bound":true,"connected":true}});
   let receipt=json!({"version":1,"ok":true,"result":{"requested":operation,"healthNotInferred":true}});
   (target,request,journal,capability,vpn,receipt)
+ }
+
+ fn reviewed_vpn_enrollment_fixture()->(Target,Request,PathBuf,Value,Value,Value) {
+  let (target,request,journal,capability,_,_)=reviewed_service_start_fixture("vpn_enroll");
+  let staged=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-status-v1","service_registered":true,
+   "enrollment_staged":true,"enrollment_recorded":false,"reconciliation_required":false,"server_bound":false,"connected":false}});
+  let recorded=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-status-v1","service_registered":true,
+   "enrollment_staged":false,"enrollment_recorded":true,"reconciliation_required":false,"server_bound":false,"connected":false,
+   "overlay_address":"100.80.10.4/16"}});
+  (target,request,journal,capability,staged,recorded)
+ }
+
+ #[test]
+ fn reviewed_vpn_enrollment_stops_before_journaling_after_capability_or_staging_drift() {
+  let (target,request,journal,capability,staged,_)=reviewed_vpn_enrollment_fixture();
+  assert_eq!(request.validate(),Ok(true));
+  let mut wrong_arch=capability.clone();
+  wrong_arch["result"]["architecture"]=json!("aarch64");
+  let mut wrong_root=capability.clone();
+  wrong_root["result"]["root"]=json!("/opt/synergy");
+  let mut uninstalled=capability.clone();
+  uninstalled["result"]["installed"]=json!(false);
+  let mut no_read=capability.clone();
+  no_read["result"]["operations"][1]["available"]=json!(false);
+  let mut duplicate=capability.clone();
+  let operations=duplicate["result"]["operations"].as_array_mut().unwrap();
+  operations.push(operations[0].clone());
+  for invalid in [wrong_arch,wrong_root,uninstalled,no_read,duplicate] {
+   let mut calls=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(Ok(invalid.clone()))
+   }));
+   assert!(outcome.unwrap_err().contains("qualified VPN enrollment and status operations"));
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+  let mut status_cases=vec![Err("private transport detail".into())];
+  for (field,value) in [("service_registered",json!(false)),("enrollment_staged",json!(false)),
+   ("enrollment_recorded",json!(true)),("reconciliation_required",json!(true)),("server_bound",json!(true)),("connected",json!(true)),
+   ("enrollment_staged",json!("true"))] {
+   let mut changed=staged.clone();
+   changed["result"][field]=value;
+   status_cases.push(Ok(changed));
+  }
+  for invalid in status_cases {
+   let mut calls=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(if query.operation=="target" {Ok(capability.clone())} else {invalid.clone()})
+   }));
+   let error=outcome.unwrap_err();
+   assert!(error.contains("Read VPN status again before enrolling"));
+   assert!(!error.contains("private transport"));
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),json!({"version":1,"operation":"vpn_status","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn reviewed_vpn_enrollment_settles_only_pinned_receipt_or_refusal_without_exposing_input() {
+  let (target,request,journal,capability,staged,recorded)=reviewed_vpn_enrollment_fixture();
+  let mut wrong=recorded.clone();
+  wrong["result"]["enrollment_staged"]=json!(true);
+  let mut extra=recorded.clone();
+  extra["diagnostics"]=json!("private owner detail");
+  let refusal=|code,message| json!({"version":1,"ok":false,"error":{"code":code,"message":message}});
+  for (raw,observed) in [(Ok(recorded.clone()),Some(true)),
+   (Ok(refusal("authorization_required","One-time host grant does not bind this VPN enrollment")),Some(false)),
+   (Ok(refusal("authorization_required","private unknown failure")),None),
+   (Ok(refusal("vpn_reconciliation_required","Prior VPN enrollment needs control-plane reconciliation")),None),
+   (Ok(refusal("vpn_reconciliation_required","VPN enrollment did not return a verified receipt. Inspect the VPN controller before issuing another credential.")),None),
+   (Ok(wrong),None),(Ok(extra),None),(Err("private transport detail".into()),None)] {
+   let mut calls=Vec::new();
+   let result=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(match query.operation.as_str() {
+     "target"=>Ok(capability.clone()),"vpn_status"=>Ok(staged.clone()),_=>raw.clone(),
+    })
+   }));
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),
+    json!({"version":1,"operation":"vpn_status","parameters":{}}),request.canonical()]);
+   assert_eq!(calls[2].to_string(),r#"{"operation":"vpn_enroll","parameters":{},"version":1}"#);
+   let history=request_journal::inspect(&journal).unwrap();
+   let row=&history["records"][0];
+   assert_eq!(row["request_digest"],request.approval_id());
+   assert_eq!(row["response_ok"],json!(observed));
+   assert_eq!(row["state"],if observed.is_some() {"response_received"} else {"uncertain"});
+   match observed {
+    Some(true)=>{
+     let result=result.unwrap();
+     assert!(result["result"].get("overlay_address").is_none());
+     assert_eq!(result["result"]["enrollment_recorded"],true);
+     assert_eq!(result["result"]["server_bound"],false);
+     assert_eq!(result["result"]["connected"],false);
+    },
+    Some(false)=>{
+     let reply=result.unwrap();
+     assert_eq!(reply["error"]["code"],"authorization_required");
+     assert!(!reply.to_string().contains("One-time host grant does not bind"));
+    },
+    None=>{
+     assert_eq!(result.unwrap_err(),node_controller::VPN_ENROLLMENT_UNCERTAIN);
+     assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"vpn_enroll",&request.canonical()).is_err());
+    },
+   }
+   assert!(!history.to_string().contains("100.80.10.4"));
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
  }
 
  #[test]
