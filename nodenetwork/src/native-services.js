@@ -5,12 +5,18 @@ export async function nodeNetworkRequests(){
  if(!isTauri())throw Error('Local request history requires the native Portal app. No native history has been read.');
  return parseRequestHistory(await invoke('portal_nodenetwork_requests'));
 }
-export async function nodeNetworkReviewGenesisStageReceipt(target, recordId) {
- if (!isTauri()) throw Error('Genesis staging receipt review requires the native Portal app.');
- const reply=await invoke('portal_nodenetwork_review_genesis_stage_receipt',{target,recordId});
+const genesisReceiptPorts = {
+ genesis_stage:{command:'portal_nodenetwork_review_genesis_stage_receipt',schema:'nodenetwork-genesis-stage-receipt-review-v1',label:'staging'},
+ genesis_bind:{command:'portal_nodenetwork_review_genesis_binding_receipt',schema:'nodenetwork-genesis-binding-receipt-review-v1',label:'binding'},
+};
+export async function nodeNetworkReviewGenesisReceipt(target, recordId, operation) {
+ if (!Object.hasOwn(genesisReceiptPorts, operation)) throw Error('Select a supported Genesis receipt review.');
+ const {command,schema,label}=genesisReceiptPorts[operation];
+ if (!isTauri()) throw Error(`Genesis ${label} receipt review requires the native Portal app.`);
+ const reply=await invoke(command,{target,recordId});
  if (!reply || typeof reply !== 'object' || Array.isArray(reply) || Object.keys(reply).length !== 2
-  || reply.schema !== 'nodenetwork-genesis-stage-receipt-review-v1' || !['match','different','absent','unsupported'].includes(reply.status)) {
-  throw Error('The native bridge returned unsupported Genesis staging receipt evidence.');
+  || reply.schema !== schema || !['match','different','absent','unsupported'].includes(reply.status)) {
+  throw Error(`The native bridge returned unsupported Genesis ${label} receipt evidence.`);
  }
  return reply.status;
 }

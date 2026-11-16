@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {filterRequests, matchesUnresolvedGenesisStage, matchesUnresolvedServiceDispatch, parseRequestHistory, requestStatusLabel, retainsUnresolvedDispatch, reviewRequestSelection} from '../src/request-history.js';
+import {filterRequests, matchesUnresolvedGenesisReceipt, matchesUnresolvedServiceDispatch, parseRequestHistory, requestStatusLabel, retainsUnresolvedDispatch, reviewRequestSelection} from '../src/request-history.js';
 
 const targetA = 'a'.repeat(64);
 const targetB = 'b'.repeat(64);
@@ -69,16 +69,20 @@ test('requires the exact still-unresolved service operation for the selected con
  }
 });
 
-test('admits only the exact unresolved Genesis staging dispatch for receipt inspection', () => {
- const staged = {...unknown, operation:'genesis_stage'};
- assert.equal(matchesUnresolvedGenesisStage(staged, targetB), true);
- assert.equal(matchesUnresolvedGenesisStage({...staged, state:'uncertain', observed_at_ms:1001}, targetB), true);
- assert.equal(matchesUnresolvedGenesisStage(staged, targetA), false);
- for (const record of [null, {...staged, operation:'genesis_bind'}, {...staged, state:'response_received', response_ok:true}]) {
-  assert.equal(matchesUnresolvedGenesisStage(record, targetB), false);
+test('admits only the exact unresolved Genesis staging or binding dispatch for receipt inspection', () => {
+ for (const operation of ['genesis_stage','genesis_bind']) {
+  const selected = {...unknown, operation};
+  assert.equal(matchesUnresolvedGenesisReceipt(selected, targetB), true);
+  assert.equal(matchesUnresolvedGenesisReceipt({...selected, state:'uncertain', observed_at_ms:1001}, targetB), true);
+  assert.equal(matchesUnresolvedGenesisReceipt(selected, targetA), false);
+  for (const record of [null, {...selected, operation:'formation_prepare'}, {...selected, state:'response_received', response_ok:true}]) {
+   assert.equal(matchesUnresolvedGenesisReceipt(record, targetB), false);
+  }
+  assert.equal(retainsUnresolvedDispatch([selected], selected, targetB), true);
+  const otherOperation = operation === 'genesis_stage' ? 'genesis_bind' : 'genesis_stage';
+  assert.equal(retainsUnresolvedDispatch([{...selected, operation:otherOperation}], selected, targetB), false);
+  assert.equal(retainsUnresolvedDispatch([{...selected, request_digest:targetA}], selected, targetB), false);
  }
- assert.equal(retainsUnresolvedDispatch([staged], staged, targetB), true);
- assert.equal(retainsUnresolvedDispatch([{...staged, request_digest:targetA}], staged, targetB), false);
 });
 
 test('unsupported envelopes never yield actionable or empty history', () => {

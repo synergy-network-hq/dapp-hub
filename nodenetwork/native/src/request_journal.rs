@@ -179,12 +179,26 @@ fn inspect_records(base: &Path) -> Result<Vec<Record>, String> {
     match directory(base, false)? { Some(path) => load(&path), None => Ok(Vec::new()) }
 }
 
-pub(super) fn unresolved_genesis_stage(base: &Path, target: &Value, record_id: &str) -> Result<Record, String> {
-    if !pin(record_id) { return Err("Select an exact local Genesis staging journal entry.".into()); }
+#[derive(Clone, Copy)]
+pub(super) enum GenesisReceiptKind { Staging, Binding }
+
+impl GenesisReceiptKind {
+    pub(super) fn operation(self) -> &'static str {
+        match self { Self::Staging => "genesis_stage", Self::Binding => "genesis_bind" }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self { Self::Staging => "staging", Self::Binding => "binding" }
+    }
+}
+
+pub(super) fn unresolved_genesis_receipt(base: &Path, target: &Value, record_id: &str, kind: GenesisReceiptKind) -> Result<Record, String> {
+    let label = kind.label();
+    if !pin(record_id) { return Err(format!("Select an exact local Genesis {label} journal entry.")); }
     let target_digest = digest(target);
     inspect_records(base)?.into_iter().find(|record| record.id == record_id && record.target_digest == target_digest
-        && record.operation == "genesis_stage" && matches!(record.state.as_str(), "dispatch_intent" | "uncertain"))
-        .ok_or_else(|| "The unresolved Genesis staging entry does not match this target. Refresh local history and select it again.".into())
+        && record.operation == kind.operation() && matches!(record.state.as_str(), "dispatch_intent" | "uncertain"))
+        .ok_or_else(|| format!("The unresolved Genesis {label} entry does not match this target. Refresh local history and select it again."))
 }
 
 pub fn inspect(base: &Path) -> Result<Value, String> {

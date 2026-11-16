@@ -731,14 +731,15 @@ fn genesis_binding_reply(reply: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
-pub(super) fn supports_genesis_stage_receipt_review(reply: &Value) -> bool {
+pub(super) fn supports_genesis_receipt_review(reply: &Value) -> bool {
     qualified_software_target(reply, true, &[("genesis_binding_preflight", "read")])
 }
 
-pub(super) fn genesis_stage_receipt_status(reply: &Value, expected_request_digest: &str) -> &'static str {
+pub(super) fn genesis_receipt_status(reply: &Value, expected_request_digest: &str, receipt_field: &str) -> &'static str {
     if genesis_binding_reply(reply).is_err() { return "unsupported"; }
-    // The pinned owner's genesis_stage_request() validates the retained three files and receipt.
-    match reply["result"].get("stage_request_sha256").and_then(Value::as_str) {
+    // The validated binding response retains request_sha256 only for bound custody.
+    // The independent stage_request_sha256 describes the three staged public inputs.
+    match reply["result"].get(receipt_field).and_then(Value::as_str) {
         Some(value) if value == expected_request_digest => "match",
         Some(_) => "different",
         None => "absent",

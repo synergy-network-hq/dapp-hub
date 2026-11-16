@@ -3,6 +3,7 @@ use std::{future::Future, path::{Path, PathBuf}};
 use tauri::Manager;
 use crate::{node_network,node_controller,node_bootstrap,request_journal};
 use crate::genesis_stage::{GenesisStageReview, PreparedGenesisStage, INPUTS as GENESIS_INPUTS};
+use crate::request_journal::GenesisReceiptKind;
 #[tauri::command]
 pub fn portal_nodenetwork_requests(window:tauri::WebviewWindow,app:tauri::AppHandle)->Result<Value,String>{
  main_only(&window)?;
@@ -12,12 +13,23 @@ pub fn portal_nodenetwork_requests(window:tauri::WebviewWindow,app:tauri::AppHan
 #[tauri::command]
 pub async fn portal_nodenetwork_review_genesis_stage_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
  target:node_controller::Target,record_id:String)->Result<Value,String>{
+ read_genesis_receipt(window,app,target,record_id,GenesisReceiptKind::Staging).await
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_review_genesis_binding_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
+ target:node_controller::Target,record_id:String)->Result<Value,String>{
+ read_genesis_receipt(window,app,target,record_id,GenesisReceiptKind::Binding).await
+}
+
+async fn read_genesis_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,
+ record_id:String,kind:GenesisReceiptKind)->Result<Value,String>{
  main_only(&window)?;
  target.validate()?;
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
  let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable.")?;
  let serial=node_controller::SERIAL.lock().await;
- review_genesis_stage_receipt(&target,&record_id,&journal,|request| {
+ review_genesis_receipt(&target,&record_id,&journal,kind,|request| {
   let (target,directory,serial)=(&target,&directory,&serial);
   async move {
    if request.operation=="genesis_binding_preflight" {
@@ -29,27 +41,31 @@ pub async fn portal_nodenetwork_review_genesis_stage_receipt(window:tauri::Webvi
  }).await
 }
 
-async fn review_genesis_stage_receipt<Fut>(target:&node_controller::Target,record_id:&str,journal:&Path,
+async fn review_genesis_receipt<Fut>(target:&node_controller::Target,record_id:&str,journal:&Path,kind:GenesisReceiptKind,
  mut read:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
 where Fut:Future<Output=Result<Value,String>> {
  let fingerprint=target.journal_identity();
- let record=request_journal::unresolved_genesis_stage(journal,&fingerprint,record_id)?;
+ let record=request_journal::unresolved_genesis_receipt(journal,&fingerprint,record_id,kind)?;
  let recheck=|| {
-  let current=request_journal::unresolved_genesis_stage(journal,&fingerprint,record_id)?;
+  let current=request_journal::unresolved_genesis_receipt(journal,&fingerprint,record_id,kind)?;
   if current==record {return Ok(());}
-  Err("The selected Genesis staging dispatch changed. Refresh local history and select it again.".to_string())
+  Err(format!("The selected Genesis {} dispatch changed. Refresh local history and select it again.",kind.label()))
  };
  let query=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
  let controller=read(query("target")).await;
  recheck()?;
- let status=if controller.as_ref().is_ok_and(node_controller::supports_genesis_stage_receipt_review) {
+ let (schema,receipt_field)=match kind {
+  GenesisReceiptKind::Staging=>("nodenetwork-genesis-stage-receipt-review-v1","stage_request_sha256"),
+  GenesisReceiptKind::Binding=>("nodenetwork-genesis-binding-receipt-review-v1","request_sha256"),
+ };
+ let status=if controller.as_ref().is_ok_and(node_controller::supports_genesis_receipt_review) {
   match read(query("genesis_binding_preflight")).await {
-   Ok(reply)=>node_controller::genesis_stage_receipt_status(&reply,record.request_digest()),
+   Ok(reply)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),receipt_field),
    Err(_)=>"unsupported",
   }
  } else {"unsupported"};
  recheck()?;
- Ok(serde_json::json!({"schema":"nodenetwork-genesis-stage-receipt-review-v1","status":status}))
+ Ok(serde_json::json!({"schema":schema,"status":status}))
 }
 
 #[tauri::command]
@@ -1152,6 +1168,77 @@ mod tests {
   (target,journal,controller,retained,prepared.request_sha256)
  }
 
+ fn retained_binding(pin:&str)->Value {
+  use sha2::{Digest,Sha256};
+  let mut retained=genesis_binding_projection(true);
+  retained["result"].as_object_mut().unwrap().remove("stage_receipt_verified");
+  let request=Request{version:1,operation:"genesis_bind".into(),parameters:json!({"genesis_sha256":pin})};
+  let enrollment=r#"{"fixture":"native-only enrollment"}"#;
+  retained["result"]["genesis_sha256"]=json!(pin);
+  retained["result"]["request_sha256"]=json!(request.approval_id());
+  retained["result"]["enrollment_json"]=json!(enrollment);
+  retained["result"]["enrollment_sha256"]=json!(format!("{:x}",Sha256::digest(enrollment.as_bytes())));
+  retained
+ }
+
+ #[test]
+ fn reviewed_genesis_binding_receipt_compares_only_verified_retained_binding() {
+  let (target,_,_,journal)=genesis_bind_scope_fixture();
+  let (_,_,_,mut controller,_,_)=reviewed_install_fixture();
+  controller["result"]["installed"]=json!(true);
+  controller["result"]["operations"]=json!([{"operation":"genesis_binding_preflight","kind":"read","available":true,"blocker":null}]);
+  let mut retained=retained_binding(&"a".repeat(64));
+  let request_digest="0e8a5f309948535cbc5fa7fdb13f298d053a1d964d673646d247a1008649463e";
+  assert_eq!(retained["result"]["request_sha256"],request_digest);
+  retained["result"]["stage_request_sha256"]=json!("b".repeat(64));
+  let dispatch=request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),"genesis_bind",request_digest.into()).unwrap();
+  dispatch.finish(&Err("fixture uncertainty".into())).unwrap();
+  let previous=request_journal::inspect(&journal).unwrap();
+  let id=previous["records"][0]["id"].as_str().unwrap();
+  let mut different=retained_binding(&"c".repeat(64));
+  different["result"]["stage_request_sha256"]=json!(request_digest);
+  let mut unbound=genesis_binding_projection(false);
+  unbound["result"].as_object_mut().unwrap().remove("stage_receipt_verified");
+  unbound["result"]["stage_request_sha256"]=json!(request_digest);
+  let mut wrong_binding=retained.clone();
+  wrong_binding["result"]["request_sha256"]=json!("d".repeat(64));
+  let mut wrong_enrollment=retained.clone();
+  wrong_enrollment["result"]["enrollment_sha256"]=json!("d".repeat(64));
+  let mut wrong_custody=retained.clone();
+  wrong_custody["result"]["bound"]=json!(false);
+  for (raw,status) in [(Ok(retained),"match"),(Ok(different),"different"),(Ok(unbound),"absent"),
+   (Ok(wrong_binding),"unsupported"),(Ok(wrong_enrollment),"unsupported"),(Ok(wrong_custody),"unsupported"),
+   (Err("private transport error".into()),"unsupported")] {
+   let mut calls=Vec::new();
+   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Binding,|query| {
+    calls.push(query.canonical());
+    std::future::ready(if query.operation=="target" {Ok(controller.clone())} else {raw.clone()})
+   })).unwrap();
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),
+    json!({"version":1,"operation":"genesis_binding_preflight","parameters":{}})]);
+   assert_eq!(response,json!({"schema":"nodenetwork-genesis-binding-receipt-review-v1","status":status}));
+   assert_eq!(request_journal::inspect(&journal).unwrap(),previous);
+  }
+  assert!(request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),"genesis_bind",request_digest.into()).is_err());
+  std::fs::remove_dir_all(&journal).unwrap();
+ }
+
+ #[test]
+ fn reviewed_genesis_binding_receipt_rejects_stage_and_retired_records_before_contact() {
+  let (target,_,_,journal)=genesis_bind_scope_fixture();
+  for (operation,settled) in [("genesis_stage",false),("genesis_bind",true)] {
+   let dispatch=request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),operation,"a".repeat(64)).unwrap();
+   if settled {dispatch.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();}
+   let history=request_journal::inspect(&journal).unwrap();
+   let id=history["records"][0]["id"].as_str().unwrap();
+   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Binding,
+    |_| -> std::future::Ready<Result<Value,String>> {panic!("wrong operation or settled record must not contact controller")}));
+   assert!(response.unwrap_err().contains("unresolved Genesis binding entry"));
+   assert_eq!(request_journal::inspect(&journal).unwrap(),history);
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
+ }
+
  #[test]
  fn reviewed_genesis_stage_receipt_compares_exact_native_journal_digest_without_writing() {
   let (target,journal,controller,retained,request_digest)=reviewed_genesis_stage_receipt_fixture();
@@ -1170,7 +1257,7 @@ mod tests {
   for (raw,status) in [(Ok(retained),"match"),(Ok(different),"different"),(Ok(absent),"absent"),
    (Ok(malformed),"unsupported"),(Ok(private),"unsupported"),(Err("private transport error".into()),"unsupported")] {
    let mut calls=Vec::new();
-   let response=tauri::async_runtime::block_on(review_genesis_stage_receipt(&target,id,&journal,|query| {
+   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Staging,|query| {
     calls.push(query.canonical());
     std::future::ready(if query.operation=="target" {Ok(controller.clone())} else {raw.clone()})
    })).unwrap();
@@ -1195,14 +1282,14 @@ mod tests {
   let stage_id=rows.iter().find(|row|row["operation"]=="genesis_stage").unwrap()["id"].as_str().unwrap();
   let unrelated_id=rows.iter().find(|row|row["operation"]=="genesis_bind").unwrap()["id"].as_str().unwrap();
   for (test_target,id) in [(&target,"bad id"),(&target,unrelated_id),(&other,stage_id),(&other,unrelated_id)] {
-   let response=tauri::async_runtime::block_on(review_genesis_stage_receipt(test_target,id,&journal,
+   let response=tauri::async_runtime::block_on(review_genesis_receipt(test_target,id,&journal,GenesisReceiptKind::Staging,
     |_| -> std::future::Ready<Result<Value,String>> {panic!("unmatched record must not contact controller")}));
    assert!(response.is_err());
   }
   let mut unavailable=controller;
   unavailable["result"]["operations"][0]["available"]=json!(false);
   let mut calls=Vec::new();
-  let response=tauri::async_runtime::block_on(review_genesis_stage_receipt(&target,stage_id,&journal,|query| {
+  let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,stage_id,&journal,GenesisReceiptKind::Staging,|query| {
    calls.push(query.canonical());
    std::future::ready(Ok(unavailable.clone()))
   })).unwrap();
@@ -1211,7 +1298,7 @@ mod tests {
   assert_eq!(request_journal::inspect(&journal).unwrap(),history);
   stage.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
   unrelated.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
-  let result=tauri::async_runtime::block_on(review_genesis_stage_receipt(&target,stage_id,&journal,|_|std::future::ready(Err("unexpected".into()))));
+  let result=tauri::async_runtime::block_on(review_genesis_receipt(&target,stage_id,&journal,GenesisReceiptKind::Staging,|_|std::future::ready(Err("unexpected".into()))));
   assert!(result.unwrap_err().contains("unresolved Genesis staging entry"));
   std::fs::remove_dir_all(&journal).unwrap();
  }
@@ -1225,7 +1312,7 @@ mod tests {
    let id=history["records"][0]["id"].as_str().unwrap();
    let mut dispatch=Some(dispatch);
    let mut calls=Vec::new();
-   let response=tauri::async_runtime::block_on(review_genesis_stage_receipt(&target,id,&journal,|query| {
+   let response=tauri::async_runtime::block_on(review_genesis_receipt(&target,id,&journal,GenesisReceiptKind::Staging,|query| {
     calls.push(query.operation.clone());
     if query.operation==drift {dispatch.take().unwrap().finish(&Err("record progressed".into())).unwrap();}
     std::future::ready(Ok(if query.operation=="target" {controller.clone()} else {retained.clone()}))

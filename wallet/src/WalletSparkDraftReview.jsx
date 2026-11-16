@@ -1,6 +1,7 @@
 import {Fragment, useId, useLayoutEffect, useRef, useState} from 'react';
 import {Card, useNative} from '@synergy-network/portal-native/dapp-sdk';
-import {inspectSparkNf1Draft, isSparkNf1WalletAddress, MAX_SPARK_NF1_DRAFT_BYTES} from './spark-nf1-draft.js';
+import {isSparkNf1WalletAddress, MAX_SPARK_NF1_DRAFT_BYTES} from './spark-nf1-draft.js';
+import {inspectSparkDraft} from './spark-sts-launch-draft.js';
 import {STS_TESTNET_GENESIS} from './wallet-address.js';
 import {WalletSparkMintAuthorityCheck} from './WalletSparkMintAuthorityCheck.jsx';
 import {WalletSparkMintReceiptCheck} from './WalletSparkMintReceiptCheck.jsx';
@@ -33,7 +34,7 @@ export function WalletSparkDraftReview() {
     }
     if (current !== revision.current) return;
     try {
-      const value = inspectSparkNf1Draft(bytes);
+      const value = inspectSparkDraft(bytes);
       setReview({status: 'checked', value, revision: current, draftBytes: value.action === 'buy' ? bytes : null});
     } catch (error) {
       setReview({status: 'failed', message: error.message});
@@ -48,17 +49,45 @@ export function WalletSparkDraftReview() {
   }
 
   const value = review.status === 'checked' ? review.value : null;
-  return <Card title="Review an unsigned Spark NF1 draft">
-    <p id={instructions}>Choose a mint, list, cancel or buy draft exported from Spark, up to 24 KiB. The file stays on this device.</p>
-    <label>Unsigned Spark NF1 draft<input ref={input} type="file" accept=".json,application/json"
+  return <Card title="Review an unsigned Spark draft">
+    <p id={instructions}>Choose a B1 token launch or an NF1 mint, list, cancel or buy draft exported from Spark, up to 24 KiB. The file stays on this device.</p>
+    <label>Unsigned Spark draft<input ref={input} type="file" accept=".json,application/json"
       aria-describedby={instructions} onChange={chooseFile}/></label>
     {review.status !== 'empty' && <button type="button" onClick={clearFile}>Clear draft file</button>}
     {review.status === 'reading' && <p role="status">Reading draft…</p>}
     {review.status === 'failed' && <p role="alert" className="native-error">{review.message}</p>}
+    {value?.action === 'launch' && <LaunchDraftSummary value={value}/>}
     {value?.action === 'mint' && <MintDraftSummary value={value} isCurrent={() => revision.current === review.revision}/>}
-    {value && value.action !== 'mint' && <SaleDraftSummary value={value} draftBytes={review.draftBytes}
+    {value && Object.hasOwn(saleActions, value.action) && <SaleDraftSummary value={value} draftBytes={review.draftBytes}
       isCurrent={() => revision.current === review.revision}/>}
   </Card>;
+}
+
+function LaunchDraftSummary({value}) {
+  return <section aria-label="Unsigned B1 token launch review">
+    <p role="status">Unsigned B1 token launch draft</p>
+    <dl className="native-details">
+      <div><dt>Token</dt><dd>{value.name} ({value.symbol})</dd></div>
+      <div><dt>Draft network</dt><dd>{value.network} · Chain {value.chainId}</dd></div>
+      <div><dt>Draft creator</dt><dd><code>{value.creatorAddress}</code></dd></div>
+      <div><dt>Expected token ID</dt><dd><code>{value.expectedTokenId}</code></dd></div>
+      <div><dt>Token decimals</dt><dd>{value.decimals}</dd></div>
+      <div><dt>Fixed supply (atomic units)</dt><dd>{value.supply}</dd></div>
+      <div><dt>STS creator nonce</dt><dd>{value.nonce}</dd></div>
+      <div><dt>Creation timestamp</dt><dd>{value.createdAt} Unix seconds</dd></div>
+      <div><dt>Metadata URI</dt><dd>{value.metadataUri === null ? 'Unset' : <bdi>{value.metadataUri}</bdi>}</dd></div>
+      <div><dt>Metadata SHA3-256 commitment</dt><dd>{value.metadataHash === null ? 'Unset' : <code>{value.metadataHash}</code>}</dd></div>
+      {value.metadataHash === null && <div><dt>Name-derived identity SHA3-256</dt><dd><code>{value.identityMetadataHash}</code></dd></div>}
+      <div><dt>Image URI</dt><dd>{value.imageUri === null ? 'Unset' : <bdi>{value.imageUri}</bdi>}</dd></div>
+      <div><dt>Image SHA3-256 commitment</dt><dd>{value.imageHash === null ? 'Unset' : <code>{value.imageHash}</code>}</dd></div>
+      <div><dt>Mint and metadata authority overrides</dt><dd>Unset</dd></div>
+      <div><dt>Metadata mutable</dt><dd>No</dd></div>
+      <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
+      <div><dt>STS payload SHA-256</dt><dd><code>{value.payloadSha256}</code></dd></div>
+    </dl>
+    {value.exceedsCliV20Supply && <p>This supply exceeds the STS CLI v20 draft limit.</p>}
+    <p>The token ID is derived from this draft. Signing and deployment require a compatible Wallet.</p>
+  </section>;
 }
 
 function MintDraftSummary({value, isCurrent}) {

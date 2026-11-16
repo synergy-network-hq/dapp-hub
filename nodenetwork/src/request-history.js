@@ -40,8 +40,8 @@ export function matchesUnresolvedServiceDispatch(record, fingerprint) {
  return matchesUnresolvedDispatch(record, fingerprint) && ['register', 'start', 'restart', 'stop'].includes(record.operation);
 }
 
-export function matchesUnresolvedGenesisStage(record, fingerprint) {
- return matchesUnresolvedDispatch(record, fingerprint) && record.operation === 'genesis_stage';
+export function matchesUnresolvedGenesisReceipt(record, fingerprint) {
+ return matchesUnresolvedDispatch(record, fingerprint) && ['genesis_stage', 'genesis_bind'].includes(record.operation);
 }
 
 export function retainsUnresolvedDispatch(records, reviewed, fingerprint) {

@@ -2,9 +2,9 @@ import {useState} from 'react';
 import {Card, Detail, ErrorMessage, ModalDialog, Resource, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {downloadJson} from './download-json.js';
 import {nodeNetworkRequests} from './native-services.js';
-import {configuredTargetFingerprint, filterRequests, matchesUnresolvedGenesisStage, matchesUnresolvedServiceDispatch, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
+import {configuredTargetFingerprint, filterRequests, matchesUnresolvedGenesisReceipt, matchesUnresolvedServiceDispatch, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
 import {ServiceDispatchDiagnosticsReview} from './TargetDiagnostics.jsx';
-import {GenesisStageReceiptReview} from './GenesisStageReceiptReview.jsx';
+import {GenesisReceiptReview} from './GenesisReceiptReview.jsx';
 
 const allRequests = {status: 'all', operation: 'all', target: null};
 const configuredTarget = 'configured';
@@ -130,7 +130,7 @@ function RequestHistoryView({permitted, target, targetScopeCurrent}) {
       operation: current.operation,
       state: requestStatusLabel(current),
       targetFingerprint: current.target_digest,
-      requestFingerprint: current.operation === 'genesis_stage' ? undefined : current.request_digest,
+      requestFingerprint: ['genesis_stage','genesis_bind'].includes(current.operation) ? undefined : current.request_digest,
       dispatchRecordedAt: new Date(current.recorded_at_ms).toISOString(),
       outcomeRecordedAt: current.observed_at_ms === null ? 'No outcome recorded' : new Date(current.observed_at_ms).toISOString(),
      }}/>
@@ -143,7 +143,7 @@ function RequestHistoryView({permitted, target, targetScopeCurrent}) {
      </p>}
      {target && filterConfigured && matchesUnresolvedServiceDispatch(current, configured.data) && <ServiceDispatchDiagnosticsReview
       key={current.id} target={target} record={current} fingerprint={configured.data} targetScopeCurrent={targetScopeCurrent}/>}
-     {target && filterConfigured && matchesUnresolvedGenesisStage(current, configured.data) && <GenesisStageReceiptReview
+     {target && filterConfigured && matchesUnresolvedGenesisReceipt(current, configured.data) && <GenesisReceiptReview
       key={current.id} target={target} record={current} fingerprint={configured.data} targetScopeCurrent={targetScopeCurrent}/>}
     </div>}
    </>;
