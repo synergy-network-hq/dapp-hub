@@ -2,6 +2,7 @@ import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-
 import {atlasAccountKey} from './atlas-account.js';
 import {blockHeight, comparableTransactionHash} from './transaction-observation.js';
 import {isProtectedWalletAddress} from './wallet-address.js';
+import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
 
 function participant(value) {
   if (value === null) return null;
@@ -76,6 +77,7 @@ export function rpcReceiptObservation(value, selection, readiness) {
   if (value.transactionIndex != null && index === null) throw Error('The selected RPC returned an unsupported receipt transaction index.');
 
   return {status: value.status, blockHash: value.blockHash, height, index,
+    gasUsed: exactRpcAmount(value.gasUsed, maxU64), feeNwei: exactRpcAmount(value.feeCharged, maxU128),
     chain: expectedChain, tip: readiness.chainStateAvailable ? readiness.height : null};
 }
 

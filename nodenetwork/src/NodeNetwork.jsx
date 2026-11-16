@@ -27,6 +27,7 @@ import {SavedValidatorObservation} from './SavedValidatorObservation.jsx';
 import {Troubleshooter} from './Troubleshooter.jsx';
 import {TargetDiagnostics} from './TargetDiagnostics.jsx';
 import {SavedValidatorLogs} from './SavedValidatorLogs.jsx';
+import {SavedValidatorAudit} from './SavedValidatorAudit.jsx';
 import {SavedValidatorFleet} from './SavedValidatorFleet.jsx';
 import {ReplacementRecoveryReview} from './ReplacementRecoveryReview.jsx';
 import {SavedUpgradeIntent} from './SavedUpgradeIntent.jsx';
@@ -118,6 +119,7 @@ export function NodeNetworkApp(){
   </NodeNetworkPanelCard></>:section==='logs'?<>
    <TargetDiagnostics key={JSON.stringify([target,permitted])} target={target} permitted={permitted}/>
    <SavedValidatorLogs permitted={permitted}/>
+   <SavedValidatorAudit permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <ReplacementRecoveryReview permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>
   </>:tab==='Network'?<>

@@ -22,7 +22,11 @@ def load(path):
 
 def release(value):
     if value is None:return
-    require(isinstance(value,dict) and set(value)=={'version','artifact','capabilities','signature','qualification'},'Invalid release fields')
+    fields={'version','artifact','capabilities','signature','qualification'}
+    require(isinstance(value,dict) and set(value) in (fields,fields|{'notes'}),'Invalid release fields')
+    if 'notes' in value:
+        notes=value['notes']
+        require(isinstance(notes,str) and notes.strip() and len(notes.encode('utf8'))<=4000 and not re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]',notes),'Invalid release notes')
     version=value['version'];require(isinstance(version,str) and re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',version),'Invalid semantic release version')
     artifact=value['artifact'];require(isinstance(artifact,dict) and set(artifact)=={'url','sha256','bytes'},'Invalid artifact fields')
     url=artifact['url'];parsed=urlsplit(url)
@@ -88,6 +92,10 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):catalog(root)
     def candidate(self):return {'version':'1.0.0','artifact':{'url':REPOSITORY+'/releases/download/v1.0.0/wallet.tar','sha256':'a'*64,'bytes':100},'capabilities':['readWallet'],'signature':{'algorithm':'ML-DSA-87','provider':'APQE','keyId':'release-test','value':base64.b64encode(bytes(4627)).decode()},'qualification':{'profile':'test-only','reportSha256':'b'*64}}
     def test_structural_metadata_is_not_crypto_verification(self):release(self.candidate())
+    def test_optional_notes_are_bounded_plain_text(self):
+        release({**self.candidate(),'notes':'Line one\nLine two'})
+        for notes in ('', '\x00', '🌱'*1001, ['notes']):
+            with self.assertRaises(ValueError):release({**self.candidate(),'notes':notes})
     def test_classical_signature_rejected(self):
         value=self.candidate();value['signature']['algorithm']='Ed25519'
         with self.assertRaises(ValueError):release(value)

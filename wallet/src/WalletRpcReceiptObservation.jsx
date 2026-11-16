@@ -1,5 +1,6 @@
 import {useLayoutEffect, useRef, useState} from 'react';
 import {Card, Detail, Resource, useNative, useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {amount} from '@synergy-network/dapp-data-view';
 import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {atlasAccountKey} from './atlas-account.js';
 import {canReadWalletAtlas} from './atlas-scope.js';
@@ -123,6 +124,8 @@ function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead, startO
           rpcReceiptBlock: receipt.height,
           rpcReceiptBlockHash: receipt.blockHash,
           reportedRpcTip: receipt.tip ?? 'Unavailable',
+          reportedGasUsed: receipt.gasUsed === null ? 'Unavailable' : `${receipt.gasUsed} gas units`,
+          reportedReceiptFee: receipt.feeNwei === null ? 'Unavailable' : `${amount(receipt.feeNwei)} SNRG (${receipt.feeNwei} nWei)`,
         }}/>
         {selection.indexedHeight !== undefined && selection.indexedHeight !== receipt.height && <p role="status">
           The Atlas record lists block {selection.indexedHeight}. The selected RPC reports the receipt at block {receipt.height}. Reorganization status remains unverified.

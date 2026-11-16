@@ -1,6 +1,10 @@
 // Discovery metadata is never release authorization. Native APQE verifies authority.
 export const RELEASE_REPOSITORY='https://github.com/synergy-network-hq/dapp-hub';
 export const RELEASE_SIGNATURE_POLICY=Object.freeze({provider:'APQE',algorithm:'ML-DSA-87',signatureBytes:4627});
+export function validReleaseNotes(value){
+ return typeof value==='string'&&value.trim().length>0&&value.length<=4000&&
+  !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)&&new TextEncoder().encode(value).byteLength<=4000;
+}
 export function assessRelease(release){
  const blockers=[];
  if(!release)blockers.push('No release artifact has been published.');
@@ -15,6 +19,7 @@ export function assessRelease(release){
   if(!Array.isArray(release.capabilities)||new Set(release.capabilities).size!==release.capabilities.length||release.capabilities.some(cap=>!['readNetwork','readWallet','requestTransactions','externalLinks'].includes(cap)))blockers.push('Unknown or duplicate release capability.');
   if(release.signature?.provider!=='APQE'||release.signature?.algorithm!=='ML-DSA-87'||!release.signature?.keyId||!release.signature?.value)blockers.push('An APQE ML-DSA-87 release signature is required.');
   if(!release.qualification?.profile||!/^[a-f0-9]{64}$/.test(release.qualification?.reportSha256||''))blockers.push('Qualified release evidence is required.');
+  if(Object.hasOwn(release,'notes')&&!validReleaseNotes(release.notes))blockers.push('Invalid release notes.');
  }
  return {metadataValid:blockers.length===0,installationAuthorized:false,blockers:[...blockers,'Native APQE signature, trusted release authority and qualification verification are required.']};
 }
