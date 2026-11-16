@@ -44,6 +44,11 @@ function transactionLeaf(row, remainingBytes) {
   return {digest, kind, byteLength};
 }
 
+export function nativeTransactionHash(row) {
+  const leaf = transactionLeaf(row, maxHashInput);
+  return leaf ? `${leaf.kind}-${leaf.digest}` : null;
+}
+
 // Block::compute_merkle_root hashes pairs of hexadecimal leaves and promotes the last odd leaf.
 function transactionRoot(digests) {
   if (!digests.length) return bytesToHex(blake3(new Uint8Array()));

@@ -6,6 +6,7 @@ import {removalRoot, removalScope, sameRemovalScope, uninstallParameters} from '
 import {filterRequests} from './request-history.js';
 import {useObservationFile} from './useObservationFile.js';
 import {readSavedServiceObservation} from './validator-operations-observation.js';
+import {SavedVpnRetirementReview} from './SavedVpnRetirementReview.jsx';
 
 const dependencies = [
  {id: 'jobs', check: 'Pending jobs', next: 'Review the local dispatch journal and reconcile unresolved operations with the node operator.'},
@@ -37,11 +38,11 @@ const accountImpact = removal => removal.accountRemoval
  ? 'The controller includes the attributed managed account in removal.'
  : 'The controller reported no attributed managed account in removal.';
 
-export function OffboardingChecklist({permitted, onOpenHistory}) {
- return <OffboardingEvidence key={String(permitted)} permitted={permitted} onOpenHistory={onOpenHistory}/>;
+export function OffboardingChecklist({permitted, onOpenHistory, canRead = () => permitted}) {
+ return <OffboardingEvidence key={String(permitted)} permitted={permitted} onOpenHistory={onOpenHistory} canRead={canRead}/>;
 }
 
-function OffboardingEvidence({permitted, onOpenHistory}) {
+function OffboardingEvidence({permitted, onOpenHistory, canRead}) {
  const [requested, setRequested] = useState(false);
  const service = useObservationFile(readSavedServiceObservation);
  const journal = useResource(async () => {
@@ -81,6 +82,7 @@ function OffboardingEvidence({permitted, onOpenHistory}) {
   </div>}
   <ErrorMessage error={service.error}/>
   {journal.data && <p>Remote job state requires separate reconciliation.</p>}
+  {permitted && <SavedVpnRetirementReview canRead={canRead}/>}
  </Card>;
 }
 
