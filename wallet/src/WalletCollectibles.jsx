@@ -5,6 +5,7 @@ import {ATLAS_NFT_LIMIT, RPC_OWNER_NFT_LIMIT, collectibleObservations, ownerColl
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
 import {WalletRpcCollectionCheck} from './WalletRpcCollectionCheck.jsx';
+import {WalletRpcNftInstanceCheck} from './WalletRpcNftInstanceCheck.jsx';
 
 const classLabels = {nf1: 'NF1 standard NFT', nf2: 'NF2 controlled NFT'};
 const collectionStatusLabels = {verified: 'Atlas marks this collection verified', active: 'Atlas reports an active collection'};
@@ -66,6 +67,8 @@ function CollectibleList({items, receivedAt, indexed = true, ownerSnapshot, endp
           reportedMetadataHash: selected.metadataHash ?? 'Unavailable',
         }}/>
         <p>Media unavailable. Wallet does not load the metadata reference.</p>
+        {ownerSnapshot && <WalletRpcNftInstanceCheck key={JSON.stringify([selected.key, ownerSnapshot.snapshotHeight, ownerSnapshot.snapshotHash])}
+          selection={selected} inventory={ownerSnapshot} {...{endpoint, canRead}}/>}
         {ownerSnapshot && <WalletRpcCollectionCheck key={selected.key} selection={selected} inventory={ownerSnapshot}
           {...{endpoint, canRead}}/>}
       </aside>}

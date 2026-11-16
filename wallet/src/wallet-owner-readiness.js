@@ -4,7 +4,7 @@ import {readProtocolObservation} from '@synergy-network/dapp-data-view/protocol-
 import {checkConfiguredReceiptGenesis as checkConfiguredGenesis, rpcReceiptReadiness as testnetReadiness} from './rpc-receipt-observation.js';
 import {isProtectedWalletAddress} from './wallet-address.js';
 
-async function readProtectedWalletReadiness(account, endpoint, signal, checkScope) {
+export async function readProtectedWalletReadiness(account, endpoint, signal, checkScope) {
   checkScope();
   if (!isProtectedWalletAddress(account) || Number(endpoint.chainId) !== 1266) {
     throw Error('A protected Wallet account on chain 1266 is required.');

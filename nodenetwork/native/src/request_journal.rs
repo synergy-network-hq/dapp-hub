@@ -25,7 +25,7 @@ struct Record {
 fn digest(value: &Value) -> String { format!("{:x}", Sha256::digest(value.to_string().as_bytes())) }
 fn pin(value: &str) -> bool { value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
 fn journaled_operation(operation: &str) -> bool {
-    matches!(operation, "bootstrap" | "install" | "identity_generate" | "formation_prepare" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall")
+    matches!(operation, "bootstrap" | "install" | "identity_generate" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall")
 }
 fn now() -> Result<u64, String> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok())
@@ -131,8 +131,13 @@ pub struct Dispatch { directory: PathBuf, record: Record }
 impl Dispatch {
     /// Caller must validate the typed target/request and obtain native consent first.
     pub fn begin(base: &Path, target: &Value, operation: &str, request: &Value) -> Result<Self, String> {
+        Self::begin_digest(base,target,operation,digest(request))
+    }
+
+    /// Digest computed from an exact native-only prepared wire payload.
+    pub(super) fn begin_digest(base:&Path,target:&Value,operation:&str,request_digest:String) -> Result<Self,String> {
         let _serial = SERIAL.lock().map_err(|_| failure())?;
-        if !journaled_operation(operation) { return Err(failure()); }
+        if !journaled_operation(operation) || !pin(&request_digest) { return Err(failure()); }
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;
@@ -142,7 +147,6 @@ impl Dispatch {
         }
         if records.len() >= MAX_RECORDS { return Err("Local request journal is full. Records are retained; another mutation requires an approved retention procedure.".into()); }
         let recorded_at_ms = now()?;
-        let request_digest = digest(request);
         let id = digest(&json!([target_digest, request_digest, recorded_at_ms, std::process::id(), records.len()]));
         let record = Record { version: 1, id, target_digest, request_digest, operation: operation.into(), recorded_at_ms, observed_at_ms: None, state: "dispatch_intent".into(), response_ok: None };
         write(&directory, &record, true)?;

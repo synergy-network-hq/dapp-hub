@@ -1,56 +1,72 @@
 import {useEffect, useRef, useState} from 'react';
-import {Table} from '@synergy-network/portal-native/dapp-sdk';
-import {genesisStageFiles, inspectGenesisStageFile} from './genesis-stage-files.js';
+import {isTauri} from '@tauri-apps/api/core';
+import {ErrorMessage,Table} from '@synergy-network/portal-native/dapp-sdk';
+import {genesisStageFiles,genesisStageInputsMatch} from './genesis-stage-files.js';
+import {nodeNetworkReviewGenesisStageInputs} from './native-services.js';
+import {BrowserGenesisStageFiles} from './BrowserGenesisStageFiles.jsx';
 
 const columns = [
- {key: 'id', label: 'Input'}, {key: 'observed', label: 'Local SHA-256'},
+ {key: 'id', label: 'Input'}, {key: 'bytes',label:'Bytes'}, {key: 'observed', label: 'Local SHA-256'},
  {key: 'expected', label: 'Target-reported pin'}, {key: 'status', label: 'Comparison'},
 ];
 
-export function GenesisStageFiles({permitted, policy}) {
- const [measurements, setMeasurements] = useState({});
- const attempts = useRef({});
- useEffect(() => () => {attempts.current = {};}, []);
+export function GenesisStageFiles(props) {
+ return isTauri()?<NativeGenesisStageFiles {...props}/>:<BrowserGenesisStageFiles permitted={props.permitted} policy={props.policy}/>;
+}
 
- async function select(input, file) {
-  const attempt = Symbol();
-  attempts.current[input.name] = attempt;
-  const publish = value => {
-   if (attempts.current[input.name] === attempt) {
-    setMeasurements(current => ({...current, [input.name]: value}));
-   }
-  };
-  publish({status: 'Reading…'});
+function NativeGenesisStageFiles({permitted,policy,scope,onStage,busy=false,canUse=()=>permitted}) {
+ const [review,setReview]=useState(null),[reading,setReading]=useState(false),[error,setError]=useState('');
+ const picker=useRef({revision:0,active:false,mounted:false});
+ useEffect(()=>{
+  const state=picker.current;
+  state.mounted=true;
+  return()=>{state.mounted=false;state.revision++;};
+ },[]);
+
+ async function select() {
+  const state=picker.current;
+  if(!permitted||!canUse()||state.active||busy)return;
+  state.active=true;
+  const attempt=++state.revision;
+  setReading(true);setError('');
   try {
-   publish({digest: await inspectGenesisStageFile(input, file)});
-  } catch (error) {
-   publish({status: error.message || 'Could not calculate the file digest.'});
+   const selected=await nodeNetworkReviewGenesisStageInputs();
+   if(state.revision===attempt&&canUse()&&selected)setReview(selected);
+  } catch (failure) {
+   if(state.revision===attempt&&canUse()){
+    setReview(null);
+    setError(String(failure?.message||failure));
+   }
+  } finally {
+   state.active=false;
+   if(state.mounted)setReading(false);
   }
  }
 
- const rows = genesisStageFiles.map(({name, pin}) => {
-  const measured = measurements[name];
+ const rows = genesisStageFiles.map(({name, pin},index) => {
+  const measured=review?.inputs[index];
   const expected = policy?.[pin];
-  let status = measured?.status ?? 'Select a file';
-  if (measured?.digest) status = expected ? (measured.digest === expected ? 'Match' : 'Mismatch') : 'No target pin reviewed';
-  return {id: name, observed: measured?.digest, expected, status};
+  let status=reading?'Reading…':'Select files for review';
+  if(!reading&&measured)status=expected?(measured.sha256===expected?'Match':'Mismatch'):'No target pin reviewed';
+  return {id:name,bytes:measured?.bytes,observed:measured?.sha256,expected,status};
  });
  return <details>
   <summary>Compare Genesis input files</summary>
   <p>Portal calculates each file’s SHA-256 from its exact bytes on this device. Approved pins appear after a compatible controller reports its staging policy. Matching bytes and signed Genesis verification are separate checks.</p>
   {!permitted && <p>Allow NodeNetwork inspection in Security &amp; permissions to review local inputs.</p>}
-  {genesisStageFiles.map(input => <label key={input.name}>
-   {input.name}
-   <input type="file" disabled={!permitted} aria-label={`Select ${input.name}`} onChange={event => {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = '';
-    if (permitted && file) select(input, file);
-   }}/>
-  </label>)}
+  <button disabled={!permitted||reading||busy} onClick={select}>Review public Genesis files</button>
+  <ErrorMessage error={error}/>
   <Table columns={columns} rows={rows}/>
-  <button disabled={!permitted || Object.keys(measurements).length === 0} onClick={() => {
-   attempts.current = {};
-   setMeasurements({});
+  {review&&<p>Exact staging request approval ID <code>{review.requestSha256}</code></p>}
+  <button disabled={!permitted||(!review&&!reading)||busy} onClick={() => {
+   picker.current.revision++;
+   setReview(null);setError('');
   }}>Clear selected file results</button>
+  {onStage&&<>
+   <button disabled={!permitted||reading||busy||!genesisStageInputsMatch(review,scope)}
+    onClick={()=>{if(canUse()&&genesisStageInputsMatch(review,scope))onStage(review);}}>Stage reviewed public files</button>
+   <p>{scope?'Select the same three files again to confirm staging. The host operator authorizes the exact request approval ID.'
+    :'Read formation custody status and the matching Genesis staging policy before staging.'}</p>
+  </>}
  </details>;
 }

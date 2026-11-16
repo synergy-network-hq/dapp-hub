@@ -1,7 +1,7 @@
 import {Card, Detail} from '@synergy-network/portal-native/dapp-sdk';
 import {GenesisStageFiles} from './GenesisStageFiles.jsx';
 
-export function IdentityPreflight({actions, observation, receipt, bindingAcknowledged, permitted}) {
+export function IdentityPreflight({actions,observation,receipt,bindingAcknowledged,permitted,stageScope,onStage,busy,canReviewFiles}) {
  const binding = typeof observation?.bound === 'boolean';
  const staging = observation?.artifactPins;
  return <Card title="Validator identity preparation">
@@ -11,7 +11,8 @@ export function IdentityPreflight({actions, observation, receipt, bindingAcknowl
   {receipt}
   {observation && <section aria-label="Validator identity preflight evidence">
    <h3>{observation.title}</h3>
-   {staging && <p>The controller reports a prepared validator and approved Genesis input pins for local comparison.</p>}
+   {staging && <p>{observation.staged?'The controller confirmed that it staged the three verified public files. Review the staged Genesis binding to continue.'
+    :'The controller reports a prepared validator and approved Genesis input pins for local comparison.'}</p>}
    {binding && <>
     <p>The controller verified the staged signed Genesis and its admission of the reported validator address.</p>
     <p>{bindingAcknowledged ? 'The controller confirmed that it bound local custody to this Genesis.'
@@ -29,6 +30,7 @@ export function IdentityPreflight({actions, observation, receipt, bindingAcknowl
     ? <p>Live active-set status, service readiness and consensus participation require separate checks.</p>
     : <p>Evidence describes preparation inputs. Custody creation, possession and consensus membership require separate checks.</p>}
   </section>}
-  <GenesisStageFiles key={String(permitted)} permitted={permitted} policy={staging}/>
+  <GenesisStageFiles key={String(permitted)} permitted={permitted} policy={staging} scope={stageScope}
+   onStage={observation?.staged?null:onStage} busy={busy} canUse={canReviewFiles}/>
  </Card>;
 }

@@ -156,7 +156,7 @@ export function NodeNetworkApp(){
    <CommissioningPublicEvidence form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    {!target&&<InstallPreflight checklist={installPreflightChecklist({form,permitted,master})}
     action={<button disabled={!permitted} onClick={()=>setSection('monitoring')}>Review saved preflight evidence</button>}/>}
-   {!target&&<IdentityPreflight permitted={permitted}/>}
+   {!target&&<IdentityPreflight permitted={permitted} canReviewFiles={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>}
    <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
    <Card title="Local runtime compatibility"><Resource value={local}>{data=>data?<Detail data={data}/>:<p>No host inspection was returned.</p>}</Resource></Card>
 

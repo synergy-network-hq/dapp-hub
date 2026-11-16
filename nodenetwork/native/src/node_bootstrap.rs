@@ -45,7 +45,7 @@ pub(super) fn declared_files(manifest: &Value) -> Result<BTreeMap<String, String
     }
     Ok(files)
 }
-fn read_bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{
+pub(super) fn read_bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{
     use std::io::Read;
     let metadata=fs::symlink_metadata(path).map_err(|_|"Selected public input is inaccessible.")?;
     if !metadata.is_file()||metadata.len()>max as u64 {return Err("Selected public input is not a bounded regular file.".into());}

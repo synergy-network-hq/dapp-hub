@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub const ROOT: &str = "/opt/Synergy";
 const CONTROLLER: &str = "/opt/Synergy/tmp/controller/controller.py";
 const LIMIT: u64 = 1_000_000;
+pub(super) const GENESIS_STAGE_WIRE_LIMIT: usize = 12 * 1024 * 1024;
 pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Deserialize)]
@@ -342,12 +343,12 @@ fn validator_network_context(result: &Value) -> bool {
         && result["chain_id"].as_str().is_some_and(validator_chain_id)
 }
 
-fn validator_network_id(network: &str) -> bool {
+pub(super) fn validator_network_id(network: &str) -> bool {
     (2..=128).contains(&network.len()) && network.as_bytes()[0].is_ascii_alphanumeric()
         && network.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
 }
 
-fn validator_chain_id(chain: &str) -> bool {
+pub(super) fn validator_chain_id(chain: &str) -> bool {
     (1..=20).contains(&chain.len()) && chain.parse::<u64>().is_ok_and(|number| number > 0 && number.to_string() == chain)
 }
 
@@ -355,7 +356,7 @@ fn validator_address(value: &Value) -> bool {
     value.as_str().is_some_and(valid_validator_address)
 }
 
-fn valid_validator_address(address: &str) -> bool {
+pub(super) fn valid_validator_address(address: &str) -> bool {
     address.strip_prefix("synv1").is_some_and(|tail| {
         (10..=90).contains(&tail.len())
             && tail.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
@@ -621,7 +622,41 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
 
 pub(super) async fn execute_locked(target: &Target, request: &Request, control_dir: &Path, known_hosts: Option<&Path>,
     _serial: &tokio::sync::MutexGuard<'_, ()>) -> Result<Value, String> {
-    target.validate()?; request.validate()?;
+    request.validate()?;
+    let wire=request.canonical().to_string();
+    let deadline=if request.operation == "vpn_enroll" { 240 } else { 180 };
+    let value=exchange(target,wire.as_bytes(),deadline,control_dir,known_hosts).await?;
+    let result=match request.operation.as_str() {
+        "health" => health_reply(&value),
+        "diagnostics" => crate::node_diagnostics::reply(&value),
+        "install_preflight" => install_preflight_reply(request, &value),
+        "upgrade_preflight" => upgrade_preflight_reply(request, &value),
+        "recovery_preflight" => recovery_preflight_reply(&value),
+        "uninstall_preflight" => crate::node_removal_scope::reply(&value),
+        "vpn_status" => vpn_status_reply(&value),
+        "vpn_enroll" => vpn_enrollment_reply(&value),
+        "start" | "stop" | "restart" => node_service_reply(&request.operation, &value),
+        "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
+        "genesis_binding_preflight" => genesis_binding_reply(&value),
+        "genesis_bind" => genesis_bind_reply(request, &value),
+        "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
+        "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
+        "identity_generate" => identity_generation_reply(request, &value),
+        "formation_prepare" => formation_preparation_reply(request, &value),
+        _ => Ok(value),
+    };
+    result.map_err(String::from)
+}
+
+pub(super) async fn execute_genesis_stage_locked(target:&Target,wire:&str,control_dir:&Path,
+    _serial:&tokio::sync::MutexGuard<'_, ()>) -> Result<Value,String> {
+    // Controller counts the trailing LF in the full staging wire limit.
+    if wire.is_empty() || wire.len() >= GENESIS_STAGE_WIRE_LIMIT { return Err("The exact Genesis request exceeds its encoded byte limit.".into()); }
+    exchange(target,wire.as_bytes(),180,control_dir,None).await
+}
+
+async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known_hosts:Option<&Path>) -> Result<Value,String> {
+    target.validate()?;
     if !cfg!(unix) { return Err("This Portal platform has no qualified native controller transport.".into()); }
     let mut command = if target.kind=="local" {
         if !cfg!(all(target_os="linux",target_arch="x86_64")) { return Err("Local validators require Linux x86_64. Select an enrolled remote Linux target.".into()); }
@@ -635,9 +670,8 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
     let mut child=command.spawn().map_err(|_|"Controller could not start. Enroll the target and verify its SSH host identity first.")?;
     let mut input=child.stdin.take().ok_or("Controller input unavailable.")?;
     let mut output=child.stdout.take().ok_or("Controller output unavailable.")?.take(LIMIT+1);
-    let deadline = if request.operation == "vpn_enroll" { 240 } else { 180 };
     let result=tokio::time::timeout(Duration::from_secs(deadline),async {
-        input.write_all(request.canonical().to_string().as_bytes()).await.map_err(|_|"Cannot send controller request.")?;
+        input.write_all(wire).await.map_err(|_|"Cannot send controller request.")?;
         input.write_all(b"\n").await.map_err(|_|"Cannot complete controller request.")?;
         drop(input);
         let mut bytes=Vec::new();
@@ -647,25 +681,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         if !status.success() { return Err("Controller connection failed. Check enrolled target, pinned SSH identity, agent authentication and restricted sudo policy."); }
         let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Controller returned an invalid response.")?;
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
-        match request.operation.as_str() {
-            "health" => health_reply(&value),
-            "diagnostics" => crate::node_diagnostics::reply(&value),
-            "install_preflight" => install_preflight_reply(request, &value),
-            "upgrade_preflight" => upgrade_preflight_reply(request, &value),
-            "recovery_preflight" => recovery_preflight_reply(&value),
-            "uninstall_preflight" => crate::node_removal_scope::reply(&value),
-            "vpn_status" => vpn_status_reply(&value),
-            "vpn_enroll" => vpn_enrollment_reply(&value),
-            "start" | "stop" | "restart" => node_service_reply(&request.operation, &value),
-            "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
-            "genesis_binding_preflight" => genesis_binding_reply(&value),
-            "genesis_bind" => genesis_bind_reply(request, &value),
-            "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
-            "identity_status" | "formation_status" => custody_status_reply(&request.operation, &value),
-            "identity_generate" => identity_generation_reply(request, &value),
-            "formation_prepare" => formation_preparation_reply(request, &value),
-            _ => Ok(value),
-        }
+        Ok(value)
     }).await;
     match result { Ok(value)=>value.map_err(String::from), Err(_)=>Err("Controller timed out. The result is uncertain; inspect target state before retrying a mutation.".into()) }
 }

@@ -1,6 +1,6 @@
 import {requireAtlasAccountKey} from './atlas-account.js';
 import {blockHeight, comparableTransactionHash} from './transaction-observation.js';
-import {isStsMultiAssetCollectionId, isStsNftObjectId} from './wallet-address.js';
+import {isProtectedWalletAddress, isStsMultiAssetCollectionId, isStsNftObjectId} from './wallet-address.js';
 import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
 
 // Atlas's public token registry projects at most 250 recent STS NFT instances.
@@ -17,6 +17,8 @@ const displayName = value => typeof value === 'string' && value.length > 0 && va
   !/[\u0000-\u001f\u007f]/.test(value) ? value : null;
 const nftClass = value => value === 'nf1' || value === 'nf2' ? value : null;
 const metadataHash = value => typeof value === 'string' && value.length === 64 && /^[0-9a-f]{64}$/.test(value) ? value : null;
+const nftStatus = item => [item.burned && 'Burned', item.frozen && 'Frozen', item.revoked && 'Revoked', item.used && 'Used']
+  .filter(Boolean).join(', ') || 'No status flags reported';
 
 function metadataStatus(uri) {
   if (uri == null || uri === '') return 'Unavailable';
@@ -100,13 +102,13 @@ export function ownerCollectibleObservation(response, account, readiness) {
       throw Error('The selected RPC returned an invalid or ambiguous NFT record.');
     }
     seen.add(item.nft_id);
-    const state = [item.frozen && 'Frozen', item.revoked && 'Revoked', item.used && 'Used'].filter(Boolean);
     return {
       key: item.nft_id, nftId: item.nft_id, name: item.nft_id, address: item.nft_address,
       collectionId: item.collection_id, collection: item.collection_id, ownerAddress: item.owner,
-      status: state.length ? state.join(', ') : 'No status flags reported', quantity: '1 NFT', tokenClass,
+      status: nftStatus(item), quantity: '1 NFT', tokenClass,
       metadataStatus: item.metadata_reference_present ? 'Reference reported by selected RPC' : 'Unavailable',
       metadataHash: metadataHash(item.metadata_hash),
+      metadataReferencePresent: item.metadata_reference_present,
     };
   });
   return {...snapshot, items};
@@ -163,6 +165,39 @@ export function nftCollectionObservation(response, selection, inventory, readine
   }
   return {...snapshot, verified, transferable, issuerApproval: requires_issuer_approval,
     metadataMutable: metadata_mutable, imageLocked: image_locked, metadataHash: item.metadata_hash, imageHash: item.image_hash};
+}
+
+// Testnet-v3 release a6a434f2, sts_nft_json and sts_nft_item_json.
+export function nftInstanceObservation(response, selection, inventory, readiness) {
+  const snapshot = collectibleSnapshot(response, readiness, 'NFT instance');
+  const item = response.value.item;
+  if (item?.asset_kind !== 'nft' || item.nft_id !== selection.nftId || item.nft_address !== selection.nftId ||
+      item.collection_id !== selection.collectionId || item.class !== selection.tokenClass ||
+      !isStsNftObjectId(item.nft_id, item.class) || !isStsNftObjectId(item.collection_id, item.class) ||
+      item.nft_id === item.collection_id) {
+    throw Error('The selected RPC returned a different NFT instance, collection or class.');
+  }
+  const {owner, burned, frozen, revoked, used, transferable, requires_issuer_approval, metadata_mutable,
+    metadata_reference_present, metadata_hash} = item;
+  const serial = exactRpcAmount(item.serial_number, maxU64);
+  const expiry = exactRpcAmount(item.expires_at, 9999999999n);
+  if (serial === null || serial === '0' || (item.expires_at !== null && (expiry === null || expiry === '0')) ||
+      (owner !== null && !isProtectedWalletAddress(owner)) ||
+      (metadata_hash !== null && !metadataHash(metadata_hash)) ||
+      ![burned, frozen, revoked, used, transferable, requires_issuer_approval, metadata_mutable,
+        metadata_reference_present].every(flag => typeof flag === 'boolean')) {
+    throw Error('The selected RPC returned unsupported NFT instance status or commitment fields.');
+  }
+  const sameOwner = owner === selection.ownerAddress;
+  const status = nftStatus(item);
+  if (BigInt(snapshot.snapshotHeight) < BigInt(inventory.snapshotHeight) ||
+      (snapshot.snapshotHeight === inventory.snapshotHeight &&
+        (snapshot.snapshotHash !== inventory.snapshotHash || !sameOwner || burned || status !== selection.status ||
+          metadata_hash !== selection.metadataHash || metadata_reference_present !== selection.metadataReferencePresent))) {
+    throw Error('The NFT instance conflicts with the owner NFT snapshot or is older. Refresh the inventory.');
+  }
+  return {...snapshot, sameOwner, burned, status, serial, expiry, transferable, issuerApproval: requires_issuer_approval,
+    metadataMutable: metadata_mutable, metadataHash: metadata_hash, metadataReferencePresent: metadata_reference_present};
 }
 
 export function ownerMultiAssetObservation(response, account, readiness) {

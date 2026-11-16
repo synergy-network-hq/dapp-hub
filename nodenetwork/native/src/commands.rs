@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::{future::Future, path::{Path, PathBuf}};
 use tauri::Manager;
 use crate::{node_network,node_controller,node_bootstrap,request_journal};
+use crate::genesis_stage::{GenesisStageReview, PreparedGenesisStage, INPUTS as GENESIS_INPUTS};
 #[tauri::command]
 pub fn portal_nodenetwork_requests(window:tauri::WebviewWindow,app:tauri::AppHandle)->Result<Value,String>{
  main_only(&window)?;
@@ -37,6 +38,72 @@ pub async fn portal_nodenetwork_review_operator_key(window:tauri::WebviewWindow)
   let Some(key)=pick_operator_public_key(&window)? else{return Ok(None)};
   node_bootstrap::review_operator_public_key(&key).map(Some)
  }).await.map_err(|_|"Public key inspection did not finish.")?
+}
+
+async fn pick_genesis_stage_inputs(window:tauri::WebviewWindow)->Result<Option<PreparedGenesisStage>,String>{
+ use tauri_plugin_dialog::DialogExt;
+ static PICKER:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
+ let picker=PICKER.try_lock().map_err(|_|"A public Genesis file review is already open.")?;
+ tauri::async_runtime::spawn_blocking(move || {
+  let _picker=picker;
+  let mut paths=Vec::with_capacity(GENESIS_INPUTS.len());
+  for (name,_) in GENESIS_INPUTS {
+   let extension=if name.ends_with(".pub") {"pub"} else {"json"};
+   let Some(file)=window.dialog().file().set_parent(&window).set_title(format!("Select public {name}"))
+    .add_filter(name,&[extension]).blocking_pick_file() else {return Ok(None)};
+   paths.push(file.into_path().map_err(|_|format!("Select a local {name} file."))?);
+  }
+  PreparedGenesisStage::read(paths.try_into().map_err(|_|"Three public Genesis files are required.")?).map(Some)
+ }).await.map_err(|_|"Genesis input review did not finish.")?
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_review_genesis_stage_inputs(window:tauri::WebviewWindow)->Result<Option<Value>,String>{
+ main_only(&window)?;
+ Ok(pick_genesis_stage_inputs(window).await?.map(|prepared|prepared.summary()))
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_stage_genesis(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,
+ review:GenesisStageReview)->Result<Option<Value>,String>{
+ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+ main_only(&window)?;
+ target.validate()?; review.validate()?;
+ let Some(prepared)=pick_genesis_stage_inputs(window.clone()).await? else {return Ok(None)};
+ review.matches_preparation(&prepared)?;
+ let details=review.confirmation_details(&prepared);
+ let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: genesis_stage\n{details}\n\nThis stages three public files on the selected host. The controller requires a matching one-use grant. Binding and validator startup are separate operations.",target.label());
+ let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title("Authorize Genesis staging")
+  .buttons(MessageDialogButtons::OkCancelCustom("Stage public Genesis files once".into(),"Cancel".into())).blocking_show())
+  .await.map_err(|_|"Genesis staging confirmation did not finish.")?;
+ if !confirmed {return Ok(None)}
+ let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
+ let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
+ let serial=node_controller::SERIAL.lock().await;
+ dispatch_reviewed_genesis_stage(&target,&review,prepared,&journal,|request| {
+  let (target,directory,serial)=(&target,&directory,&serial);
+  async move {node_controller::execute_locked(target,&request,directory,None,serial).await}
+ },|wire| {
+  let (target,directory,serial)=(&target,&directory,&serial);
+  async move {node_controller::execute_genesis_stage_locked(target,&wire,directory,serial).await}
+ }).await.map(Some)
+}
+
+async fn dispatch_reviewed_genesis_stage<Read,Stage>(target:&node_controller::Target,review:&GenesisStageReview,prepared:PreparedGenesisStage,
+ journal:&Path,mut read:impl FnMut(node_controller::Request)->Read,stage:impl FnOnce(String)->Stage)->Result<Value,String>
+where Read:Future<Output=Result<Value,String>>,Stage:Future<Output=Result<Value,String>> {
+ review.matches_preparation(&prepared)?;
+ let query=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
+ let formation=read(query("formation_status")).await
+  .map_err(|_|"The controller could not recheck the prepared formation before Genesis staging.")?;
+ review.require_current_formation(&formation)?;
+ let policy=read(query("genesis_stage_preflight")).await
+  .map_err(|_|"The controller could not recheck the reviewed Genesis staging policy.")?;
+ review.require_current_policy(&policy)?;
+ let dispatch=request_journal::Dispatch::begin_digest(journal,&target.journal_identity(),"genesis_stage",prepared.request_sha256)?;
+ let outcome=stage(prepared.wire).await.and_then(|reply|review.stage_reply(&reply));
+ dispatch.finish(&outcome).map_err(|_|"Genesis staging outcome could not be saved. Review the target before another change.")?;
+ outcome
 }
 #[tauri::command]
 pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,request:node_controller::Request,
@@ -131,6 +198,74 @@ mod tests {
    "schema":"nodenetwork-genesis-binding-v1","network_id":"fixture-formation","chain_id":"99999",
    "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true,"address":"synv1".to_owned()+&"a".repeat(36),
    "membership_verified":true,"bound":bound,"stage_receipt_verified":false}})
+ }
+
+ fn genesis_stage_fixture() -> (Target,GenesisStageReview,PreparedGenesisStage,Value,Value,PathBuf) {
+  let (target,_,_,journal)=genesis_bind_scope_fixture();
+  let files_dir=journal.with_extension("inputs");
+  std::fs::create_dir(&files_dir).unwrap();
+  let paths=GENESIS_INPUTS.map(|(name,_)|files_dir.join(name));
+  for (path,bytes) in paths.iter().zip([b"{\"sample\":1}\r\n".as_slice(),b"{}",&[0,255,128,2]]) {std::fs::write(path,bytes).unwrap();}
+  let prepared=PreparedGenesisStage::read(paths).unwrap();
+  std::fs::remove_dir_all(&files_dir).unwrap();
+  let summary=prepared.summary();
+  let address="synv1".to_owned()+&"a".repeat(36);
+  let formation=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-formation-v1","address":address,"pending":true,
+   "possession_verified":true,"membership_granted":false,"network_id":"fixture-formation","chain_id":"99999","formation_sha256":"b".repeat(64)}});
+  let policy=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-genesis-stage-policy-v1","address":address,
+   "genesis_sha256":summary["inputs"][0]["sha256"],"authority_sha256":summary["inputs"][1]["sha256"],"authority_root_sha256":summary["inputs"][2]["sha256"]}});
+  let review=serde_json::from_value(json!({"networkId":"fixture-formation","chainId":"99999","validatorAddress":address,
+   "formationSha256":"b".repeat(64),"requestSha256":summary["requestSha256"],"pins":{
+    "genesisSha256":policy["result"]["genesis_sha256"],"authoritySha256":policy["result"]["authority_sha256"],
+    "authorityRootSha256":policy["result"]["authority_root_sha256"]}})).unwrap();
+  (target,review,prepared,formation,policy,journal)
+ }
+
+ #[test]
+ fn genesis_stage_command_stops_after_changed_native_policy_before_creating_journal() {
+  let (target,review,prepared,formation,mut policy,journal)=genesis_stage_fixture();
+  policy["result"]["authority_sha256"]=json!("e".repeat(64));
+  let mut reads=Vec::new();
+  let refused=tauri::async_runtime::block_on(dispatch_reviewed_genesis_stage(&target,&review,prepared,&journal,|request| {
+   reads.push(request.canonical());
+   std::future::ready(Ok(if request.operation=="formation_status" {formation.clone()} else {policy.clone()}))
+  },|_|std::future::ready(Err("Unexpected staging transport".into()))));
+  assert!(refused.unwrap_err().contains("differs from the reviewed address or input pins"));
+  assert_eq!(reads,vec![json!({"version":1,"operation":"formation_status","parameters":{}}),
+   json!({"version":1,"operation":"genesis_stage_preflight","parameters":{}})]);
+  assert!(!journal.exists());
+ }
+
+ #[test]
+ fn genesis_stage_command_fences_scope_mismatch_and_sends_only_exact_native_wire() {
+  let (target,review,prepared,formation,policy,journal)=genesis_stage_fixture();
+  let digest=prepared.request_sha256.clone();
+  let exact=prepared.wire.clone();
+  let mut receipt=policy.clone();
+  receipt["result"]["schema"]=json!("nodenetwork-genesis-stage-v1");
+  receipt["result"]["request_sha256"]=json!(digest);
+  receipt["result"]["genesis_authority_verified"]=json!(true);
+  receipt["result"]["membership_verified"]=json!(true);
+  receipt["result"]["staged"]=json!(true);
+  let valid=review.stage_reply(&receipt).unwrap();
+  assert!(valid["result"].get("request_sha256").is_none());
+  receipt["result"]["address"]=json!("synv1".to_owned()+&"b".repeat(36));
+  let outcome=tauri::async_runtime::block_on(dispatch_reviewed_genesis_stage(&target,&review,prepared,&journal,|request| {
+   std::future::ready(Ok(if request.operation=="formation_status" {formation.clone()} else {policy.clone()}))
+  },|wire|{
+   assert_eq!(wire,exact);
+   let object:Value=serde_json::from_str(&wire).unwrap();
+   assert_eq!(object,json!({"version":1,"operation":"genesis_stage","parameters":{"artifacts":{
+    "genesis.json":"{\"sample\":1}\r\n","authority.json":"{}","authority-root.pub":"AP+AAg=="}}}));
+   std::future::ready(Ok(receipt))
+  }));
+  assert!(outcome.unwrap_err().contains("outcome is uncertain"));
+  let history=request_journal::inspect(&journal).unwrap();
+  assert_eq!(history["records"][0]["state"],"uncertain");
+  assert_eq!(history["records"][0]["request_digest"],digest);
+  assert!(!history.to_string().contains("sample"));
+  assert!(request_journal::Dispatch::begin_digest(&journal,&target.journal_identity(),"genesis_stage",digest).is_err());
+  std::fs::remove_dir_all(journal).unwrap();
  }
 
  #[test]

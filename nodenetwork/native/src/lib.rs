@@ -6,5 +6,7 @@ mod node_diagnostics;
 mod node_master_review;
 mod node_removal_scope;
 pub mod node_bootstrap;
+mod genesis_stage;
+pub use genesis_stage::GenesisStageReview;
 pub mod commands;
 pub mod request_journal;

@@ -1,5 +1,6 @@
 import {isTauri,invoke} from "@tauri-apps/api/core";
 import {parseRequestHistory} from './request-history.js';
+import {genesisStageLocalReview} from './genesis-stage-files.js';
 export async function nodeNetworkRequests(){
  if(!isTauri())throw Error('Local request history requires the native Portal app. No native history has been read.');
  return parseRequestHistory(await invoke('portal_nodenetwork_requests'));
@@ -27,6 +28,21 @@ export async function nodeNetworkController(target,operation,parameters={},bindi
  const reply=await (readOperations.has(operation)?call():withNodeChange(call));
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid controller response.');
  if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Controller refused the operation.'}`);
+ return reply.result;
+}
+
+export async function nodeNetworkReviewGenesisStageInputs(){
+ if(!isTauri())throw Error('Open native Portal to review public Genesis files.');
+ const reply=await invoke('portal_nodenetwork_review_genesis_stage_inputs');
+ return reply===null?null:genesisStageLocalReview(reply);
+}
+
+export async function nodeNetworkStageGenesis(target,review){
+ if(!isTauri())throw Error('Genesis staging requires native Portal.');
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_stage_genesis',{target,review}));
+ if(reply===null)return null;
+ if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid Genesis staging response.');
+ if(!reply.ok)throw Error(reply.error?.message||'The controller refused Genesis staging.');
  return reply.result;
 }
 
