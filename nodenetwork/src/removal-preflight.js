@@ -27,3 +27,14 @@ export function removalPreflightObservation(value) {
  if (memberCountTotal > maxMembers) throw Error(unsupported);
  return {root:value.root, accountRemoval:value.managedAccountRemoval, sections, memberCount:memberCountTotal};
 }
+
+export function logicalRemovalObservation(value, submitted, target) {
+ if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 6
+  || value.schema !== 'nodenetwork-logical-removal-v1' || value.root !== removalRoot
+  || value.root !== submitted?.confirmation || value.root !== target?.root
+  || value.logical_removal_verified !== true || value.forensic_erasure_proven !== false
+  || value.backup_created !== false || value.remaining_attributed_records !== 0) {
+  throw Error('Removal outcome is uncertain. Ask the node operator to reconcile the selected installation before another change.');
+ }
+ return {root:value.root};
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {removalPreflightObservation} from '../src/removal-preflight.js';
+import {logicalRemovalObservation, removalPreflightObservation} from '../src/removal-preflight.js';
 
 const fixture = {
  root:'/opt/Synergy',destructive:true,managedAccountRemoval:true,outsideRootAuditComplete:false,forensicErasureProven:false,
@@ -29,4 +29,19 @@ test('refuses unredacted inventories, contradictory flags, malformed counts and 
   changed({id:'custody'}), changed({files:1}), changed({directories:19_999}),
   changed({sockets:'0'}), changed({file_bytes:'123\n'}), changed({file_bytes:'0123'}),
  ]) assert.throws(() => removalPreflightObservation(invalid), /unsupported removal scope/);
+});
+
+test('requires logical removal evidence for the exact reviewed root with no other result fields', () => {
+ const receipt={schema:'nodenetwork-logical-removal-v1',root:fixture.root,logical_removal_verified:true,
+  forensic_erasure_proven:false,backup_created:false,remaining_attributed_records:0};
+ const submitted={confirmation:fixture.root};
+ assert.deepEqual(logicalRemovalObservation(receipt,submitted,fixture),{root:fixture.root});
+ for (const invalid of [{...receipt,root:'/opt/synergy'},{...receipt,logical_removal_verified:false},
+  {...receipt,forensic_erasure_proven:true},{...receipt,backup_created:true},
+  {...receipt,remaining_attributed_records:1},{...receipt,remaining_attributed_records:'0'},
+  {...receipt,records:['private fixture']}]) {
+  assert.throws(()=>logicalRemovalObservation(invalid,submitted,fixture),/Removal outcome is uncertain/);
+ }
+ assert.throws(()=>logicalRemovalObservation(receipt,{confirmation:'/other/root'},fixture),/Removal outcome is uncertain/);
+ assert.throws(()=>logicalRemovalObservation(receipt,submitted,{root:'/other/root'}),/Removal outcome is uncertain/);
 });

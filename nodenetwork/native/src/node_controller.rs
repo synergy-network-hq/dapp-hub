@@ -250,6 +250,11 @@ pub(super) fn require_upgrade_target(reply: &Value) -> Result<(), &'static str> 
         .ok_or("The controller no longer reports an installed Linux x86-64 target with a qualified upgrade operation.")
 }
 
+pub(super) fn require_removal_target(reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, true, &[("uninstall", "mutation")]).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with a qualified removal operation.")
+}
+
 pub(super) fn register_service_reply(reply: &Value) -> Result<Value, &'static str> {
     if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) { return Err(REGISTER_UNCERTAIN); }
     if reply["ok"] == false {
@@ -773,6 +778,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "upgrade" => upgrade_reply(request, &value),
         "recovery_preflight" => recovery_preflight_reply(&value),
         "uninstall_preflight" => crate::node_removal_scope::reply(&value),
+        "uninstall" => crate::node_removal_scope::removal_reply(&value),
         "vpn_status" => vpn_status_reply(&value),
         "vpn_enroll" => vpn_enrollment_reply(&value),
         "start" | "stop" | "restart" => node_service_reply(&request.operation, &value),

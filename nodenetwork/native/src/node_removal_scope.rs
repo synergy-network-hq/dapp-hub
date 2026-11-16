@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 const UNSUPPORTED: &str = "The selected controller returned unsupported removal scope evidence.";
+pub(super) const REMOVAL_UNCERTAIN: &str = "Removal outcome is uncertain. Ask the node operator to reconcile the selected installation before another change.";
 const SCOPES: [&str; 4] = ["chain_data", "custody", "recovery", "other"];
 
 #[derive(Clone, Copy, Default)]
@@ -85,6 +86,38 @@ pub(super) fn reply(value: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
+pub(super) fn removal_reply(value: &Value) -> Result<Value, &'static str> {
+    if value["version"] != 1 || !value.as_object().is_some_and(|fields| fields.len() == 3) {
+        return Err(REMOVAL_UNCERTAIN);
+    }
+    if value["ok"] == false {
+        let error = &value["error"];
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) {
+            return Err(REMOVAL_UNCERTAIN);
+        }
+        // These exact owner replies occur before the one-use grant is consumed.
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("qualification_required"), Some("Operation has not passed host qualification")) =>
+                ("qualification_required", "The host policy does not qualify removal."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "A matching one-use host grant is required for removal."),
+            _ => return Err(REMOVAL_UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    let result = &value["result"];
+    if value["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 5)
+        || result["removed_root"] != ROOT || result["logical_removal_verified"] != true
+        || result["forensic_erasure_proven"] != false || result["backup_created"] != false
+        || !result["remaining_host_managed_records"].as_array().is_some_and(Vec::is_empty) {
+        return Err(REMOVAL_UNCERTAIN);
+    }
+    Ok(json!({"version":1,"ok":true,"result":{
+        "schema":"nodenetwork-logical-removal-v1","root":ROOT,"logical_removal_verified":true,
+        "forensic_erasure_proven":false,"backup_created":false,"remaining_attributed_records":0
+    }}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +191,30 @@ mod tests {
         }
         let refused = json!({"version":1,"ok":false,"error":{"message":"private fixture"}});
         assert!(!reply(&refused).unwrap_err().contains("private fixture"));
+    }
+
+    #[test]
+    fn reviewed_removal_rejects_mismatched_root_forensic_claims_and_remaining_records() {
+        let owner = json!({"version":1,"ok":true,"result":{"removed_root":ROOT,"logical_removal_verified":true,
+            "forensic_erasure_proven":false,"backup_created":false,"remaining_host_managed_records":[]}});
+        assert_eq!(removal_reply(&owner).unwrap()["result"], json!({
+            "schema":"nodenetwork-logical-removal-v1","root":ROOT,"logical_removal_verified":true,
+            "forensic_erasure_proven":false,"backup_created":false,"remaining_attributed_records":0
+        }));
+        for (field, value) in [
+            ("removed_root", json!("/opt/synergy")),
+            ("logical_removal_verified", json!(false)),
+            ("forensic_erasure_proven", json!(true)),
+            ("backup_created", json!(true)),
+            ("remaining_host_managed_records", json!(["private fixture"])),
+            ("remaining_host_managed_records", Value::Null),
+            ("unrelated", json!(true)),
+        ] {
+            let mut altered = owner.clone();
+            altered["result"][field] = value;
+            assert_eq!(removal_reply(&altered), Err(REMOVAL_UNCERTAIN), "{field}");
+        }
+        let unexpected = json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"private fixture"}});
+        assert_eq!(removal_reply(&unexpected), Err(REMOVAL_UNCERTAIN));
     }
 }

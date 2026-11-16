@@ -121,7 +121,8 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
    "install"=>"This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
    "upgrade"=>"This checks and applies the staged software release. The controller can resume its recorded interrupted upgrade with the same exact package. A matching one-use host grant is required. This action does not start consensus or automatically restart services. Confirm maintenance scope and downtime with the operator.",
-   _=>"This action changes the selected validator. A separate matching host grant is required. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",
+   "uninstall"=>"This deletes the selected /opt/Synergy installation, including keys, data and signing-safety state. The controller can stop and remove attributed services and remove its dedicated host account. A matching one-use host grant is required. Arrange file retention, VPN retirement and chain exit separately.",
+   _=>"This action changes the selected validator. A separate matching host grant is required. No action is retried automatically.",
   };
   let message=format!("Target: {}\nRoot: /opt/Synergy\nOperation: {}{}\nExact request approval ID: {}\n\n{effect}",target.label(),request.operation,reviewed,request.approval_id());
   let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title(title)
@@ -130,7 +131,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- if matches!(request.operation.as_str(),"install"|"register"|"upgrade") {
+ if matches!(request.operation.as_str(),"install"|"register"|"upgrade"|"uninstall") {
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
   return dispatch_reviewed_software(&target,&request,&journal,|request| {
@@ -162,6 +163,7 @@ where Fut:Future<Output=Result<Value,String>> {
   // A sealed preflight cannot describe all partially applied upgrades. The owner
   // mutation verifies its exact staged package and any saved upgrade intent.
   "upgrade"=>node_controller::require_upgrade_target(&fresh_target)?,
+  "uninstall"=>node_controller::require_removal_target(&fresh_target)?,
   "install"=>{
    node_controller::require_staged_install_target(&fresh_target)?;
    let preflight=node_controller::Request{version:1,operation:"install_preflight".into(),parameters:request.parameters.clone()};
@@ -175,6 +177,7 @@ where Fut:Future<Output=Result<Value,String>> {
  let result=execute(request.clone()).await.map_err(|error|match request.operation.as_str() {
   "register"=>node_controller::REGISTER_UNCERTAIN.into(),
   "upgrade"=>node_controller::UPGRADE_UNCERTAIN.into(),
+  "uninstall"=>crate::node_removal_scope::REMOVAL_UNCERTAIN.into(),
   _=>error,
  });
  dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes.")?;
@@ -363,6 +366,61 @@ mod tests {
   let current=json!({"version":1,"ok":true,"result":{"package_sha256":"a".repeat(64),"already_current":true,
    "consensus_started":false,"automatic_restart":false}});
   (target,request,journal,report,completed,current)
+ }
+
+ #[test]
+ fn reviewed_removal_uses_exact_confirmation_and_fences_ambiguous_outcomes() {
+  let (target,_,journal,mut report,_,_)=reviewed_upgrade_fixture();
+  report["result"]["operations"]=json!([{"operation":"uninstall","kind":"mutation","available":true,"blocker":null}]);
+  let request=Request{version:1,operation:"uninstall".into(),parameters:json!({"confirmation":"/opt/Synergy"})};
+  assert_eq!(request.validate(),Ok(true));
+
+  let mut uninstalled=report.clone();
+  uninstalled["result"]["installed"]=json!(false);
+  let mut calls=Vec::new();
+  let result=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+   calls.push(query.canonical());
+   std::future::ready(Ok(uninstalled.clone()))
+  }));
+  let target_read=json!({"version":1,"operation":"target","parameters":{}});
+  assert!(result.unwrap_err().contains("qualified removal operation"));
+  assert_eq!(calls,[target_read.clone()]);
+  assert!(!journal.exists());
+
+  let removed=json!({"version":1,"ok":true,"result":{"removed_root":"/opt/Synergy","logical_removal_verified":true,
+   "forensic_erasure_proven":false,"backup_created":false,"remaining_host_managed_records":[]}});
+  let mut scope_mismatch=removed.clone();
+  scope_mismatch["result"]["removed_root"]=json!("/opt/synergy");
+  let refused=json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Exact request needs one-time host operator authorization"}});
+  let post_grant_error=json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":"Controller validation or lifecycle operation failed"}});
+  for (response,state,reported_ok) in [(Some(removed),"response_received",Some(true)), (Some(refused),"response_received",Some(false)),
+   (Some(scope_mismatch),"uncertain",None),(Some(post_grant_error),"uncertain",None),(None,"uncertain",None)] {
+   let mut calls=Vec::new();
+   let result=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(match query.operation.as_str() {
+     "target"=>Ok(report.clone()),
+     "uninstall"=>response.as_ref().map_or_else(||Err("Controller timed out".into()),|reply|crate::node_removal_scope::removal_reply(reply).map_err(String::from)),
+     _=>unreachable!(),
+    })
+   }));
+   assert_eq!(calls,[target_read.clone(),request.canonical()]);
+   assert_eq!(calls[1].to_string(),r#"{"operation":"uninstall","parameters":{"confirmation":"/opt/Synergy"},"version":1}"#);
+   let history=request_journal::inspect(&journal).unwrap();
+   assert_eq!(history["records"][0]["state"],state);
+   assert_eq!(history["records"][0]["request_digest"],request.approval_id());
+   assert_eq!(history["records"][0]["response_ok"],json!(reported_ok));
+   assert!(!history.to_string().contains("/opt/Synergy"));
+   if reported_ok==Some(true) {
+    assert_eq!(result.unwrap()["result"]["schema"],"nodenetwork-logical-removal-v1");
+   } else if reported_ok==Some(false) {
+    assert_eq!(result.unwrap()["error"]["code"],"authorization_required");
+   } else {
+    assert!(result.unwrap_err().contains("Removal outcome is uncertain"));
+    assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"uninstall",&request.canonical()).is_err());
+   }
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
  }
 
  #[test]

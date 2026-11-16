@@ -1,7 +1,7 @@
 import {useState} from 'react';
 import {Card, Detail, ErrorMessage, ModalDialog, Table, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {nodeNetworkRequests} from './native-services.js';
-import {controllerOperation} from './nodeNetwork.js';
+import {installedControllerMutation} from './target-observation.js';
 import {removalRoot, removalScope, sameRemovalScope, uninstallParameters} from './offboarding.js';
 import {filterRequests} from './request-history.js';
 import {useObservationFile} from './useObservationFile.js';
@@ -76,14 +76,15 @@ function OffboardingEvidence({permitted, onOpenHistory}) {
  </Card>;
 }
 
-export function ControllerRemoval({target, permitted, busy, controller, result, inventoryAction, preflightAction, run}) {
+export function ControllerRemoval({target, permitted, busy, controller, result, removalResult, targetContext, inventoryAction, preflightAction, run}) {
  const [review, setReview] = useState(null);
  const [confirmation, setConfirmation] = useState('');
  const scope = removalScope(target);
- const gate = controllerOperation(controller, 'uninstall');
- const available = Boolean(scope && permitted && !busy && gate.available);
+ const gate = installedControllerMutation(controller, 'uninstall');
+ const available = Boolean(scope && permitted && !busy && !removalResult && gate.available);
  const receipt = result?.operation === 'uninstall_preflight' ? result : null;
- const current = sameRemovalScope(review?.scope, scope) && review.receipt === receipt && review.controller === controller;
+ const current = sameRemovalScope(review?.scope, scope) && review.receipt === receipt && review.controller === controller
+  && review.context === targetContext;
  const confirmed = current && confirmation === removalRoot;
  const close = () => {setReview(null); setConfirmation('');};
 
@@ -97,8 +98,13 @@ export function ControllerRemoval({target, permitted, busy, controller, result, 
    <p>Counts describe the in-root inventory at receipt. Outside-root audit and forensic erasure require separate evidence.</p>
   </section>}
   <p>Host removal deletes the installation under {removalRoot}, including chain data, node custody and signing-safety records. File retention needs a separate approved backup.</p>
-  <button disabled={!available} onClick={() => {setConfirmation(''); setReview({scope,receipt,controller});}}>Review destructive removal</button>
-  {!gate.available && <p>{gate.blocker}</p>}
+  <button disabled={!available} onClick={() => {setConfirmation(''); setReview({scope,receipt,controller,context:targetContext});}}>Review destructive removal</button>
+  {!gate.available && !removalResult && <p>{gate.blocker}</p>}
+  {removalResult&&<section aria-label="Reported logical removal">
+   <p role="status">The controller reported logical removal of {removalResult.result.root}. Response received {new Date(removalResult.receivedAt).toISOString()}.</p>
+   <p>The receipt reports zero remaining attributed host-managed records. Removal created no backup. Forensic erasure remains unverified.</p>
+   <p>Track chain exit, VPN retirement and signer obligations separately.</p>
+  </section>}
   {review && <ModalDialog label="Review destructive node removal" onClose={close}>
    <h2>Review destructive node removal</h2>
    <Detail data={{
