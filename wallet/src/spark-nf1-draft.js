@@ -14,7 +14,7 @@ const unsupportedDraft = 'Choose a supported unsigned Spark NF1 mint draft expor
 
 // Spark fe1d099 and the native Wallet inspector 134cfa2 use the local STS
 // Bech32m wallet namespace for this file format.
-function isMintAddress(value) {
+export function isSparkNf1WalletAddress(value) {
   if (typeof value !== 'string' || value.length !== 41 || value !== value.toLowerCase()) return false;
   const decoded = bech32m.decodeUnsafe(value);
   return decoded?.prefix === 'synw' && decoded.words.length === 30;
@@ -56,7 +56,7 @@ export function inspectSparkNf1MintDraft(bytes) {
   const source = utf8(bytes, unsupportedDraft);
   const draft = jsonFile(source, unsupportedDraft);
   if (draft?.schemaVersion !== 1 || draft.kind !== KIND || draft.chainId !== CHAIN_ID || draft.network !== NETWORK ||
-      draft.status !== 'unsigned' || draft.transactionHash !== null || !isMintAddress(draft.sender) ||
+      draft.status !== 'unsigned' || draft.transactionHash !== null || !isSparkNf1WalletAddress(draft.sender) ||
       typeof draft.payload_hex !== 'string' || !draft.payload_hex.length || draft.payload_hex.length > 2 * MAX_PAYLOAD_BYTES ||
       draft.payload_hex.length % 2 !== 0 || /[^0-9a-f]/.test(draft.payload_hex)) throw Error(unsupportedDraft);
 
@@ -75,7 +75,7 @@ export function inspectSparkNf1MintDraft(bytes) {
       decoded.tx?.op !== 'mint_nft') throw Error(unsupportedPayload);
 
   const data = decoded.tx.data;
-  if (!isStsNftObjectId(data?.collection_id, 'nf1') || !isMintAddress(data.to) ||
+  if (!isStsNftObjectId(data?.collection_id, 'nf1') || !isSparkNf1WalletAddress(data.to) ||
       !isMetadataPair(data.metadata_uri, data.metadata_hash) || data.metadata_mutable !== false ||
       data.transferable !== null || data.requires_issuer_approval !== null || data.expires_at !== null ||
       !Number.isSafeInteger(data.minted_at) || data.minted_at < 0 || data.minted_at > 9_999_999_999) {

@@ -23,6 +23,7 @@ import {IdentityPreflight} from './IdentityPreflight.jsx';
 import {InstallationDraftReview} from './InstallationDraftReview.jsx';
 import {OperatorPublicKeyReview} from './OperatorPublicKeyReview.jsx';
 import {SavedControllerPolicy} from './SavedControllerPolicy.jsx';
+import {SavedInstallationReceipt} from './SavedInstallationReceipt.jsx';
 import {CommissioningPublicEvidence} from './CommissioningPublicEvidence.jsx';
 import {installPreflightChecklist} from './install-preflight.js';
 import {RequestHistory} from './RequestHistory.jsx';
@@ -151,6 +152,7 @@ export function NodeNetworkApp(){
    <InstallationDraftReview form={form}/>
    <OperatorPublicKeyReview permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <SavedControllerPolicy form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
+   <SavedInstallationReceipt form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <CommissioningPublicEvidence form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    {!target&&<InstallPreflight checklist={installPreflightChecklist({form,permitted,master})}
     action={<button disabled={!permitted} onClick={()=>setSection('monitoring')}>Review saved preflight evidence</button>}/>}

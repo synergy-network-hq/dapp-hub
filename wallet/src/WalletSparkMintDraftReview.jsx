@@ -1,6 +1,9 @@
 import {useId, useLayoutEffect, useRef, useState} from 'react';
-import {Card} from '@synergy-network/portal-native/dapp-sdk';
-import {inspectSparkNf1MintDraft, MAX_SPARK_MINT_DRAFT_BYTES} from './spark-nf1-draft.js';
+import {Card, useNative} from '@synergy-network/portal-native/dapp-sdk';
+import {inspectSparkNf1MintDraft, isSparkNf1WalletAddress, MAX_SPARK_MINT_DRAFT_BYTES} from './spark-nf1-draft.js';
+
+// Wallet owner 134cfa2, tools/chain1266-sts/src/protocol.rs.
+const STS_GENESIS_HASH = '2272fe2b48c6e2019b27223f61ba8d8a82b58656fe9daab50c81f224a301ca74';
 
 export function WalletSparkMintDraftReview() {
   const [review, setReview] = useState({status: 'empty'});
@@ -68,6 +71,52 @@ function MintDraftSummary({value}) {
       <div><dt>Draft expiry</dt><dd>Unset</dd></div>
       <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
     </dl>
+    <SparkMintPairingComparison draft={value}/>
     <p>Mint authority and transaction approval require separate verification.</p>
+  </section>;
+}
+
+function SparkMintPairingComparison({draft}) {
+  const native = useNative();
+  const {connection, connectionRevision, isCurrentConnection} = native.wallet;
+  const endpoint = native.endpoint;
+  const consent = native.walletConsentSession;
+  const configuredGenesis = endpoint?.genesisHash;
+  const chainMatches = connection?.chainId === 'synergy:' + draft.chainId && Number(endpoint?.chainId) === draft.chainId;
+  const genesisMatches = configuredGenesis == null ||
+    (typeof configuredGenesis === 'string' && configuredGenesis.toLowerCase() === STS_GENESIS_HASH);
+  const matchesWalletAuthorization = () => !native.recoverySuspended && native.permit('wallet', 'readWallet') &&
+    isCurrentConnection(connectionRevision, connection.address, connection.chainId);
+
+  if (!chainMatches || !genesisMatches || connection.walletId !== 'synergy-mobile' ||
+      typeof consent !== 'string' || !consent || !Number.isSafeInteger(connectionRevision) ||
+      typeof isCurrentConnection !== 'function' || !matchesWalletAuthorization()) return null;
+
+  const scope = JSON.stringify([draft.sha256, consent, connectionRevision, connection.address, connection.chainId,
+    native.endpointId, endpoint.id, endpoint.rpc, endpoint.networkKey, endpoint.chainId, configuredGenesis]);
+  return <PairingComparison key={scope} sender={draft.sender} pairedAddress={connection.address}
+    authorized={matchesWalletAuthorization}/>;
+}
+
+const pairingReports = {
+  match: 'The draft sender exactly matches the address reported by the current pairing.',
+  different: 'The draft sender differs from the address reported by the current pairing.',
+  unsupported: 'The current paired address cannot be checked as a Spark NF1 Bech32m address.',
+};
+
+function PairingComparison({sender, pairedAddress, authorized}) {
+  const [result, setResult] = useState(null);
+
+  function compare() {
+    if (!authorized()) {
+      setResult(null);
+      return;
+    }
+    setResult(isSparkNf1WalletAddress(pairedAddress) ? (pairedAddress === sender ? 'match' : 'different') : 'unsupported');
+  }
+
+  return <section aria-label="Current pairing comparison">
+    <button type="button" onClick={compare}>Compare sender with current pairing</button>
+    {result && authorized() && <p role="status">{pairingReports[result]}</p>}
   </section>;
 }

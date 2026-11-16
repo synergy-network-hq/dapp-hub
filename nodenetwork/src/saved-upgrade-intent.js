@@ -18,7 +18,7 @@ const decoder = new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const digest = value => typeof value === 'string' && value.length === 64 && !/[^0-9a-f]/.test(value);
 const keysMatch = (value,keys) => object(value) && Object.keys(value).length === keys.length && keys.every(key=>Object.hasOwn(value,key));
-const sameFiles = (first,second) => keysMatch(first,Object.keys(second)) && Object.keys(second).every(name=>first[name] === second[name]);
+export const sameSoftwareInventory = (first,second) => keysMatch(first,Object.keys(second)) && Object.keys(second).every(name=>first[name] === second[name]);
 
 function json(raw,error) {
  try {return parseExactNumbers(raw);} catch {throw Error(error);}
@@ -31,7 +31,7 @@ function softwarePath(name) {
   && parts.every(part=>part && part !== '.' && part !== '..' && !/[^\x20-\x7e]|\\/.test(part));
 }
 
-function inventory(value,error) {
+export function parseSoftwareInventory(value,error) {
  const entries = object(value) ? Object.entries(value) : [];
  if (!entries.length || entries.length > 4096 || entries.some(([name,pin]) => !softwarePath(name) || !digest(pin))) throw Error(error);
  // A file and its parent directory cannot both be declared members.
@@ -49,7 +49,7 @@ function packageManifest(raw,error) {
  const value = json(raw,error);
  if (!object(value) || value.format !== packageFormat || value.architecture !== 'x86_64'
   || !validReleaseId(value.release_id)) throw Error(error);
- return {release:value.release_id,files:inventory(value.files,error)};
+ return {release:value.release_id,files:parseSoftwareInventory(value.files,error)};
 }
 
 export async function readUpgradeJsonFile(file,limit,current) {
@@ -102,8 +102,8 @@ export async function readSavedUpgradeIntent(file,current = () => true) {
  const priorBytes = encoder.encode(value.old_manifest_json);
  if (!priorBytes.length || priorBytes.length > savedUpgradeLimits.manifest) throw Error(intentError);
  const prior = packageManifest(value.old_manifest_json,intentError);
- const nextFiles = inventory(value.new_files,intentError);
- if (!sameFiles(receipt.package_files,prior.files)) throw Error(intentError);
+ const nextFiles = parseSoftwareInventory(value.new_files,intentError);
+ if (!sameSoftwareInventory(receipt.package_files,prior.files)) throw Error(intentError);
  const priorPin = await localSha256(priorBytes);
  if (!current()) return null;
  if (priorPin !== receipt.package_sha256) throw Error(intentError);
@@ -113,7 +113,8 @@ export async function readSavedUpgradeIntent(file,current = () => true) {
   stage:value.stage,registered:value.registered,relay};
 }
 
-export async function readDraftPackageManifest(file,references,current = () => true) {
+export async function readDraftPackageManifest(file,references,current = () => true,
+ mismatch = 'The selected package manifest differs from the approved release references in the update draft.') {
  const approved = upgradeParameters(references);
  const selected = await readUpgradeJsonFile(file,savedUpgradeLimits.manifest,current);
  if (!current() || !selected) return null;
@@ -121,7 +122,7 @@ export async function readDraftPackageManifest(file,references,current = () => t
  const pin = await localSha256(selected.bytes);
  if (!current()) return null;
  if (pin !== approved.manifest_sha256 || candidate.release !== approved.release_id) {
-  throw Error('The selected package manifest differs from the approved release references in the update draft.');
+  throw Error(mismatch);
  }
  return {...candidate,pin};
 }
@@ -130,7 +131,7 @@ export async function compareSavedUpgradeManifest(file,intent,references,current
  const candidate = await readDraftPackageManifest(file,references,current);
  if (!current() || !candidate) return null;
  const {pin} = candidate;
- if (pin !== intent.nextPin || !sameFiles(intent.nextFiles,candidate.files)) {
+ if (pin !== intent.nextPin || !sameSoftwareInventory(intent.nextFiles,candidate.files)) {
   throw Error('The selected package manifest differs from the candidate recorded in the saved intent.');
  }
  const counts = {added:0,changed:0,removed:0,unchanged:0};

@@ -58,13 +58,17 @@ const releaseFields=[
 ];
 const checkFields=(fields,form)=>fields.map(([field,label,accept,message])=>({field,label,valid:accept(form?.[field]),message}));
 export const releaseReferenceChecks=form=>checkFields(releaseFields,form);
+export const validInstallNetworkId=value=>typeof value==='string'&&value.length>=2&&value.length<=128
+ && /^[a-z0-9]/.test(value)&&!/[^a-z0-9_-]/.test(value);
+export const validInstallNodeName=value=>typeof value==='string'&&value.length>=1&&value.length<=64
+ && !/[^a-zA-Z0-9_-]/.test(value);
 
 export function provisioningChecks(form){
  return checkFields([
   ...releaseFields,
-  ['network_id','Network incarnation',value=>typeof value==='string'&&/^[a-z0-9][a-z0-9_-]{1,127}$/.test(value),'Enter the exact approved network incarnation.'],
-  ['chain_id','Chain ID',value=>typeof value==='string'&&/^[1-9][0-9]{0,15}$/.test(value)&&Number.isSafeInteger(Number(value)),'Enter a positive safe integer chain ID in decimal digits without leading zeros.'],
-  ['node_name','Node name',value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(value),'Enter a node name using up to64 letters, digits, underscores or hyphens.'],
+  ['network_id','Network incarnation',validInstallNetworkId,'Enter the exact approved network incarnation.'],
+  ['chain_id','Chain ID',value=>typeof value==='string'&&value.length<=16&&/^[1-9]/.test(value)&&!/\D/.test(value)&&Number.isSafeInteger(Number(value)),'Enter a positive safe integer chain ID in decimal digits without leading zeros.'],
+  ['node_name','Node name',validInstallNodeName,'Enter a node name using up to 64 letters, digits, underscores or hyphens.'],
  ],form);
 }
 export function installParameters(form){
