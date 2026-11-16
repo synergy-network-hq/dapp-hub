@@ -35,7 +35,11 @@ export function isStsAssetEventId(tokenId, asset) {
   return asset === 'multiAsset' && isStsMultiAssetCollectionId(tokenId);
 }
 
-export function projectStsAssetEvents(rows, owner) {
+export function isStsActivityTokenRef(value) {
+  return isStsAssetEventId(value, 'fungible') || isStsAssetEventId(value, 'nft') || isStsAssetEventId(value, 'multiAsset');
+}
+
+export function projectStsAssetEvents(rows, owner, tokenRef = null) {
   const items = [];
   let omittedCount = 0;
   const unsupported = 'The RPC returned unsupported STS activity evidence.';
@@ -46,7 +50,7 @@ export function projectStsAssetEvents(rows, owner) {
         (row.recipient !== null && typeof row.recipient !== 'string') || typeof row.event_type !== 'string' ||
         row.event_type.trim() !== row.event_type || !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(row.event_type)) throw Error(unsupported);
     const role = {sender: row.sender === owner, owner: row.owner === owner, recipient: row.recipient === owner};
-    if (!role.sender && !role.owner && !role.recipient) throw Error(unsupported);
+    if ((!role.sender && !role.owner && !role.recipient) || (tokenRef !== null && row.token_id !== tokenRef)) throw Error(unsupported);
     const event = stsAssetEvent(row.event_type);
     if (!event) {
       omittedCount++;

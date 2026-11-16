@@ -2,8 +2,8 @@ import {useState} from 'react';
 import {Card, Detail, ErrorMessage, ModalDialog, Resource, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {downloadJson} from './download-json.js';
 import {nodeNetworkRequests} from './native-services.js';
-import {configuredTargetFingerprint, filterRequests, matchesUnresolvedRegistration, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
-import {RegistrationDiagnosticsReview} from './TargetDiagnostics.jsx';
+import {configuredTargetFingerprint, filterRequests, matchesUnresolvedServiceDispatch, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
+import {ServiceDispatchDiagnosticsReview} from './TargetDiagnostics.jsx';
 
 const allRequests = {status: 'all', operation: 'all', target: null};
 const configuredTarget = 'configured';
@@ -140,8 +140,8 @@ function RequestHistoryView({permitted, target, targetScopeCurrent}) {
      {current.state !== 'response_received' && <p>
       The journal blocks further mutations for this configured target while the dispatch remains unresolved. Ask the node operator for qualified reconciliation before making another change.
      </p>}
-     {target && filterConfigured && matchesUnresolvedRegistration(current, configured.data) && <RegistrationDiagnosticsReview
-      key={current.id} target={target} record={current} targetScopeCurrent={targetScopeCurrent}/>}
+     {target && filterConfigured && matchesUnresolvedServiceDispatch(current, configured.data) && <ServiceDispatchDiagnosticsReview
+      key={current.id} target={target} record={current} fingerprint={configured.data} targetScopeCurrent={targetScopeCurrent}/>}
     </div>}
    </>;
   }}</Resource>

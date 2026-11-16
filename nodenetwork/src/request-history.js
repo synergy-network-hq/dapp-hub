@@ -32,15 +32,15 @@ export function filterRequests(records, {status, operation, target}) {
  );
 }
 
-export function matchesUnresolvedRegistration(record, fingerprint) {
- return Boolean(record && fingerprint && record.target_digest === fingerprint && record.operation === 'register'
+export function matchesUnresolvedServiceDispatch(record, fingerprint) {
+ return Boolean(record && fingerprint && record.target_digest === fingerprint && ['register', 'start', 'restart', 'stop'].includes(record.operation)
   && ['dispatch_intent', 'uncertain'].includes(record.state));
 }
 
-export function retainsRegistrationDispatch(records, reviewed) {
+export function retainsServiceDispatch(records, reviewed, fingerprint) {
  const record = records.find(entry => entry.id === reviewed.id);
- return matchesUnresolvedRegistration(record, reviewed.target_digest)
-  && ['request_digest', 'state', 'recorded_at_ms', 'observed_at_ms'].every(field => record[field] === reviewed[field]);
+ return matchesUnresolvedServiceDispatch(reviewed, fingerprint) && matchesUnresolvedServiceDispatch(record, fingerprint)
+  && ['operation', 'request_digest', 'state', 'recorded_at_ms', 'observed_at_ms'].every(field => record[field] === reviewed[field]);
 }
 
 const pin = value => typeof value === 'string' && value.length === 64 && /^[a-f0-9]{64}$/.test(value);

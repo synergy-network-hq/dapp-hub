@@ -39,8 +39,8 @@ export async function readNftWalletReadiness(account, endpoint, signal, checkSco
 }
 
 export function useWalletOwnerSnapshot({account, endpoint, canRead, read, parse, limit, unavailable,
-  supportsOwner = isProtectedWalletAddress, readReadiness = readProtectedWalletReadiness}) {
-  const [request, setRequest] = useState(0);
+  supportsOwner = isProtectedWalletAddress, readReadiness = readProtectedWalletReadiness, startOnMount = false}) {
+  const [request, setRequest] = useState(startOnMount ? 1 : 0);
   const mounted = useRef(false);
   const activeRead = useRef(null);
   useLayoutEffect(() => {

@@ -52,3 +52,10 @@ export function serviceRegistrationAttribution({services}) {
    : 'The controller reported no attributed Node or VPN service.';
  return {summary, node: node?.state ?? 'No attribution reported', vpn: vpn?.state ?? 'No attribution reported'};
 }
+
+export function nodeServiceState({services}) {
+ const node = services.node;
+ if (!node) return {label: 'No attribution reported', summary: 'The controller reported no attributed Node service.'};
+ if (node.state === 'Not reported') return {label: node.state, summary: 'The controller attributed the Node service without reporting its state.'};
+ return {label: node.state, summary: 'The controller reported the current state of the attributed Node service.'};
+}

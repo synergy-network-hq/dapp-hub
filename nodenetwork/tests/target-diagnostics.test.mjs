@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {serviceRegistrationAttribution, targetDiagnosticsObservation} from '../src/target-diagnostics.js';
+import {nodeServiceState, serviceRegistrationAttribution, targetDiagnosticsObservation} from '../src/target-diagnostics.js';
 
 const fixture = {
  schema: 'nodenetwork-diagnostics-v1', observed_at_ms: 1763010000000,
@@ -51,4 +51,18 @@ test('classifies current registration attribution without treating missing or pa
  assert.deepEqual(observe({node:null,vpn:null}), {
   summary:'The controller reported no attributed Node or VPN service.', node:'No attribution reported', vpn:'No attribution reported',
  });
+});
+
+test('projects current Node service state without treating absence or unreported state as inactivity', () => {
+ const observe = node => nodeServiceState(targetDiagnosticsObservation({...fixture, services:{node, vpn:fixture.services.node}}));
+ const states = ['active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading', 'maintenance', 'refreshing'];
+ for (const state of states) {
+  const value = observe({...fixture.services.node, state});
+  assert.equal(value.label, state[0].toUpperCase() + state.slice(1));
+  assert.equal(value.summary, 'The controller reported the current state of the attributed Node service.');
+ }
+ assert.deepEqual(observe({...fixture.services.node, state:null}), {
+  label:'Not reported', summary:'The controller attributed the Node service without reporting its state.',
+ });
+ assert.deepEqual(observe(null), {label:'No attribution reported', summary:'The controller reported no attributed Node service.'});
 });

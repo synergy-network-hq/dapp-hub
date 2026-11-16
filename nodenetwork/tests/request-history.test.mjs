@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {filterRequests, matchesUnresolvedRegistration, parseRequestHistory, requestStatusLabel, retainsRegistrationDispatch, reviewRequestSelection} from '../src/request-history.js';
+import {filterRequests, matchesUnresolvedServiceDispatch, parseRequestHistory, requestStatusLabel, retainsServiceDispatch, reviewRequestSelection} from '../src/request-history.js';
 
 const targetA = 'a'.repeat(64);
 const targetB = 'b'.repeat(64);
@@ -49,19 +49,24 @@ test('operation and exact configured target fingerprints combine without changin
  assert.deepEqual(records, [accepted, refused, unknown, uncertain]);
 });
 
-test('requires the exact still-unresolved registration for the selected configured fingerprint', () => {
- const reviewed = {...unknown, operation:'register'};
- assert.equal(matchesUnresolvedRegistration(reviewed, targetB), true);
- assert.equal(matchesUnresolvedRegistration(reviewed, targetA), false);
- assert.equal(matchesUnresolvedRegistration(unknown, targetB), false);
- assert.equal(retainsRegistrationDispatch([{...reviewed}], reviewed), true);
- const received = {...reviewed, state:'response_received', response_ok:true, observed_at_ms:1001};
- for (const changed of [received, {...reviewed, state:'uncertain', observed_at_ms:1001},
-  {...reviewed, id:accepted.id}, {...reviewed, operation:'install'}, {...reviewed, recorded_at_ms:1001},
-  {...reviewed, target_digest:targetA}, {...reviewed, request_digest:targetA}]) {
-  assert.equal(retainsRegistrationDispatch([changed], reviewed), false);
+test('requires the exact still-unresolved service operation for the selected configured fingerprint', () => {
+ assert.equal(matchesUnresolvedServiceDispatch(unknown, targetB), false);
+ for (const operation of ['register', 'start', 'restart', 'stop']) {
+  const reviewed = {...uncertain, operation};
+  const differentServiceOperation = operation === 'start' ? 'restart' : 'start';
+  assert.equal(matchesUnresolvedServiceDispatch(reviewed, targetB), true);
+  assert.equal(matchesUnresolvedServiceDispatch({...unknown, operation}, targetB), true);
+  assert.equal(matchesUnresolvedServiceDispatch(reviewed, targetA), false);
+  assert.equal(retainsServiceDispatch([{...reviewed}], reviewed, targetB), true);
+  assert.equal(retainsServiceDispatch([{...reviewed}], reviewed, targetA), false);
+  const received = {...reviewed, state:'response_received', response_ok:true};
+  for (const changed of [received, {...reviewed, state:'dispatch_intent', observed_at_ms:null},
+   {...reviewed, id:accepted.id}, {...reviewed, operation:differentServiceOperation}, {...reviewed, recorded_at_ms:1001},
+   {...reviewed, observed_at_ms:1002}, {...reviewed, target_digest:targetA}, {...reviewed, request_digest:targetA}]) {
+   assert.equal(retainsServiceDispatch([changed], reviewed, targetB), false);
+  }
+  assert.equal(retainsServiceDispatch([], reviewed, targetB), false);
  }
- assert.equal(retainsRegistrationDispatch([], reviewed), false);
 });
 
 test('unsupported envelopes never yield actionable or empty history', () => {

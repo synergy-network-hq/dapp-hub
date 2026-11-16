@@ -3,8 +3,8 @@ import {Detail, Resource, Table, useResource} from '@synergy-network/portal-nati
 import {NodeNetworkPanelCard} from './NodeNetworkPanelFrame.jsx';
 import {nodeNetworkController, nodeNetworkRequests} from './native-services.js';
 import {installedControllerRead, targetControllerObservation} from './target-observation.js';
-import {diagnosticSeverity, serviceRegistrationAttribution, targetDiagnosticsObservation} from './target-diagnostics.js';
-import {retainsRegistrationDispatch} from './request-history.js';
+import {diagnosticSeverity, nodeServiceState, serviceRegistrationAttribution, targetDiagnosticsObservation} from './target-diagnostics.js';
+import {retainsServiceDispatch} from './request-history.js';
 
 const serviceColumns = [
  {key: 'label', label: 'Service'}, {key: 'state', label: 'Reported state'}, {key: 'restarts', label: 'Restarts'},
@@ -80,25 +80,40 @@ export function TargetDiagnostics({target, permitted, targetScopeCurrent = () =>
  </NodeNetworkPanelCard>;
 }
 
-export function RegistrationDiagnosticsReview({target, record, targetScopeCurrent}) {
+export function ServiceDispatchDiagnosticsReview({target, record, fingerprint, targetScopeCurrent}) {
  const [requested, setRequested] = useState(false);
+ const registration = record.operation === 'register';
+ const operation = registration ? 'registration' : record.operation;
  const report = useResource(signal => requested ? readTargetDiagnostics(target, signal, targetScopeCurrent, async () => {
-  const journal = await nodeNetworkRequests().catch(() => {throw Error('The local registration dispatch could not be rechecked. Refresh local history.');});
-  if (!retainsRegistrationDispatch(journal.records, record)) {
-   throw Error('The selected registration dispatch changed. Refresh local history and select it again.');
+  const journal = await nodeNetworkRequests().catch(() => {throw Error(`The local ${operation} dispatch could not be rechecked. Refresh local history.`);});
+  if (!retainsServiceDispatch(journal.records, record, fingerprint)) {
+   throw Error(`The selected ${operation} dispatch changed. Refresh local history and select it again.`);
   }
  }) : null, requested);
- return <section aria-label="Current service attribution">
-  <p>Read current Node and VPN attribution from the selected controller. This observation leaves the prior dispatch unresolved.</p>
+ return <section aria-label={registration ? 'Current service attribution' : 'Current node service state'}>
+  <p>{registration ? 'Read current Node and VPN attribution from the selected controller.'
+   : 'Read the current state of the attributed Node service from the selected controller.'} This observation leaves the prior dispatch unresolved.</p>
   <div className="native-actions">
-   <button disabled={requested && report.loading} onClick={() => requested ? report.reload() : setRequested(true)}>Read current service attribution</button>
+   <button disabled={requested && report.loading} onClick={() => requested ? report.reload() : setRequested(true)}>
+    {registration ? 'Read current service attribution' : 'Read current node service state'}
+   </button>
    {requested && <button onClick={() => setRequested(false)}>Dismiss service evidence</button>}
   </div>
   {requested && <Resource value={{...report, reload: null}}>{value => {
+   const timing = <p>Target observation {new Date(value.observedAt).toISOString()} · Local receipt {new Date(value.receivedAt).toISOString()}</p>;
+   if (!registration) {
+    const state = nodeServiceState(value);
+    return <>
+     <p role="status">{state.summary}</p>
+     {timing}
+     <Detail data={{nodeService: state.label}}/>
+     <p>Confirmation of the earlier {operation} request and validator participation require separate evidence.</p>
+    </>;
+   }
    const attribution = serviceRegistrationAttribution(value);
    return <>
     <p role="status">{attribution.summary}</p>
-    <p>Target observation {new Date(value.observedAt).toISOString()} · Local receipt {new Date(value.receivedAt).toISOString()}</p>
+    {timing}
     <Detail data={{nodeService: attribution.node, vpnService: attribution.vpn}}/>
     <p>Reconcile the prior request with the node operator. Canary relay registration and other installation effects require separate evidence.</p>
    </>;
