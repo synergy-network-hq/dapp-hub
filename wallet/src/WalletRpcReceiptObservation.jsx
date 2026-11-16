@@ -124,6 +124,9 @@ function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead, startO
           rpcReceiptBlockHash: receipt.blockHash,
           reportedRpcTip: receipt.tip ?? 'Unavailable',
         }}/>
+        {selection.indexedHeight !== undefined && selection.indexedHeight !== receipt.height && <p role="status">
+          The Atlas record lists block {selection.indexedHeight}. The selected RPC reports the receipt at block {receipt.height}. Reorganization status remains unverified.
+        </p>}
         {receipt.tip !== null && BigInt(receipt.height) > BigInt(receipt.tip) &&
           <p role="status">The RPC returned a receipt above its reported chain tip.</p>}
         <ReceiptBlockLookup key={revision} hash={selection.hash} canRead={canUse} {...{receipt, endpoint, readRpc}}/>

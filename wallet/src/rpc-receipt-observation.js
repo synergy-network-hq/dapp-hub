@@ -12,13 +12,13 @@ function participant(value) {
 
 export function rpcReceiptSelection(row, account) {
   const hash = comparableTransactionHash(row.hash);
-  const height = blockHeight(row.block_number);
+  const indexedHeight = blockHeight(row.block_number);
   const from = participant(row.sender_address);
   const to = participant(row.receiver_address);
   const accountKey = atlasAccountKey(account);
-  if (!hash?.kind || !row.hash.startsWith(`${hash.kind}-`) || height === null || !from || to === undefined || !accountKey ||
+  if (!hash?.kind || !row.hash.startsWith(`${hash.kind}-`) || indexedHeight === null || !from || to === undefined || !accountKey ||
       (from !== accountKey && to !== accountKey)) return null;
-  return {hash: row.hash, height, from, to};
+  return {hash: row.hash, indexedHeight, from, to};
 }
 
 export function rpcReceiptHashSelection(value, account) {
@@ -59,9 +59,6 @@ export function rpcReceiptObservation(value, selection, readiness) {
     throw Error('The RPC receipt and readiness observation report different or unsupported chain identities.');
   }
   const height = blockHeight(value.blockNumber);
-  if (selection.height !== undefined && (height !== selection.height || !isHash(value.blockHash))) {
-    throw Error('The RPC receipt did not match the selected indexed block height or provide a supported block hash.');
-  }
   if (height === null || !isHash(value.blockHash)) {
     throw Error('The selected RPC receipt did not provide a supported block height or hash.');
   }

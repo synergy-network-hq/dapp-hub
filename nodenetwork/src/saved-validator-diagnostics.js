@@ -6,7 +6,7 @@ const healthLabels = {
 };
 const unsupported = 'The saved diagnostic snapshot status and preflight could not be reconciled.';
 
-function releaseDifferences({release, release_consistency:comparison}) {
+export function savedReleaseDifferences({release, release_consistency:comparison}) {
  const {matches_expected:matches, mismatch_fields:fields} = comparison ?? {};
  if (typeof matches !== 'boolean' || !Array.isArray(fields) || matches !== (fields.length === 0)
   || fields.length > Object.keys(release).length) throw Error(unsupported);
@@ -41,7 +41,7 @@ function hostBlockers(status, preflight, savedPreflight, releaseFields) {
  return blocked;
 }
 
-function expectedHealth(status, releaseFields) {
+export function expectedSavedValidatorHealth(status, releaseFields) {
  const {service, chain, posy, peers, protected_pipeline:pipeline} = status;
  if (status.preflight.some(check => check.status === 'FAIL')) return 'MISCONFIGURED';
  if (releaseFields.length) return 'RELEASE_MISMATCH';
@@ -74,8 +74,8 @@ export function projectSavedDiagnosticSnapshot(status, preflight) {
   || (missingTransition ? transition?.from !== missingTransition.from || transition.to !== missingTransition.to
    : transition != null)) throw Error(unsupported);
 
- const releaseFields = releaseDifferences(status);
- if (healthCode !== expectedHealth(status,releaseFields)) throw Error(unsupported);
+ const releaseFields = savedReleaseDifferences(status);
+ if (healthCode !== expectedSavedValidatorHealth(status,releaseFields)) throw Error(unsupported);
  const blocked = hostBlockers(status,preflight,savedPreflight,releaseFields);
  return {
   statusObservedAt:status.generated_at_utc,

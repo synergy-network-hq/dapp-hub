@@ -27,6 +27,7 @@ import {SavedValidatorObservation} from './SavedValidatorObservation.jsx';
 import {Troubleshooter} from './Troubleshooter.jsx';
 import {TargetDiagnostics} from './TargetDiagnostics.jsx';
 import {SavedValidatorLogs} from './SavedValidatorLogs.jsx';
+import {SavedValidatorFleet} from './SavedValidatorFleet.jsx';
 import {ReplacementRecoveryReview} from './ReplacementRecoveryReview.jsx';
 import {SavedValidatorPerformance} from './SavedValidatorPerformance.jsx';
 import {UpdatePackage} from './UpdatePackage.jsx';
@@ -158,6 +159,7 @@ export function NodeNetworkApp(){
    <OffboardingChecklist permitted={permitted} onOpenHistory={()=>setSection('logs')}/>
   </div>}
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>No target controller will be contacted until you explicitly save a target in Settings. Public network observations do not select or authenticate a host.</p><button onClick={()=>setSection('settings')}>Review target settings</button></Card>}
+  {tab==='Management'&&<SavedValidatorFleet permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>}
   {tab==='Management'&&<SavedValidatorObservation permitted={permitted} onOpenDiagnostics={()=>setSection('logs')}/>}
   {['Management','Validator setup'].includes(tab)&&!target&&<VpnStatus onOpenDiagnostics={()=>setSection('logs')}/>}
   {tab==='Management'&&!target&&<CustodyStatus onOpenHistory={()=>setSection('logs')}/>}
