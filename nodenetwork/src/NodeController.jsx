@@ -15,7 +15,7 @@ import {validatorStartupBlocker,vpnEnrollmentBlocker,vpnEnrollmentObservation,vp
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
-import {formationPreparationInputs,formationPreparationObservation,genesisBindingInputs,genesisBindingObservation,identityGenerationInputs,identityGenerationObservation,
+import {commissioningObservation,formationPreparationInputs,formationPreparationObservation,genesisBindingInputs,genesisBindingObservation,identityGenerationInputs,identityGenerationObservation,
  identityPreflightObservation,identityPreflightReads} from './identity-preflight.js';
 import {nodeServiceActions,nodeServiceActionObservation,nodeServiceRegistrationObservation,targetHealthObservation} from './target-health.js';
 import {recoveryPreflightObservation} from './recovery-handoff.js';
@@ -77,7 +77,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null);
  const [preflightAttempt,setPreflightAttempt]=useState(null);
  const [serviceAcknowledgement,setServiceAcknowledgement]=useState(null);
- const [registrationReceipt,setRegistrationReceipt]=useState(null);
+ const [lifecycleReceipt,setLifecycleReceipt]=useState(null);
  const [formationReview,setFormationReview]=useState(null);
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const key=JSON.stringify(target);
@@ -119,9 +119,13 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const enrollmentBlocker=vpnEnrollmentBlocker(vpnResult?.result);
  const startupBlocker=validatorStartupBlocker(vpnResult?.operation==='vpn_status'?vpnResult.result:null);
  const serviceGates=Object.fromEntries(nodeServiceActions.map(operation=>[operation,installedControllerMutation(state,operation)]));
+ const commissionGate=installedControllerMutation(state,'commission');
+ const canCommission=permitted&&!capabilities.loading&&!capabilities.error&&commissionGate.available;
  const registrationGate=installedControllerMutation(state,'register');
  const canRegister=permitted&&!capabilities.loading&&!capabilities.error&&registrationGate.available;
- const currentRegistration=permitted&&registrationReceipt?.context===targetContext.current?registrationReceipt:null;
+ const currentLifecycleReceipt=permitted&&lifecycleReceipt?.context===targetContext.current?lifecycleReceipt:null;
+ const currentCommission=currentLifecycleReceipt?.operation==='commission'?currentLifecycleReceipt:null;
+ const currentRegistration=currentLifecycleReceipt?.operation==='register'?currentLifecycleReceipt:null;
  const resultIsPreparation=custodyPreparations.some(action=>action.operation===result?.operation);
  const preparedIdentity=permitted&&identityContextCurrent&&resultIsPreparation?result:null;
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:preparedIdentity;
@@ -154,18 +158,20 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   const removalContext=reviewsRemoval?targetContext.current:null;
   const isEnrollment=operation==='vpn_enroll';
   const isServiceAction=nodeServiceActions.includes(operation);
+  const commissionsValidator=operation==='commission';
   const registersServices=operation==='register';
-  const registrationContext=registersServices?targetContext.current:null;
+  const lifecycleContext=commissionsValidator||registersServices?targetContext.current:null;
   const bindsGenesis=operation==='genesis_bind';
   const stagesGenesis=operation==='genesis_stage';
   const preparesCustody=preparationActions.find(action=>action.operation===operation);
   const reviewsCustody=Boolean(preparesCustody)||custodyPreparations.some(action=>action.preflight===operation)
    || bindsGenesis||stagesGenesis||['genesis_binding_preflight','genesis_stage_preflight','formation_status'].includes(operation);
   const reviewedIdentityContext=reviewsCustody?identityContext.current:null;
-  const scopeSensitive=reviewedInstallContext||reviewsUpgrade||reviewsRemoval||isEnrollment||isServiceAction||registersServices||reviewsCustody||['health','vpn_status','identity_status'].includes(operation);
+  const scopeSensitive=reviewedInstallContext||reviewsUpgrade||reviewsRemoval||isEnrollment||isServiceAction||lifecycleContext||reviewsCustody||['health','vpn_status','identity_status'].includes(operation);
   if(!permitted||busy||removalResult||(read&&!read.available)||(isPreflight&&!preflight.canRun)||(installsNode&&!canInstall))return;
   if(isEnrollment&&(!enrollmentSupported||enrollmentBlocker||vpnResult?.operation!=='vpn_status'))return;
   if(isServiceAction&&(!serviceGates[operation].available||(operation!=='stop'&&startupBlocker)))return;
+  if(commissionsValidator&&!canCommission)return;
   if(registersServices&&!canRegister)return;
   if(appliesUpgrade&&(!upgradeGate.available||capabilities.loading||capabilities.error))return;
   if(removesNode&&(!removalGate.available||capabilities.loading||capabilities.error||parameters.confirmation!==removalRoot))return;
@@ -174,25 +180,25 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   if(bindsGenesis&&(!bindingAvailable||!bindingInputs))return;
   if(stagesGenesis&&(!stageAvailable||!genesisStageInputsMatch(parameters,stageScope)))return;
   if(scopeSensitive&&!targetScopeCurrent()){
-   setResult(null);setServiceAcknowledgement(null);setFormationReview(null);setPreflightAttempt(null);setRegistrationReceipt(null);
+   setResult(null);setServiceAcknowledgement(null);setFormationReview(null);setPreflightAttempt(null);setLifecycleReceipt(null);
    setError('The target, recovery state or permission changed. Review the selected controller again.');
    return;
   }
   setBusy(true);setError('');
   if(!stagesGenesis)setResult(null);
   if(operation!=='health')setServiceAcknowledgement(null);
-  if(!read&&!isPreflight)setRegistrationReceipt(null);
+  if(!read&&!isPreflight)setLifecycleReceipt(null);
   if(operation==='formation_status'||(!read&&!isPreflight&&!stagesGenesis))setFormationReview(null);
   const submitted=stagesGenesis?{...stageScope,requestSha256:parameters.requestSha256}
    :bindsGenesis?bindingInputs:preparesCustody?preparesCustody.inputs:installsNode?preflight.reviewedParameters
-    :reviewsUpgrade?upgradeParameters(form):removesNode?uninstallParameters(target,parameters.confirmation):registersServices?{}:{...parameters};
+    :reviewsUpgrade?upgradeParameters(form):removesNode?uninstallParameters(target,parameters.confirmation):lifecycleContext?{}:{...parameters};
   const scopeCurrent=()=>alive.current&&(!scopeSensitive||targetScopeCurrent())
    &&(!reviewedIdentityContext||identityContext.current===reviewedIdentityContext)
    &&(!reviewedInstallContext||installContext.current===reviewedInstallContext)
    &&(!upgradeTargetContext||targetContext.current===upgradeTargetContext)
    &&(!appliesUpgrade||upgradeContext.current===reviewedUpgradeContext)
    &&(!removalContext||targetContext.current===removalContext)
-   &&(!registrationContext||targetContext.current===registrationContext);
+   &&(!lifecycleContext||targetContext.current===lifecycleContext);
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending',context:reviewedInstallContext}:null);
   try{
    const nativeBindingReview=bindsGenesis?{networkId:bindingReview.networkId,chainId:bindingReview.chainId,
@@ -206,6 +212,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    else if(removesNode)response=logicalRemovalObservation(raw,submitted,target);
    else if(isEnrollment)response=vpnEnrollmentObservation(raw);
    else if(isServiceAction)response=nodeServiceActionObservation(operation,raw);
+   else if(commissionsValidator)response=commissioningObservation(raw);
    else if(registersServices)response=nodeServiceRegistrationObservation(raw);
    else if(stagesGenesis)response=genesisStageReceipt(raw,stageScope);
    else if(bindsGenesis)response=genesisBindingObservation(raw,bindingReview);
@@ -215,7 +222,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     const receivedAt=Date.now();
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt,observation:response,context:reviewedInstallContext});
     else if(isServiceAction)setServiceAcknowledgement({operation:response.requested,receivedAt});
-    else if(registersServices)setRegistrationReceipt({result:response,receivedAt,context:registrationContext});
+    else if(lifecycleContext)setLifecycleReceipt({operation,result:response,receivedAt,context:lifecycleContext});
     else setResult({operation,submitted,result:response,receivedAt,identityContext:reviewedIdentityContext,
      installContext:reviewedInstallContext,upgradeContext:reviewedUpgradeContext,removalContext});
     if(operation==='formation_status'&&response.pending)setFormationReview({observation:response,context:reviewedIdentityContext});
@@ -235,7 +242,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  async function bootstrap(){
   if(!permitted||busy||removalResult)return;
   setBusy(true);setError('');setResult(null);
-  setPreflightAttempt(null);setFormationReview(null);setRegistrationReceipt(null);
+  setPreflightAttempt(null);setFormationReview(null);setLifecycleReceipt(null);
   try{const submitted=installParameters(form);const response=await nodeNetworkBootstrap(target,operator,submitted);if(response&&alive.current){setResult({operation:'bootstrap',submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
   catch(failure){if(alive.current)setError(String(failure?.message||failure));}
   finally{if(alive.current)setBusy(false);}
@@ -272,7 +279,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
    if(typedStatus[result?.operation]||['install','upgrade','uninstall','vpn_enroll','genesis_bind','genesis_stage'].includes(result?.operation)||resultIsPreparation)setResult(null);
-   setPreflightAttempt(null);setServiceAcknowledgement(null);setFormationReview(null);setRegistrationReceipt(null);
+   setPreflightAttempt(null);setServiceAcknowledgement(null);setFormationReview(null);setLifecycleReceipt(null);
    capabilities.reload();
   }}>Inspect selected target</button>}>
    {removalResult?<p role="status">The prior controller capability report was retired after logical removal.</p>:<Resource value={capabilities}>{data=><>
@@ -301,7 +308,14 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
      <Detail data={{release:installResult.result.release_id,manifestSha256:installResult.result.manifest_sha256,declaredPackageMembers:installResult.result.declared_members}}/>
      <p>Custody, service registration and validator startup have separate controls.</p>
     </section>}
-    {button('commission','Verify and commission provisioned custody')}
+    <div className="native-controller-action">
+     <button disabled={busy||!canCommission} onClick={()=>run('commission')}>Verify and commission provisioned custody</button>
+     {permitted&&!commissionGate.available&&<small>{commissionGate.blocker}</small>}
+    </div>
+    {currentCommission&&<section aria-label="Reported validator commissioning">
+     <ControllerReceipt receivedAt={currentCommission.receivedAt}/>
+     <p>The selected controller reports validator commissioning completed. Validator startup, membership and production approval require separate evidence.</p>
+    </section>}
     <div className="native-controller-action">
      <button disabled={busy||!canRegister} onClick={()=>run('register')}>Register contained service</button>
      {permitted&&!registrationGate.available&&<small>{registrationGate.blocker}</small>}

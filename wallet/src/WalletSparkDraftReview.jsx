@@ -1,12 +1,12 @@
 import {Fragment, useId, useLayoutEffect, useRef, useState} from 'react';
 import {Card, useNative} from '@synergy-network/portal-native/dapp-sdk';
-import {inspectSparkNf1MintDraft, isSparkNf1WalletAddress, MAX_SPARK_MINT_DRAFT_BYTES} from './spark-nf1-draft.js';
+import {inspectSparkNf1Draft, isSparkNf1WalletAddress, MAX_SPARK_NF1_DRAFT_BYTES} from './spark-nf1-draft.js';
 import {STS_TESTNET_GENESIS} from './wallet-address.js';
 import {WalletSparkMintAuthorityCheck} from './WalletSparkMintAuthorityCheck.jsx';
 import {WalletSparkMintReceiptCheck} from './WalletSparkMintReceiptCheck.jsx';
 import {useWalletReadScope} from './wallet-account-read.js';
 
-export function WalletSparkMintDraftReview() {
+export function WalletSparkDraftReview() {
   const [review, setReview] = useState({status: 'empty'});
   const input = useRef(null);
   const revision = useRef(0);
@@ -17,8 +17,8 @@ export function WalletSparkMintDraftReview() {
     const file = event.currentTarget.files?.[0];
     if (!file) return;
     const current = ++revision.current;
-    if (file.size > MAX_SPARK_MINT_DRAFT_BYTES) {
-      setReview({status: 'failed', message: 'The mint draft exceeds 24 KiB.'});
+    if (file.size > MAX_SPARK_NF1_DRAFT_BYTES) {
+      setReview({status: 'failed', message: 'The draft exceeds 24 KiB.'});
       return;
     }
 
@@ -32,7 +32,7 @@ export function WalletSparkMintDraftReview() {
     }
     if (current !== revision.current) return;
     try {
-      setReview({status: 'checked', value: inspectSparkNf1MintDraft(bytes), revision: current});
+      setReview({status: 'checked', value: inspectSparkNf1Draft(bytes), revision: current});
     } catch (error) {
       setReview({status: 'failed', message: error.message});
     }
@@ -45,14 +45,16 @@ export function WalletSparkMintDraftReview() {
     input.current.focus();
   }
 
-  return <Card title="Review an unsigned Spark mint draft">
-    <p id={instructions}>Choose the NF1 mint JSON downloaded from Spark, up to 24 KiB. The file stays on this device.</p>
-    <label>Unsigned Spark mint draft<input ref={input} type="file" accept=".json,application/json"
+  const value = review.status === 'checked' ? review.value : null;
+  return <Card title="Review an unsigned Spark NF1 draft">
+    <p id={instructions}>Choose a mint, list, cancel or buy draft exported from Spark, up to 24 KiB. The file stays on this device.</p>
+    <label>Unsigned Spark NF1 draft<input ref={input} type="file" accept=".json,application/json"
       aria-describedby={instructions} onChange={chooseFile}/></label>
-    {review.status !== 'empty' && <button type="button" onClick={clearFile}>Clear mint draft file</button>}
-    {review.status === 'reading' && <p role="status">Reading mint draft…</p>}
+    {review.status !== 'empty' && <button type="button" onClick={clearFile}>Clear draft file</button>}
+    {review.status === 'reading' && <p role="status">Reading draft…</p>}
     {review.status === 'failed' && <p role="alert" className="native-error">{review.message}</p>}
-    {review.status === 'checked' && <MintDraftSummary value={review.value} isCurrent={() => revision.current === review.revision}/>}
+    {value?.action === 'mint' && <MintDraftSummary value={value} isCurrent={() => revision.current === review.revision}/>}
+    {value && value.action !== 'mint' && <SaleDraftSummary value={value}/>}
   </Card>;
 }
 
@@ -75,6 +77,26 @@ function MintDraftSummary({value, isCurrent}) {
     <SparkMintPairingComparison draft={value}/>
     <SparkMintRpcChecks draft={value} isCurrent={isCurrent}/>
     <p>Signer identity, fees and transaction approval still require independent verification.</p>
+  </section>;
+}
+
+const saleActions = {list: 'List NFT', cancel: 'Cancel listing', buy: 'Buy NFT'};
+
+function SaleDraftSummary({value}) {
+  return <section aria-label="Unsigned NF1 sale review">
+    <p role="status">Unsigned NF1 sale draft</p>
+    <dl className="native-details">
+      <div><dt>Action</dt><dd>{saleActions[value.action]}</dd></div>
+      <div><dt>Draft network</dt><dd>{value.network} · Chain {value.chainId}</dd></div>
+      <div><dt>Draft sender</dt><dd><code>{value.sender}</code></dd></div>
+      <div><dt>NF1 NFT</dt><dd><code>{value.nftId}</code></dd></div>
+      {value.listingId && <div><dt>Listing ID</dt><dd><code>{value.listingId}</code></dd></div>}
+      {value.expectedSeller && <div><dt>Expected seller</dt><dd><code>{value.expectedSeller}</code></dd></div>}
+      {value.priceNwei && <div><dt>Draft price</dt><dd>{value.priceNwei} nWei</dd></div>}
+      {value.expiresAtHeight && <div><dt>Listing expiry height</dt><dd>{value.expiresAtHeight}</dd></div>}
+      <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
+    </dl>
+    <p>Ownership, listing state, fees and transaction approval require separate verification.</p>
   </section>;
 }
 

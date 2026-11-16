@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import test from 'node:test';
-import {inspectSparkNf1MintDraft, MAX_SPARK_MINT_DRAFT_BYTES} from '../src/spark-nf1-draft.js';
+import {inspectSparkNf1Draft, inspectSparkNf1MintDraft, MAX_SPARK_MINT_DRAFT_BYTES} from '../src/spark-nf1-draft.js';
 import {mintCollection, mintDraftText, mintFileSha256, mintPayload, mintPayloadSha256, mintSender, mintTimestamp} from './fixtures/spark-nf1-draft.mjs';
+import {saleBuyer, saleDraftText, saleExpiry, saleListing, saleNft, salePayloads, salePriceNwei, saleSeller} from './fixtures/spark-nf1-sale-draft.mjs';
 
 const inspect = text => inspectSparkNf1MintDraft(new TextEncoder().encode(text));
+const inspectDraft = text => inspectSparkNf1Draft(new TextEncoder().encode(text));
+const sha256 = text => createHash('sha256').update(text).digest('hex');
 
 test('checks the pinned Wallet v20 payload in the exact Spark export and hashes original file bytes', () => {
   const text = mintDraftText();
@@ -16,6 +20,53 @@ test('checks the pinned Wallet v20 payload in the exact Spark export and hashes 
   assert.equal(inspect(replacement).mintedAt, 1794761002);
   assert.notEqual(inspect(replacement).sha256, mintFileSha256);
   assert.notEqual(inspect(replacement).payloadSha256, mintPayloadSha256);
+  assert.deepEqual(inspectDraft(text), {action: 'mint', ...inspect(text)});
+});
+
+for (const [action, terms] of Object.entries({
+  list: {sender: saleSeller, priceNwei: salePriceNwei, expiresAtHeight: String(saleExpiry)},
+  cancel: {sender: saleSeller, listingId: saleListing},
+  buy: {sender: saleBuyer, listingId: saleListing, expectedSeller: saleSeller, priceNwei: salePriceNwei},
+})) {
+  test(`preserves the exact unsigned Spark ${action} terms and byte digests`, () => {
+    const text = saleDraftText(action);
+    assert.deepEqual(inspectDraft(text), {action, sha256: sha256(text), payloadSha256: sha256(salePayloads[action]),
+      chainId: 1266, network: 'synergy-testnet-v3', nftId: saleNft, ...terms});
+    assert.throws(() => inspect(text), /supported unsigned Spark NF1 mint draft/);
+  });
+}
+
+test('does not round, coerce or reinterpret original sale price and expiry bytes', () => {
+  for (const rawPrice of [`"${salePriceNwei}"`, '0', '-1', '1.0', '1e2', '01', '1,"price_nwei":2',
+    (BigInt(salePriceNwei) + 1n).toString(), '9'.repeat(40)]) {
+    assert.throws(() => inspectDraft(saleDraftText('buy', salePayloads.buy.replace(salePriceNwei, rawPrice))), /NF1 sale payload/);
+  }
+  for (const rawExpiry of ['"5451230"', '0', '-1', '5451230.0', '9007199254740992', '1e6']) {
+    assert.throws(() => inspectDraft(saleDraftText('list', salePayloads.list.replace(String(saleExpiry), rawExpiry))), /NF1 sale payload/);
+  }
+  const oneMoreThanSafeInteger = '9007199254740993';
+  const text = saleDraftText('list', salePayloads.list.replace(salePriceNwei, oneMoreThanSafeInteger));
+  assert.equal(inspectDraft(text).priceNwei, oneMoreThanSafeInteger);
+});
+
+test('requires exact sale payload kind, order and counterpart identities', () => {
+  for (const [action, payload] of [
+    ['cancel', salePayloads.cancel.replace(saleListing, saleListing.toUpperCase())],
+    ['cancel', salePayloads.cancel.replace(saleListing, 'a'.repeat(63))],
+    ['list', salePayloads.list.replace(saleNft, saleNft.toUpperCase())],
+    ['list', salePayloads.list.replace(saleNft, `${saleNft.slice(0, -1)}q`)],
+    ['buy', salePayloads.buy.replace(saleSeller, saleBuyer)],
+    ['buy', salePayloads.buy.replace(saleSeller, saleSeller.toUpperCase())],
+    ['buy', salePayloads.buy.replace(saleSeller, `${saleSeller.slice(0, -1)}q`)],
+    ['cancel', salePayloads.cancel.replace('cancel_nft_sale', 'cancel_other_sale')],
+    ['cancel', salePayloads.cancel.replace('"data":{"nft_id":', '"data":{"price_nwei":1,"nft_id":')],
+    ['cancel', salePayloads.cancel.replace(`"nft_id":"${saleNft}","listing_id":"${saleListing}"`,
+      `"listing_id":"${saleListing}","nft_id":"${saleNft}"`)],
+    ['buy', mintPayload],
+  ]) assert.throws(() => inspectDraft(saleDraftText(action, payload)), /NF1 sale payload/);
+  assert.throws(() => inspectDraft(mintDraftText(salePayloads.buy)), /NF1 mint payload/);
+  assert.throws(() => inspectDraft(saleDraftText('list', undefined, {transactionHash: 'not-unsigned'})), /supported unsigned Spark NF1 draft/);
+  assert.throws(() => inspectDraft(saleDraftText('cancel').trimEnd()), /supported unsigned Spark NF1 draft/);
 });
 
 test('requires the exact unsigned Spark version, address, outer shape and bytes', () => {

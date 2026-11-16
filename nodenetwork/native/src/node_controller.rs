@@ -9,6 +9,7 @@ pub const ROOT: &str = "/opt/Synergy";
 const CONTROLLER: &str = "/opt/Synergy/tmp/controller/controller.py";
 const LIMIT: u64 = 1_000_000;
 pub(super) const GENESIS_STAGE_WIRE_LIMIT: usize = 12 * 1024 * 1024;
+pub(super) const COMMISSION_UNCERTAIN: &str = "Validator commissioning outcome is uncertain. Inspect the selected target and its request history before another change.";
 pub(super) const REGISTER_UNCERTAIN: &str = "Service registration outcome is uncertain. Inspect the selected target before another change.";
 pub(super) const UPGRADE_UNCERTAIN: &str = "Software upgrade outcome is uncertain. Review the selected installation and its pending upgrade evidence before another change.";
 pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -240,6 +241,11 @@ pub(super) fn require_staged_install_target(reply: &Value) -> Result<(), &'stati
         .ok_or("The controller no longer reports an uninstalled Linux x86-64 target with qualified installation and preflight operations.")
 }
 
+pub(super) fn require_commission_target(reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, true, &[("commission", "mutation")]).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified validator commissioning.")
+}
+
 pub(super) fn require_service_registration_target(reply: &Value) -> Result<(), &'static str> {
     qualified_software_target(reply, true, &[("register", "mutation")]).then_some(())
         .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified service registration.")
@@ -253,6 +259,32 @@ pub(super) fn require_upgrade_target(reply: &Value) -> Result<(), &'static str> 
 pub(super) fn require_removal_target(reply: &Value) -> Result<(), &'static str> {
     qualified_software_target(reply, true, &[("uninstall", "mutation")]).then_some(())
         .ok_or("The controller no longer reports an installed Linux x86-64 target with a qualified removal operation.")
+}
+
+pub(super) fn commissioning_reply(reply: &Value) -> Result<Value, &'static str> {
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) {
+        return Err(COMMISSION_UNCERTAIN);
+    }
+    if reply["ok"] == false {
+        let error = &reply["error"];
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) { return Err(COMMISSION_UNCERTAIN); }
+        // The pinned controller's authorize() emits these before grant consumption or commissioning.
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("qualification_required"), Some("Operation has not passed host qualification")) =>
+                ("qualification_required", "The host policy does not qualify validator commissioning."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "A matching one-use host grant is required for validator commissioning."),
+            _ => return Err(COMMISSION_UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    // lifecycle.py::_commission_locked returns only these flags after final conformance.
+    if reply["ok"] != true
+        || reply["result"] != json!({"commissioned":true,"consensus_started":false,"production_approved":false}) {
+        return Err(COMMISSION_UNCERTAIN);
+    }
+    Ok(json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-commissioning-v1",
+        "commissioned":true,"consensus_started":false,"production_approved":false}}))
 }
 
 pub(super) fn register_service_reply(reply: &Value) -> Result<Value, &'static str> {

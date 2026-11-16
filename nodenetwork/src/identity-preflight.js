@@ -66,6 +66,15 @@ export function formationPreparationObservation(value,review) {
  catch {throw Error(uncertain);}
 }
 
+export function commissioningObservation(value) {
+ if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 4
+  || value.schema !== 'nodenetwork-commissioning-v1' || value.commissioned !== true
+  || value.consensus_started !== false || value.production_approved !== false) {
+  throw Error('Validator commissioning outcome is uncertain. Inspect the selected target and its request history before another change.');
+ }
+ return {commissioned:true,consensusStarted:false,productionApproved:false};
+}
+
 export function identityPreflightObservation(operation, value) {
  const read = identityPreflightReads.find(item => item.operation === operation);
  const unsupported = 'The selected controller returned unsupported validator preparation evidence.';

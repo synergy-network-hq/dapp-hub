@@ -119,6 +119,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
    .unwrap_or_else(||format!("\nParameters: {}",request.parameters));
   let effect=match request.operation.as_str() {
    "install"=>"This installs the approved validator software from the host's staged package. Portal rechecks staged target access and package policy after confirmation. A matching one-use host grant is required. Custody, service registration and validator startup are separate operations.",
+   "commission"=>"This commissions the installed validator using inputs and custody already staged on the host. The controller can initialize node data and remove the staged inputs and temporary custody after applying them. A matching one-use host grant is required. Service startup and production approval are separate.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
    "upgrade"=>"This checks and applies the staged software release. The controller can resume its recorded interrupted upgrade with the same exact package. A matching one-use host grant is required. This action does not start consensus or automatically restart services. Confirm maintenance scope and downtime with the operator.",
    "uninstall"=>"This deletes the selected /opt/Synergy installation, including keys, data and signing-safety state. The controller can stop and remove attributed services and remove its dedicated host account. A matching one-use host grant is required. Arrange file retention, VPN retirement and chain exit separately.",
@@ -131,7 +132,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- if matches!(request.operation.as_str(),"install"|"register"|"upgrade"|"uninstall") {
+ if matches!(request.operation.as_str(),"install"|"commission"|"register"|"upgrade"|"uninstall") {
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
   return dispatch_reviewed_software(&target,&request,&journal,|request| {
@@ -159,6 +160,7 @@ where Fut:Future<Output=Result<Value,String>> {
  let fresh_target=execute(node_controller::Request{version:1,operation:"target".into(),parameters:serde_json::json!({})}).await
   .map_err(|_|"The controller could not recheck the selected target.")?;
  match request.operation.as_str() {
+  "commission"=>node_controller::require_commission_target(&fresh_target)?,
   "register"=>node_controller::require_service_registration_target(&fresh_target)?,
   // A sealed preflight cannot describe all partially applied upgrades. The owner
   // mutation verifies its exact staged package and any saved upgrade intent.
@@ -175,10 +177,14 @@ where Fut:Future<Output=Result<Value,String>> {
  }
  let dispatch=request_journal::Dispatch::begin(journal,&target.journal_identity(),&request.operation,&request.canonical())?;
  let result=execute(request.clone()).await.map_err(|error|match request.operation.as_str() {
+  "commission"=>node_controller::COMMISSION_UNCERTAIN.into(),
   "register"=>node_controller::REGISTER_UNCERTAIN.into(),
   "upgrade"=>node_controller::UPGRADE_UNCERTAIN.into(),
   "uninstall"=>crate::node_removal_scope::REMOVAL_UNCERTAIN.into(),
   _=>error,
+ }).and_then(|reply| {
+  if request.operation=="commission" {return node_controller::commissioning_reply(&reply).map_err(String::from);}
+  Ok(reply)
  });
  dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes.")?;
  result
@@ -353,6 +359,103 @@ mod tests {
   let reply=json!({"version":1,"ok":true,"result":{"registered":["/etc/systemd/system/synergy-node.service",
    "/etc/systemd/system/synergy-vpn.service"],"services_started":false,"boot_enabled":false}});
   (target,request,journal,report,reply)
+ }
+
+ fn reviewed_commission_fixture() -> (Target, Request, PathBuf, Value, Value) {
+  let (target,_,journal,mut report,_,_)=reviewed_install_fixture();
+  report["result"]["installed"]=json!(true);
+  report["result"]["operations"]=json!([{"operation":"commission","kind":"mutation","available":true,"blocker":null}]);
+  let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
+  let receipt=json!({"version":1,"ok":true,"result":{"commissioned":true,"consensus_started":false,"production_approved":false}});
+  (target,request,journal,report,receipt)
+ }
+
+ #[test]
+ fn reviewed_commission_requires_current_installed_target_before_creating_journal() {
+  let (target,request,journal,report,_)=reviewed_commission_fixture();
+  assert_eq!(request.validate(),Ok(true));
+  let mut unsupported=request.clone();
+  unsupported.parameters=json!({"stage":"tmp/commissioning"});
+  assert!(unsupported.validate().is_err());
+  let mut wrong_read=report.clone();
+  wrong_read["result"]["operations"][0]["kind"]=json!("read");
+  let mut unavailable=report.clone();
+  unavailable["result"]["operations"][0]["available"]=json!(false);
+  let mut duplicate=report.clone();
+  let operations=duplicate["result"]["operations"].as_array_mut().unwrap();
+  operations.push(operations[0].clone());
+  let mut invalid_reports=vec![wrong_read,unavailable,duplicate];
+  for (field,value) in [("installed",json!(false)),("controllerVersion",json!(2)),("platform",json!("darwin")),
+   ("architecture",json!("aarch64")),("root",json!("/opt/synergy")),("localValidatorSupported",json!(false))] {
+   let mut invalid=report.clone();
+   invalid["result"][field]=value;
+   invalid_reports.push(invalid);
+  }
+  for invalid in invalid_reports {
+   let mut wire=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    wire.push(query.canonical());
+    std::future::ready(Ok(invalid.clone()))
+   }));
+   assert!(outcome.unwrap_err().contains("qualified validator commissioning"));
+   assert_eq!(wire,[json!({"version":1,"operation":"target","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn reviewed_commission_validates_owner_receipt_before_settling_the_exact_dispatch() {
+  let (target,request,journal,report,valid)=reviewed_commission_fixture();
+  let accepted=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-commissioning-v1",
+   "commissioned":true,"consensus_started":false,"production_approved":false}});
+  let refused=json!({"version":1,"ok":false,"error":{"code":"authorization_required","message":"Host authorization expired or differs"}});
+  let admission=json!({"version":1,"ok":false,"error":{"code":"qualification_required","message":"Operation has not passed host qualification"}});
+  let mut cases=vec![(Ok(valid.clone()),Some(true)),(Ok(refused),Some(false)),(Ok(admission),Some(false)),
+   (Ok(json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":"Partial work at /private/controller-state"}})),None),
+   (Err("Transport included /private/diagnostics".into()),None)];
+  for (field,wrong) in [("commissioned",json!(false)),("consensus_started",json!(true)),
+   ("production_approved",json!("false")),("debug_path",json!("/private/controller-state"))] {
+   let mut malformed=valid.clone();
+   malformed["result"][field]=wrong;
+   cases.push((Ok(malformed),None));
+  }
+  let mut incomplete=valid.clone();
+  incomplete["result"].as_object_mut().unwrap().remove("production_approved");
+  cases.push((Ok(incomplete),None));
+  let mut extra=valid;
+  extra["raw"]=json!("/private/controller-state");
+  cases.push((Ok(extra),None));
+  for (raw,observed) in cases {
+   let mut wire=Vec::new();
+   let result=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    wire.push(query.canonical());
+    std::future::ready(if query.operation=="target" {Ok(report.clone())} else {raw.clone()})
+   }));
+   assert_eq!(wire,[json!({"version":1,"operation":"target","parameters":{}}),request.canonical()]);
+   assert_eq!(wire[1].to_string(),r#"{"operation":"commission","parameters":{},"version":1}"#);
+   let history=request_journal::inspect(&journal).unwrap();
+   let record=&history["records"][0];
+   assert_eq!(record["response_ok"],json!(observed));
+   assert_eq!(record["request_digest"],request.approval_id());
+   assert_eq!(record["operation"],"commission");
+   assert!(!history.to_string().contains("/private/"));
+   match observed {
+    Some(true)=>assert_eq!(result.unwrap(),accepted),
+    Some(false)=>assert_eq!(result.unwrap()["ok"],false),
+    None=>{
+     assert_eq!(result.unwrap_err(),node_controller::COMMISSION_UNCERTAIN);
+     let mut attempted=Vec::new();
+     let next=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+      attempted.push(query.operation);
+      std::future::ready(Ok(report.clone()))
+     }));
+     assert_eq!(attempted,["target"]);
+     assert!(next.unwrap_err().contains("earlier local dispatch"));
+    },
+   }
+   assert_eq!(record["state"],if observed.is_some() {"response_received"} else {"uncertain"});
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
  }
 
  fn reviewed_upgrade_fixture() -> (Target, Request, PathBuf, Value, Value, Value) {
