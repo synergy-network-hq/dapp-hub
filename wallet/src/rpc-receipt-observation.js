@@ -30,6 +30,16 @@ export function rpcReceiptHashSelection(value, account) {
 
 const isHash = value => typeof value === 'string' && value.length === 64 && /^[a-f0-9]{64}$/i.test(value);
 
+// Testnet-v3 a6a434f2 execution.rs writes both fixed codes and raw
+// execution diagnostics to the same receipt field. Display fixed labels only.
+const receiptFailures = new Map([
+  ['INSUFFICIENT_FUNDS', {reason: 'Insufficient funds for the transaction or network fee.', feeMayBeEstimate: true}],
+  ['NETWORK_BURN_ADDRESS_CANNOT_SEND', {reason: 'The network burn address cannot send transactions.', feeMayBeEstimate: true}],
+  ['SYNQ_AIVM_EXECUTION_FAILED', {reason: 'SynQ contract execution failed.'}],
+  ['NON_NATIVE_BURN_REQUIRES_TOKEN_MODULE', {reason: 'This asset must be burned through its token module.'}],
+  ['BURN_AMOUNT_MUST_BE_GREATER_THAN_ZERO', {reason: 'The burn amount must be greater than zero.'}],
+]);
+
 export function rpcReceiptReadiness(value, expected) {
   const readiness = rpcReadinessObservation(value, expected);
   if (readiness.chain.network !== 'synergy-testnet-v3' || !isHash(readiness.chain.genesis)) {
@@ -76,7 +86,9 @@ export function rpcReceiptObservation(value, selection, readiness) {
   const index = value.transactionIndex == null ? null : blockHeight(value.transactionIndex);
   if (value.transactionIndex != null && index === null) throw Error('The selected RPC returned an unsupported receipt transaction index.');
 
+  const failure = value.status === '0x0' ? receiptFailures.get(value.executionError) : undefined;
   return {status: value.status, blockHash: value.blockHash, height, index,
+    failureReason: failure?.reason ?? null, feeMayBeEstimate: failure?.feeMayBeEstimate === true,
     gasUsed: exactRpcAmount(value.gasUsed, maxU64), feeNwei: exactRpcAmount(value.feeCharged, maxU128),
     chain: expectedChain, tip: readiness.chainStateAvailable ? readiness.height : null};
 }

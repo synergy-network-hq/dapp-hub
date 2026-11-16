@@ -121,12 +121,16 @@ function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead, startO
       {receipt ? <>
         <Detail data={{
           receiptStatus: receipt.status === '0x1' ? '0x1 · Success reported' : '0x0 · Failure reported',
+          reportedFailureReason: receipt.status === '0x0' ? receipt.failureReason ?? 'Unavailable' : null,
           rpcReceiptBlock: receipt.height,
           rpcReceiptBlockHash: receipt.blockHash,
           reportedRpcTip: receipt.tip ?? 'Unavailable',
           reportedGasUsed: receipt.gasUsed === null ? 'Unavailable' : `${receipt.gasUsed} gas units`,
           reportedReceiptFee: receipt.feeNwei === null ? 'Unavailable' : `${amount(receipt.feeNwei)} SNRG (${receipt.feeNwei} nWei)`,
         }}/>
+        {receipt.status === '0x0' && receipt.feeNwei !== null && <p>{receipt.feeMayBeEstimate ?
+          'The reported fee may be an estimate for this failure. A debit remains unverified.' :
+          'The receipt reports a fee amount. A debit remains unverified.'}</p>}
         {selection.indexedHeight !== undefined && selection.indexedHeight !== receipt.height && <p role="status">
           The Atlas record lists block {selection.indexedHeight}. The selected RPC reports the receipt at block {receipt.height}. Reorganization status remains unverified.
         </p>}
