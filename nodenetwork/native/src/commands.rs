@@ -194,6 +194,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
    "identity_generate"|"formation_prepare"=>"This prepares host-local validator custody from the reviewed inputs. Portal rechecks the installed controller and the exact preflight after confirmation. A matching one-use host grant is required. Validator membership is a separate operation.",
    "register"=>"This registers the installed Node and VPN services and the Canary RPC relay if configured. The controller can write installed unit definitions, systemd links and the NetBird wrapper, then reload systemd. A matching one-use host grant is required. VPN enrollment, enabling at boot and service startup are separate.",
    "start"|"restart"=>"This requests a service start or restart on the selected validator. Portal rechecks controller qualification and current VPN readiness after confirmation. A matching one-use host grant is required. Read target health separately after the request.",
+   "stop"=>"This requests that the controller stop the selected validator's Node service. Portal rechecks controller qualification after confirmation. A matching one-use host grant is required. Read target health separately after the request.",
    "vpn_enroll"=>"This uses the enrollment input already staged on the selected validator. Portal rechecks controller qualification and current staging eligibility after confirmation. A matching one-use host grant is required. Enrollment, server binding and connectivity are checked separately.",
    "upgrade"=>"This checks and applies the staged software release. The controller can resume its recorded interrupted upgrade with the same exact package. A matching one-use host grant is required. This action does not start consensus or automatically restart services. Confirm maintenance scope and downtime with the operator.",
    "uninstall"=>"This deletes the selected /opt/Synergy installation, including keys, data and signing-safety state. The controller can stop and remove attributed services and remove its dedicated host account. A matching one-use host grant is required. Arrange file retention, VPN retirement and chain exit separately.",
@@ -206,7 +207,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if !confirmed {return Err("Operator canceled; no controller mutation was sent.".into());}
  }
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- if matches!(request.operation.as_str(),"install"|"commission"|"register"|"upgrade"|"uninstall"|"start"|"restart"|"vpn_enroll") {
+ if matches!(request.operation.as_str(),"install"|"commission"|"register"|"upgrade"|"uninstall"|"start"|"restart"|"stop"|"vpn_enroll") {
   let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?;
   let serial=node_controller::SERIAL.lock().await;
   return dispatch_reviewed_software(&target,&request,&journal,|request| {
@@ -264,6 +265,8 @@ where Fut:Future<Output=Result<Value,String>> {
    node_controller::require_commission_target(&current_target,pending.is_some())?;
   },
   "register"=>node_controller::require_service_registration_target(&fresh_target)?,
+  // Testnet v3 613fa6ab authorizes Stop without VPN or startup checks.
+  "stop"=>node_controller::require_service_stop_target(&fresh_target)?,
   "start"|"restart"=>{
    node_controller::require_service_start_target(&request.operation,&fresh_target)?;
    let vpn=execute(node_controller::Request{version:1,operation:"vpn_status".into(),parameters:serde_json::json!({})}).await
@@ -295,12 +298,12 @@ where Fut:Future<Output=Result<Value,String>> {
   "register"=>node_controller::REGISTER_UNCERTAIN.into(),
   "upgrade"=>node_controller::UPGRADE_UNCERTAIN.into(),
   "uninstall"=>crate::node_removal_scope::REMOVAL_UNCERTAIN.into(),
-  "start"|"restart"=>node_controller::NODE_SERVICE_UNCERTAIN.into(),
+  "start"|"restart"|"stop"=>node_controller::NODE_SERVICE_UNCERTAIN.into(),
   "vpn_enroll"=>node_controller::VPN_ENROLLMENT_UNCERTAIN.into(),
   _=>error,
  }).and_then(|reply|match request.operation.as_str() {
   "commission"=>node_controller::commissioning_reply(&reply).map_err(String::from),
-  "start"|"restart"=>node_controller::service_start_reply(&request.operation,&reply).map_err(String::from),
+  "start"|"restart"|"stop"=>node_controller::node_service_reply(&request.operation,&reply).map_err(String::from),
   "vpn_enroll"=>node_controller::vpn_enrollment_reply(&reply).map_err(String::from),
   _=>Ok(reply),
  });
@@ -416,6 +419,12 @@ mod tests {
    "enrollment_staged":false,"enrollment_recorded":true,"reconciliation_required":false,"server_bound":true,"connected":true}});
   let receipt=json!({"version":1,"ok":true,"result":{"requested":operation,"healthNotInferred":true}});
   (target,request,journal,capability,vpn,receipt)
+ }
+
+ fn reviewed_service_stop_fixture()->(Target,Request,PathBuf,Value,Value) {
+  let (target,request,journal,mut capability,_,receipt)=reviewed_service_start_fixture("stop");
+  capability["result"]["operations"].as_array_mut().unwrap().pop();
+  (target,request,journal,capability,receipt)
  }
 
  fn reviewed_vpn_enrollment_fixture()->(Target,Request,PathBuf,Value,Value,Value) {
@@ -576,6 +585,100 @@ mod tests {
     assert!(!journal.exists());
    }
   }
+ }
+
+ #[test]
+ fn reviewed_service_stop_rechecks_the_installed_stop_capability_before_journaling() {
+  let (target,request,journal,capability,_)=reviewed_service_stop_fixture();
+  let mut cases=Vec::new();
+  for (field,value) in [("installed",json!(false)),("controllerVersion",json!(2)),("platform",json!("darwin")),
+   ("architecture",json!("aarch64")),("root",json!("/opt/synergy")),("localValidatorSupported",json!(false))] {
+   let mut changed=capability.clone();
+   changed["result"][field]=value;
+   cases.push(changed);
+  }
+  for operations in [json!([]),json!([{"operation":"stop","kind":"read","available":true}]),
+   json!([{"operation":"stop","kind":"mutation","available":false}]),
+   json!([{"operation":"stop","kind":"mutation","available":true},{"operation":"stop","kind":"mutation","available":true}])] {
+   let mut changed=capability.clone();
+   changed["result"]["operations"]=operations;
+   cases.push(changed);
+  }
+  for changed in cases {
+   let mut calls=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(Ok(changed.clone()))
+   }));
+   assert!(outcome.unwrap_err().contains("qualified stop action"));
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}})]);
+   assert!(!journal.exists());
+  }
+ }
+
+ #[test]
+ fn reviewed_service_stop_sends_only_the_exact_request_and_fences_ambiguous_outcomes() {
+  let (target,request,journal,capability,receipt)=reviewed_service_stop_fixture();
+  let refused=|code,message|json!({"version":1,"ok":false,"error":{"code":code,"message":message}});
+  let mut malformed=receipt.clone();
+  malformed["metadata"]=json!("private fixture");
+  let mut unsupported=receipt.clone();
+  unsupported["version"]=json!(2);
+  let mut ambiguous_refusal=refused("authorization_required","Host authorization expired or differs");
+  ambiguous_refusal["error"]["detail"]=json!("private fixture");
+  let cases=[(Ok(receipt.clone()),Some(true)),
+   (Ok(refused("authorization_required","Host authorization expired or differs")),Some(false)),
+   (Ok(refused("qualification_required","Operation has not passed host qualification")),Some(false)),
+   (Ok(refused("vpn_readiness_required","Current native VPN must match the recorded, independently server-bound validator peer")),None),
+   (Ok(malformed),None),(Ok(unsupported),None),(Ok(ambiguous_refusal),None),
+   (Ok(json!({"version":1,"ok":true,"result":{"requested":"restart","healthNotInferred":true}})),None),
+   (Ok(json!({"version":1,"ok":true,"result":{"requested":"stop","healthNotInferred":false}})),None),
+   (Err("private fixture".into()),None)];
+  for (raw,settled) in cases {
+   let mut calls=Vec::new();
+   let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(match query.operation.as_str() {
+     "target"=>Ok(capability.clone()),"stop"=>raw.clone(),_=>panic!("stop must not inspect VPN, health or startup"),
+    })
+   }));
+   assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}}),request.canonical()]);
+   assert_eq!(calls[1].to_string(),r#"{"operation":"stop","parameters":{},"version":1}"#);
+   let history=request_journal::inspect(&journal).unwrap();
+   let row=&history["records"][0];
+   assert_eq!(row["request_digest"],request.approval_id());
+   assert_eq!(row["operation"],"stop");
+   assert_eq!(row["response_ok"],json!(settled));
+   assert_eq!(row["state"],if settled.is_some(){"response_received"}else{"uncertain"});
+   match settled {
+    Some(true)=>assert_eq!(outcome.unwrap(),receipt),
+    Some(false)=>assert_eq!(outcome.unwrap()["ok"],false),
+    None=>{
+     assert_eq!(outcome.unwrap_err(),node_controller::NODE_SERVICE_UNCERTAIN);
+     assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"stop",&request.canonical()).is_err());
+    },
+   }
+   assert!(!history.to_string().contains("private fixture"));
+   std::fs::remove_dir_all(&journal).unwrap();
+  }
+ }
+
+ #[test]
+ fn reviewed_service_stop_respects_an_existing_uncertain_target_dispatch() {
+  let (target,request,journal,capability,_)=reviewed_service_stop_fixture();
+  let prior=Request{version:1,operation:"start".into(),parameters:json!({})};
+  request_journal::Dispatch::begin(&journal,&target.journal_identity(),"start",&prior.canonical()).unwrap()
+   .finish(&Err(node_controller::NODE_SERVICE_UNCERTAIN.into())).unwrap();
+  let original=request_journal::inspect(&journal).unwrap();
+  let mut calls=Vec::new();
+  let outcome=tauri::async_runtime::block_on(dispatch_reviewed_software(&target,&request,&journal,|query| {
+   calls.push(query.canonical());
+   std::future::ready(Ok(capability.clone()))
+  }));
+  assert!(outcome.unwrap_err().contains("earlier local dispatch"));
+  assert_eq!(calls,[json!({"version":1,"operation":"target","parameters":{}})]);
+  assert_eq!(request_journal::inspect(&journal).unwrap(),original);
+  std::fs::remove_dir_all(&journal).unwrap();
  }
 
  #[test]

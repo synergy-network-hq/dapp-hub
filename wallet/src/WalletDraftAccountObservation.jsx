@@ -7,12 +7,13 @@ import {checkConfiguredReceiptGenesis, rpcReceiptReadiness} from './rpc-receipt-
 import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
 import {isProtectedWalletAddress} from './wallet-address.js';
 import {draftFeeSchedule} from './draft-fee-schedule.js';
-import {checkDraftSpendWindow, draftSpendLowerBound, draftSpendReadiness} from './draft-spend.js';
+import {checkDraftSpendWindow, draftDebit, draftSpendLowerBound, draftSpendReadiness, readDraftFinalizedHead} from './draft-spend.js';
+import {matchesReadinessContext, readOrdinaryFeeEstimate, requirePinnedFeeEstimateReadiness} from './ordinary-fee-estimate.js';
 
 export function WalletDraftAccountObservation({account, endpoint, canCheck, ordinaryDraftNwei}) {
   const mounted = useRef(false);
   const [request, setRequest] = useState(null);
-  const check = includeProtocolFee => setRequest({includeProtocolFee});
+  const check = kind => setRequest({kind});
   useLayoutEffect(() => {
     mounted.current = true;
     return () => {mounted.current = false;};
@@ -39,10 +40,19 @@ export function WalletDraftAccountObservation({account, endpoint, canCheck, ordi
       checkConfiguredReceiptGenesis(value.chain, endpoint.genesisHash);
       return value;
     }
-    const {includeProtocolFee} = request;
+    const includeProtocolFee = request.kind === 'protocol';
+    const compareEstimate = request.kind === 'estimate';
     const readiness = await readReadiness(includeProtocolFee ? draftSpendReadiness : rpcReceiptReadiness);
     if (!readiness.reportedReady) throw Error('The selected RPC reported that its chain state is unready for an account check.');
     const options = {endpoint: endpoint.rpc, signal};
+
+    let head, feeEstimate;
+    if (compareEstimate) {
+      requirePinnedFeeEstimateReadiness(readiness);
+      head = await readDraftFinalizedHead(options, readiness, checkScope);
+      feeEstimate = await readOrdinaryFeeEstimate(options, ordinaryDraftNwei, readiness, checkScope);
+      if (feeEstimate.state === 'unavailable') throw Error('The selected RPC does not expose ordinary SNRG fee estimates.');
+    }
 
     let protocolFee;
     if (includeProtocolFee) {
@@ -69,9 +79,7 @@ export function WalletDraftAccountObservation({account, endpoint, canCheck, ordi
     checkScope();
     const receivedAt = Date.now();
     const {value, chainContext} = response ?? {};
-    const {chain} = readiness;
-    if (chainContext?.chainId !== chain.chainId || String(chainContext.incarnation) !== chain.incarnation ||
-        chainContext.genesis !== chain.genesis.toLowerCase()) {
+    if (!matchesReadinessContext(chainContext, readiness)) {
       throw Error('The account observation does not match the selected RPC readiness identity.');
     }
     const balanceNwei = exactRpcAmount(value?.balanceNwei, maxU128);
@@ -79,26 +87,37 @@ export function WalletDraftAccountObservation({account, endpoint, canCheck, ordi
     if (value?.owner !== account || balanceNwei === null || proposedNextNonce === null) {
       throw Error('The selected RPC returned unsupported account evidence.');
     }
-    let spend = null;
+    let spend = null, estimatedDebit = null;
     if (includeProtocolFee) {
       const after = await readReadiness(draftSpendReadiness);
       checkScope();
       checkDraftSpendWindow(readiness, after);
       spend = {protocolFee, height: readiness.height, ...draftSpendLowerBound(ordinaryDraftNwei, protocolFee, balanceNwei)};
     }
-    return {balanceNwei, proposedNextNonce, spend, receivedAt};
+    if (compareEstimate) {
+      const after = await readDraftFinalizedHead(options, readiness, checkScope);
+      if (after.height !== head.height || after.hash !== head.hash) {
+        throw Error('The reported finalized head changed during the check. Check the draft again.');
+      }
+      estimatedDebit = {fee: feeEstimate.total, height: head.height, ...draftDebit(ordinaryDraftNwei, feeEstimate.total, balanceNwei)};
+    }
+    return {balanceNwei, proposedNextNonce, spend, estimatedDebit, receivedAt};
   }, request);
 
   return <section aria-label="Draft account observation">
     <div className="native-actions">
-      <button disabled={!!request && observation.loading} onClick={() => check(false)}>
+      <button disabled={!!request && observation.loading} onClick={() => check('account')}>
         {request ? 'Check selected RPC account again' : 'Check selected RPC account'}
       </button>
-      {ordinaryDraftNwei != null && <button disabled={!!request && observation.loading} onClick={() => check(true)}>
+      {ordinaryDraftNwei != null && <button disabled={!!request && observation.loading} onClick={() => check('protocol')}>
         Check draft amount and protocol fee
       </button>}
+      {ordinaryDraftNwei != null && <button disabled={!!request && observation.loading} onClick={() => check('estimate')}>
+        Check estimated total against reported balance
+      </button>}
     </div>
-    {request && <Resource value={{...observation, reload: undefined}}>{value => <>
+    {ordinaryDraftNwei != null && <p>The estimated total check sends the draft amount and your approved public account to the selected RPC in separate requests.</p>}
+    {request && canCheck() && <Resource value={{...observation, reload: undefined}}>{value => <>
       <dl className="native-details">
         <div><dt>Reported balance</dt><dd>{amount(value.balanceNwei)} SNRG</dd></div>
         <div><dt>Exact reported balance</dt><dd>{value.balanceNwei} nWei</dd></div>
@@ -116,6 +135,17 @@ export function WalletDraftAccountObservation({account, endpoint, canCheck, ordi
           'The reported balance covers this lower bound.' :
           'The reported balance falls short of this lower bound by ' + value.spend.shortfall + ' nWei.'}</p>
         <p>Total cost requires preparation and gas usage. The account and fee responses were read separately.</p>
+      </>}
+      {value.estimatedDebit && <>
+        <dl className="native-details">
+          <div><dt>Estimated network fee</dt><dd>{value.estimatedDebit.fee} nWei</dd></div>
+          <div><dt>Draft amount plus estimated fee</dt><dd>{value.estimatedDebit.total} nWei</dd></div>
+          <div><dt>Reported finalized height before and after the check</dt><dd>{value.estimatedDebit.height}</dd></div>
+        </dl>
+        <p role="status">{value.estimatedDebit.shortfall === null
+          ? 'The reported balance covers this estimated total.'
+          : 'The reported balance falls short of this estimated total by ' + value.estimatedDebit.shortfall + ' nWei.'}</p>
+        <p>Balance and fees are RPC observations. Final cost, fee reserve and spendability require transaction preparation.</p>
       </>}
     </>}</Resource>}
   </section>;

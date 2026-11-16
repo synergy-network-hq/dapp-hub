@@ -340,6 +340,11 @@ pub(super) fn require_service_start_target(operation: &str, reply: &Value) -> Re
         .ok_or("The controller no longer reports an installed Linux x86-64 target with the qualified service action and VPN status read.")
 }
 
+pub(super) fn require_service_stop_target(reply: &Value) -> Result<(), &'static str> {
+    qualified_software_target(reply, true, &[("stop", "mutation")]).then_some(())
+        .ok_or("The controller no longer reports an installed Linux x86-64 target with a qualified stop action.")
+}
+
 pub(super) fn require_vpn_enrollment_target(reply: &Value) -> Result<(), &'static str> {
     qualified_software_target(reply, true, &[("vpn_enroll", "mutation"), ("vpn_status", "read")]).then_some(())
         .ok_or("The controller no longer reports an installed Linux x86-64 target with qualified VPN enrollment and status operations.")
@@ -623,19 +628,16 @@ pub(super) fn require_staged_vpn_enrollment(reply: &Value) -> Result<(), &'stati
         .map(|_| ()).ok_or("The current controller VPN report could not confirm staged enrollment eligibility. Read VPN status again before enrolling.")
 }
 
-pub(super) fn service_start_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
-    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3)
-        || (reply["ok"] == false && !reply["error"].as_object().is_some_and(|fields| fields.len() == 2)) {
-        return Err(NODE_SERVICE_UNCERTAIN);
-    }
-    node_service_reply(operation, reply)
-}
-
-fn node_service_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
+pub(super) fn node_service_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
     const UNCERTAIN: &str = NODE_SERVICE_UNCERTAIN;
+    if !matches!(operation, "start" | "restart" | "stop") || reply["version"] != 1
+        || !reply.as_object().is_some_and(|fields| fields.len() == 3) {
+        return Err(UNCERTAIN);
+    }
     if reply["ok"] == false {
         // Only the pinned controller's exact pre-dispatch refusals release the local journal fence.
         let error = &reply["error"];
+        if !error.as_object().is_some_and(|fields| fields.len() == 2) { return Err(UNCERTAIN); }
         let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
             (Some("vpn_readiness_required"), Some("Current native VPN must match the recorded, independently server-bound validator peer"))
                 if operation != "stop" => ("vpn_readiness_required", "The controller could not confirm the current bound VPN. Read VPN status again."),
@@ -994,6 +996,9 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
     if matches!(request.operation.as_str(), "start" | "restart") {
         return Err("Use the reviewed native service startup operation.".into());
     }
+    if request.operation == "stop" {
+        return Err("Use the reviewed native service stop operation.".into());
+    }
     if request.operation == "vpn_enroll" {
         return Err("Use the reviewed native VPN enrollment operation.".into());
     }
@@ -1020,7 +1025,6 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "uninstall_preflight" => crate::node_removal_scope::reply(&value),
         "uninstall" => crate::node_removal_scope::removal_reply(&value),
         "vpn_status" => vpn_status_reply(&value),
-        "stop" => node_service_reply(&request.operation, &value),
         "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
         "genesis_binding_preflight" => genesis_binding_reply(&value),
         "genesis_bind" => genesis_bind_reply(request, &value),
@@ -1241,14 +1245,21 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
             request.parameters=json!({"service":"fixture"});
             assert!(request.validate().is_err());
             let result=json!({"requested":operation,"healthNotInferred":true});
-            let reply=json!({"version":1,"ok":true,"result":result,"metadata":"fixture"});
-            assert_eq!(node_service_reply(operation,&reply),Ok(json!({"version":1,"ok":true,"result":result})));
+            let reply=json!({"version":1,"ok":true,"result":result});
+            assert_eq!(node_service_reply(operation,&reply),Ok(reply));
+            assert!(node_service_reply(operation,&json!({"version":1,"ok":true,"result":result,"metadata":"fixture"})).is_err());
             for invalid in [json!({"requested":"another","healthNotInferred":true}),
                             json!({"requested":operation,"healthNotInferred":false}),
                             json!({"requested":operation,"healthNotInferred":true,"ready":true})] {
                 assert!(node_service_reply(operation,&json!({"version":1,"ok":true,"result":invalid})).is_err());
             }
         }
+    }
+    #[test] fn node_service_stop_cannot_bypass_the_reviewed_dispatch() {
+        let target=Target{kind:"test-invalid".into(),host:None,port:None,root:ROOT.into()};
+        let request=Request{version:1,operation:"stop".into(),parameters:json!({})};
+        let result=tauri::async_runtime::block_on(execute(target,request,Path::new("unused-test-scope")));
+        assert_eq!(result.unwrap_err(),"Use the reviewed native service stop operation.");
     }
     #[test] fn node_service_replies_distinguish_exact_owner_refusals_from_uncertain_outcomes() {
         let refused=|code,message| json!({"version":1,"ok":false,"error":{"code":code,"message":message}});

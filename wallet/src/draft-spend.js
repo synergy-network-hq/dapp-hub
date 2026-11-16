@@ -1,5 +1,7 @@
 import {rpcReceiptReadiness} from './rpc-receipt-observation.js';
-import {maxU128} from './rpc-unsigned.js';
+import {rpcFinalizedHeadObservation} from '@synergy-network/portal-native/dapp-sdk';
+import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
+import {matchesReadinessContext} from './ordinary-fee-estimate.js';
 
 export function draftSpendReadiness(value, expectedChain) {
   const readiness = rpcReceiptReadiness(value, expectedChain);
@@ -23,8 +25,31 @@ export function checkDraftSpendWindow(before, after) {
 // Chain-1266 a6a434f2: calculate_network_fee adds nonnegative gas, amount,
 // storage and priority components. Execution adds that fee to the principal.
 export function draftSpendLowerBound(amountNwei, protocolFeeNwei, balanceNwei) {
-  const minimum = BigInt(amountNwei) + BigInt(protocolFeeNwei);
-  if (minimum > maxU128) throw Error('The draft amount and protocol fee exceed the supported SNRG range.');
-  const shortfall = minimum - BigInt(balanceNwei);
-  return {minimum: minimum.toString(), shortfall: shortfall > 0n ? shortfall.toString() : null};
+  const {total, shortfall} = draftDebit(amountNwei, protocolFeeNwei, balanceNwei);
+  return {minimum: total, shortfall};
+}
+
+export function draftDebit(amountNwei, feeNwei, balanceNwei) {
+  const total = BigInt(amountNwei) + BigInt(feeNwei);
+  if (total > maxU128) throw Error('The draft amount and fee exceed the supported SNRG range.');
+  const shortfall = total - BigInt(balanceNwei);
+  return {total: total.toString(), shortfall: shortfall > 0n ? shortfall.toString() : null};
+}
+
+export async function readDraftFinalizedHead(options, readiness, checkScope) {
+  checkScope();
+  let evidence;
+  try {
+    evidence = await rpcFinalizedHeadObservation(options);
+  } catch {
+    checkScope();
+    throw Error('The selected RPC could not provide a reported finalized head.');
+  }
+  checkScope();
+  const height = exactRpcAmount(evidence?.value?.height, maxU64), hash = evidence?.value?.hash;
+  if (!matchesReadinessContext(evidence?.chainContext, readiness) || height === null || height === '0' ||
+      typeof hash !== 'string' || hash.length !== 64 || !/^[0-9a-f]{64}$/.test(hash)) {
+    throw Error('The reported finalized head does not match the selected RPC identity.');
+  }
+  return {height, hash};
 }
