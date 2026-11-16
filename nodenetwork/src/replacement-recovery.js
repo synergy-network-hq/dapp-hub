@@ -1,4 +1,5 @@
 import {genesisDigest} from './genesis-pin.js';
+import {localSha256} from './local-sha256.js';
 import {parseExactNumbers} from './validator-operations-observation.js';
 
 export const replacementRecoveryLimit = 1024 * 1024;
@@ -70,11 +71,6 @@ function recoveryManifest(bytes) {
  return manifest;
 }
 
-async function sha256(bytes) {
- const digest = await globalThis.crypto.subtle.digest('SHA-256',bytes);
- return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
-}
-
 export async function readReplacementRecoveryFile(file,pins,current = () => true) {
  const expected = replacementRecoveryPins(pins?.base,pins?.archive);
  if (!expected) throw Error('Enter both expected SHA-256 digests before reviewing the bundle.');
@@ -94,11 +90,11 @@ export async function readReplacementRecoveryFile(file,pins,current = () => true
  try {files = archiveMembers(bytes);} catch {throw Error(unsupportedArchive);}
  const manifest = recoveryManifest(files.get(manifestName));
  for (const name of toolNames) {
-  const digest = await sha256(files.get(name));
+  const digest = await localSha256(files.get(name));
   if (!current()) return null;
   if (digest !== manifest.files[name]) throw Error('A recovery tool digest differs from the embedded manifest.');
  }
- const archiveSha256 = await sha256(bytes);
+ const archiveSha256 = await localSha256(bytes);
  if (!current()) return null;
  return {archiveSha256,basePackageSha256:manifest.base_package_sha256,verifiedToolFiles:toolNames.length,
   archivePinMatches:archiveSha256 === expected.archive,basePinMatches:manifest.base_package_sha256 === expected.base};

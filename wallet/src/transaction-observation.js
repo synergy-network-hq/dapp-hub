@@ -70,11 +70,11 @@ export function transactionObservation(value, requestedHash, account) {
   if (value === null) return {state: 'notFound', block: null};
 
   const observed = comparableTransactionHash(value?.hash);
-  if (!observed || observed.digest !== requested.digest ||
-    (requested.kind && observed.kind && requested.kind !== observed.kind)) {
+  if (!observed?.kind || observed.digest !== requested.digest ||
+    (requested.kind && requested.kind !== observed.kind)) {
     throw Error('RPC did not return the selected transaction hash.');
   }
-  if (value.chain_id !== 1266 || value.network_id !== 'testnet') {
+  if (value.chain_id !== 1266 || value.network_id !== 'synergy-testnet-v3') {
     throw Error('RPC transaction network differs from the Wallet network.');
   }
   if (typeof account !== 'string' || !account || (value.sender !== account && value.receiver !== account)) {

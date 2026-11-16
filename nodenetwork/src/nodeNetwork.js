@@ -51,8 +51,9 @@ export function controllerOperation(target,operation){
  const entry=matches[0];
  return entry.available===true?{available:true,blocker:null}:{available:false,blocker:typeof entry.blocker==='string'&&entry.blocker.length>0&&entry.blocker.length<=512&&!/[\u0000-\u001f\u007f]/.test(entry.blocker)?entry.blocker:unavailable.blocker};
 }
+export const validReleaseId=value=>typeof value==='string'&&value.length>0&&value.length<=128&&!/[^a-zA-Z0-9._-]/.test(value);
 const releaseFields=[
- ['release_id','Release ID',value=>typeof value==='string'&&value.length>0&&value.length<=128&&!/[^a-zA-Z0-9._-]/.test(value),'Enter the approved release ID using letters, digits, dots, underscores or hyphens.'],
+ ['release_id','Release ID',validReleaseId,'Enter the approved release ID using letters, digits, dots, underscores or hyphens.'],
  ['manifest_sha256','Manifest SHA-256',value=>typeof value==='string'&&value.length===64&&!/[^0-9a-f]/.test(value),'Enter the exact 64-character lowercase manifest SHA-256.'],
 ];
 const checkFields=(fields,form)=>fields.map(([field,label,accept,message])=>({field,label,valid:accept(form?.[field]),message}));

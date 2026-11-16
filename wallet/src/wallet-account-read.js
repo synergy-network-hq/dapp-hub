@@ -22,10 +22,16 @@ export async function checkWalletAccountEndpoint(request, endpoint, signal, canR
   requireWalletReadScope(signal, canRead);
   if (Number(endpoint.chainId) !== 1266) throw Error('Select Synergy Testnet chain 1266.');
   const options = {endpoint: endpoint.rpc, signal};
-  const reported = chainIdNumber(await request('synergy_getChainId', [], options));
+  let reported;
+  try {
+    reported = chainIdNumber(await request('synergy_getChainId', [], options));
+  } catch {
+    requireWalletReadScope(signal, canRead);
+    throw Error('The selected RPC chain check failed. Try again.');
+  }
   requireWalletReadScope(signal, canRead);
   if (reported !== 1266) throw Error('RPC chain identity does not match Wallet chain 1266.');
-  if (endpoint.genesisHash == null) return;
+  if (endpoint.genesisHash == null) return null;
 
   let readiness;
   try {
@@ -36,4 +42,5 @@ export async function checkWalletAccountEndpoint(request, endpoint, signal, canR
   }
   requireWalletReadScope(signal, canRead);
   checkConfiguredReceiptGenesis(readiness.chain, endpoint.genesisHash);
+  return readiness.chain;
 }
