@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {commissioningFixture} from './commissioning-public-evidence.mjs';
 
 export const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -30,4 +31,24 @@ export function replacementRecoveryFixture() {
  const entries = [...tools,{name:'recovery.json',bytes:Buffer.from(JSON.stringify(manifest))}];
  const bytes = replacementRecoveryTar(entries);
  return {bytes,base,archive:digest(bytes),manifest,entries};
+}
+
+export function replacementIntentFixture({alterCandidate=()=>{},alterIntent=()=>{}}={}) {
+ const stage=commissioningFixture();
+ const hashes={'bin/netbird':digest('fixture vpn binary'),'tools/netbird-client':digest('fixture vpn wrapper'),
+  'evidence/host-integrations.json':digest('fixture registrations'),'evidence/vpn-synthetic.json':digest('fixture evidence'),
+  'systemd/synergy-vpn.service':digest('fixture service')};
+ const packageManifest={format:'synergy-universal-linux-v1',architecture:'x86_64',release_id:'fixture-new-package',
+  files:{'bin/synergy-node':digest('new fixture runtime'),'bin/netbird':hashes['bin/netbird'],
+   'tools/netbird-client':hashes['tools/netbird-client'],'systemd/synergy-vpn.service':hashes['systemd/synergy-vpn.service']}};
+ alterCandidate(packageManifest);
+ const packageBytes=JSON.stringify(packageManifest)+'\n';
+ const draft={...stage.draft,release_id:packageManifest.release_id,manifest_sha256:digest(packageBytes)};
+ const intent={root:'/opt/Synergy',token:`${draft.manifest_sha256}:${stage.expected}`,
+  receipt:{root:'/opt/Synergy',format:'synergy-universal-linux-v1',role:'validator',network_id:'fixture-prior-network',
+   chain_id:1266,node_name:'fixture-prior-node',package_sha256:digest('prior fixture manifest'),consensus_started:false,
+   package_files:{'bin/synergy-node':digest('prior fixture runtime'),'bin/netbird':hashes['bin/netbird']}},vpn_sha256:hashes};
+ alterIntent(intent);
+ const intentBytes=JSON.stringify(intent)+'\n';
+ return {draft,stage,pin:digest(intentBytes),intent,intentBytes,packageBytes};
 }

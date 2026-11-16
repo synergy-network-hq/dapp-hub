@@ -2,6 +2,7 @@ import {useState} from 'react';
 import {Card, Detail, ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {readReplacementRecoveryFile,replacementRecoveryPins} from './replacement-recovery.js';
 import {useObservationFile} from './useObservationFile.js';
+import {SavedReplacementIntent} from './SavedReplacementIntent.jsx';
 
 function RecoveryFile({pins, canRead}) {
  const {result, error, reading, clear, select} = useObservationFile((file,current) => {
@@ -41,10 +42,11 @@ function RecoveryPins({canRead}) {
  </>;
 }
 
-export function ReplacementRecoveryReview({permitted,canRead = () => permitted}) {
+export function ReplacementRecoveryReview({form,permitted,canRead = () => permitted}) {
  return <Card title="Replacement recovery bundle">
   {permitted ? <RecoveryPins canRead={canRead}/>
    : <p>Allow NodeNetwork inspection in Security &amp; permissions to review the local recovery bundle.</p>}
   <p>Managed recovery requires a verified target, its retained replacement intent, and approved staged inputs.</p>
+  {permitted&&<SavedReplacementIntent form={form} canRead={canRead}/>}
  </Card>;
 }
