@@ -970,6 +970,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
     let result=match request.operation.as_str() {
         "health" => health_reply(&value),
         "diagnostics" => crate::node_diagnostics::reply(&value),
+        "inventory" => crate::node_removal_scope::inventory_reply(&value),
         "install_preflight" => install_preflight_reply(request, &value),
         "install" => install_reply(request, &value),
         "register" => register_service_reply(&value),

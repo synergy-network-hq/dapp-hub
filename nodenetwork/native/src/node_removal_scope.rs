@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 const UNSUPPORTED: &str = "The selected controller returned unsupported removal scope evidence.";
+const INVENTORY_UNSUPPORTED: &str = "The selected controller returned unsupported node inventory evidence.";
 pub(super) const REMOVAL_UNCERTAIN: &str = "Removal outcome is uncertain. Ask the node operator to reconcile the selected installation before another change.";
 const SCOPES: [&str; 4] = ["chain_data", "custody", "recovery", "other"];
 
@@ -19,7 +20,6 @@ pub(super) fn reply(value: &Value) -> Result<Value, &'static str> {
         return Err("The controller could not confirm removal scope. Ask the node operator to review the installation and registration state.");
     }
     let result = &value["result"];
-    let inventory = &result["inventory"];
     if !value.as_object().is_some_and(|fields| fields.len() == 3)
         || value["version"] != 1
         || !result.as_object().is_some_and(|fields| fields.len() == 5)
@@ -27,23 +27,43 @@ pub(super) fn reply(value: &Value) -> Result<Value, &'static str> {
         || result["destructive"] != true
         || result["forensicErasureProven"] != false
         || !result["managedAccountRemoval"].is_boolean()
-        || !inventory
-            .as_object()
-            .is_some_and(|fields| fields.len() == 3)
-        || inventory["root"] != ROOT
-        || inventory["outsideRootAuditComplete"] != false
     {
         return Err(UNSUPPORTED);
+    }
+    let scopes = inventory_scopes(&result["inventory"], UNSUPPORTED)?;
+    Ok(json!({"version":1,"ok":true,"result":{
+        "root":ROOT,"destructive":true,"managedAccountRemoval":result["managedAccountRemoval"],
+        "outsideRootAuditComplete":false,"forensicErasureProven":false,"scopes":scopes
+    }}))
+}
+
+pub(super) fn inventory_reply(value: &Value) -> Result<Value, &'static str> {
+    if value["ok"] == false {
+        return Err("The selected controller could not provide a supported node inventory.");
+    }
+    if value["version"] != 1 || value["ok"] != true || !value.as_object().is_some_and(|fields| fields.len() == 3) {
+        return Err(INVENTORY_UNSUPPORTED);
+    }
+    let scopes = inventory_scopes(&value["result"], INVENTORY_UNSUPPORTED)?;
+    Ok(json!({"version":1,"ok":true,"result":{
+        "schema":"nodenetwork-target-inventory-v1","root":ROOT,"outsideRootAuditComplete":false,"scopes":scopes
+    }}))
+}
+
+fn inventory_scopes(inventory: &Value, unsupported: &'static str) -> Result<Vec<Value>, &'static str> {
+    if !inventory.as_object().is_some_and(|fields| fields.len() == 3)
+        || inventory["root"] != ROOT || inventory["outsideRootAuditComplete"] != false {
+        return Err(unsupported);
     }
     let members = inventory["members"]
         .as_array()
         .filter(|rows| rows.len() <= 20_000)
-        .ok_or(UNSUPPORTED)?;
+        .ok_or(unsupported)?;
     let mut seen = HashSet::with_capacity(members.len());
     let mut groups = [Counts::default(); SCOPES.len()];
     for row in members {
         if !row.as_object().is_some_and(|fields| fields.len() == 3) {
-            return Err(UNSUPPORTED);
+            return Err(unsupported);
         }
         let path = row["path"]
             .as_str()
@@ -54,11 +74,11 @@ pub(super) fn reply(value: &Value) -> Result<Value, &'static str> {
                         .split('/')
                         .all(|segment| !matches!(segment, "" | "." | ".."))
             })
-            .ok_or(UNSUPPORTED)?;
+            .ok_or(unsupported)?;
         if !seen.insert(path) {
-            return Err(UNSUPPORTED);
+            return Err(unsupported);
         }
-        let size = row["bytes"].as_u64().ok_or(UNSUPPORTED)?;
+        let size = row["bytes"].as_u64().ok_or(unsupported)?;
         let index = match path.split('/').next() {
             Some("data") => 0,
             Some("keys") => 1,
@@ -73,17 +93,13 @@ pub(super) fn reply(value: &Value) -> Result<Value, &'static str> {
             }
             Some("directory") => scope.directories += 1,
             Some("socket") => scope.sockets += 1,
-            _ => return Err(UNSUPPORTED),
+            _ => return Err(unsupported),
         }
     }
-    let scopes = SCOPES.into_iter().zip(groups).map(|(id, count)| json!({
+    Ok(SCOPES.into_iter().zip(groups).map(|(id, count)| json!({
         "id":id, "files":count.files, "directories":count.directories, "sockets":count.sockets,
         "file_bytes":count.file_bytes.to_string()
-    })).collect::<Vec<_>>();
-    Ok(json!({"version":1,"ok":true,"result":{
-        "root":ROOT,"destructive":true,"managedAccountRemoval":result["managedAccountRemoval"],
-        "outsideRootAuditComplete":false,"forensicErasureProven":false,"scopes":scopes
-    }}))
+    })).collect())
 }
 
 pub(super) fn removal_reply(value: &Value) -> Result<Value, &'static str> {
@@ -167,6 +183,46 @@ mod tests {
         assert_eq!(result["result"]["scopes"][3]["sockets"], 1);
         assert_eq!(result["result"]["scopes"][3]["file_bytes"], "0");
         assert!(!result.to_string().contains("private"));
+    }
+
+    #[test]
+    fn standalone_inventory_is_empty_parameter_and_projects_existing_scope_without_paths() {
+        let mut request = Request {version:1, operation:"inventory".into(), parameters:json!({})};
+        assert_eq!(request.validate(), Ok(false));
+        request.parameters = json!({"path":"keys"});
+        assert!(request.validate().is_err());
+        let owner = json!({"version":1,"ok":true,"result":fixture()["result"]["inventory"]});
+        let projected = inventory_reply(&owner).unwrap();
+        assert_eq!(projected, json!({"version":1,"ok":true,"result":{
+            "schema":"nodenetwork-target-inventory-v1","root":ROOT,"outsideRootAuditComplete":false,
+            "scopes":reply(&fixture()).unwrap()["result"]["scopes"]
+        }}));
+        assert!(!projected.to_string().contains("private"));
+    }
+
+    #[test]
+    fn standalone_inventory_rejects_unsafe_or_oversized_members_and_reports_observed_zero() {
+        let mut owner=json!({"version":1,"ok":true,"result":{"root":ROOT,"outsideRootAuditComplete":false,"members":[]}});
+        let empty=inventory_reply(&owner).unwrap();
+        assert!(empty["result"]["scopes"].as_array().unwrap().iter().all(|row|
+            row["files"] == 0 && row["directories"] == 0 && row["sockets"] == 0 && row["file_bytes"] == "0"));
+        let members=owner["result"]["members"].as_array_mut().unwrap();
+        members.extend((0..20_000).map(|index| json!({"path":format!("data/{index}"),"type":"file","bytes":u64::MAX})));
+        let at_limit=inventory_reply(&owner).unwrap();
+        assert_eq!(at_limit["result"]["scopes"][0]["files"],20_000);
+        assert_eq!(at_limit["result"]["scopes"][0]["file_bytes"],format!("{}",20_000 * u128::from(u64::MAX)));
+        owner["result"]["members"].as_array_mut().unwrap().push(json!({"path":"data/extra","type":"file","bytes":0}));
+        assert_eq!(inventory_reply(&owner),Err(INVENTORY_UNSUPPORTED));
+        let owner=json!({"version":1,"ok":true,"result":fixture()["result"]["inventory"]});
+        for (field,value) in [("/version",json!(2)),("/result/root",json!("/opt/synergy")),("/result/outsideRootAuditComplete",json!(true)),
+            ("/result/members/1/path",json!("/keys/private")),("/result/members/1/path",json!("data/../keys/private")),
+            ("/result/members/1/path",json!("data/private-b")),("/result/members/1/type",json!("link")),("/result/members/1/bytes",json!(-1))] {
+            let mut altered=owner.clone();
+            *altered.pointer_mut(field).unwrap()=value;
+            assert_eq!(inventory_reply(&altered), Err(INVENTORY_UNSUPPORTED), "{field}");
+        }
+        let refused=json!({"version":1,"ok":false,"error":{"message":"private owner path"}});
+        assert!(!inventory_reply(&refused).unwrap_err().contains("private owner path"));
     }
 
     #[test]

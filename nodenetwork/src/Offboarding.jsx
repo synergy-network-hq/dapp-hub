@@ -25,6 +25,14 @@ const removalColumns = [
  {key:'label',label:'Area'}, {key:'files',label:'Files'}, {key:'directories',label:'Directories'},
  {key:'sockets',label:'Sockets'}, {key:'fileBytes',label:'Logical file bytes'},
 ];
+
+export function TargetInventoryEvidence({report}) {
+ return <section aria-label="Node inventory evidence">
+  <p role="status">The controller reported {report.result.memberCount} in-root members at {new Date(report.receivedAt).toISOString()}.</p>
+  <Table rows={report.result.sections} columns={removalColumns}/>
+  <p>Counts cover the reported inventory under {report.result.root}. Outside-root auditing requires separate evidence.</p>
+ </section>;
+}
 const accountImpact = removal => removal.accountRemoval
  ? 'The controller includes the attributed managed account in removal.'
  : 'The controller reported no attributed managed account in removal.';

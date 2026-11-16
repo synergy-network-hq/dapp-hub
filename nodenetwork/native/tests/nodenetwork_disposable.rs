@@ -20,7 +20,9 @@ fn reviewed_disposable_software_operation_uses_the_production_bridge(){
         let inventory=node_controller::execute(serde_json::from_str(&target_json).unwrap(),node_controller::Request{version:1,operation:"inventory".into(),parameters:json!({})},&directory).await.unwrap();
         assert_eq!(inventory["ok"],true);
         assert_eq!(inventory["result"]["root"],"/opt/Synergy");
-        assert!(!inventory["result"]["members"].as_array().unwrap().is_empty());
+        assert_eq!(inventory["result"]["schema"],"nodenetwork-target-inventory-v1");
+        assert!(inventory["result"]["scopes"].as_array().unwrap().iter().any(|row|
+            ["files","directories","sockets"].into_iter().any(|field|row[field].as_u64().is_some_and(|count|count>0))));
         let result=node_controller::execute(serde_json::from_str(&target_json).unwrap(),request,&directory).await.unwrap();
         assert_eq!(result["ok"],true,"the exact host-authorized software operation must complete");
         println!("Reviewed software operation completed through the production native controller; custody and consensus activation were not requested.");

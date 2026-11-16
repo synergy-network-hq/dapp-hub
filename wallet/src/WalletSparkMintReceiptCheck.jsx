@@ -12,7 +12,7 @@ const reports = new Map([
   ['missing-receipt', 'The selected RPC returned no receipt for this hash. The outcome is unknown.'],
   ['not-finalized', 'The selected RPC has no finalized receipt for this comparison.'],
   ['unrelated-receipt', 'The reported receipt parties do not match the draft sender’s carrier.'],
-  ['missing-transaction', 'The selected RPC returned a receipt without the transaction body for comparison.'],
+  ['missing-transaction', 'The selected RPC returned the receipt without its finalized block for comparison.'],
   ['payload-mismatch', 'The reported transaction payload differs from the exact draft bytes.'],
   ['matched-success', 'The reported transaction matches the draft payload and the receipt reports successful execution.'],
   ['matched-failed', 'The reported transaction matches the draft payload and the receipt reports failed execution.'],
@@ -77,7 +77,7 @@ export function WalletSparkMintReceiptCheck({draft, endpoint, canRead}) {
 
   return <section aria-label="Spark mint receipt comparison">
     <h4>Compare a reported mint receipt</h4>
-    <p>Portal sends only the public transaction hash. The draft and the payload comparison stay in Portal.</p>
+    <p>Portal sends the public transaction hash and the reported receipt block height. The draft comparison stays in Portal.</p>
     <form onSubmit={compare}>
       <label>Mint transaction hash<input autoComplete="off" spellCheck={false} maxLength={71} value={input}
         aria-invalid={invalid} aria-describedby={invalid ? inputError : undefined} onChange={event => {

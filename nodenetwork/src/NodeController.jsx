@@ -1,14 +1,14 @@
 import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap,nodeNetworkStageGenesis} from "./native-services.js";
 import {Card,Detail,ErrorMessage,useResource,Resource,Table} from "@synergy-network/portal-native/dapp-sdk";
-import {controllerOperation,installParameters,sameUpgradeParameters,upgradeParameters} from './nodeNetwork.js';
+import {installParameters,sameUpgradeParameters,upgradeParameters} from './nodeNetwork.js';
 import {installationObservation,installPreflightChecklist,installPreflightObservation} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {controllerRead,installedControllerMutation,installedControllerRead,stagedInstallMutation,targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
 import {upgradeObservation,upgradePreflightObservation} from './upgrade-preflight.js';
-import {ControllerRemoval} from './Offboarding.jsx';
-import {logicalRemovalObservation,removalPreflightObservation} from './removal-preflight.js';
+import {ControllerRemoval,TargetInventoryEvidence} from './Offboarding.jsx';
+import {logicalRemovalObservation,removalPreflightObservation,targetInventoryObservation} from './removal-preflight.js';
 import {removalRoot,uninstallParameters} from './offboarding.js';
 import {VpnStatus} from './VpnStatus.jsx';
 import {validatorStartupBlocker,vpnEnrollmentBlocker,vpnEnrollmentObservation,vpnEnrollmentSupported,vpnStatusObservation} from './vpn-status.js';
@@ -23,6 +23,7 @@ import {genesisStageInputsMatch,genesisStageReceipt,genesisStageScope} from './g
 
 const typedStatus = {
  health: targetHealthObservation,
+ inventory: targetInventoryObservation,
  upgrade_preflight: upgradePreflightObservation,
  uninstall_preflight: removalPreflightObservation,
  recovery_preflight: recoveryPreflightObservation,
@@ -108,11 +109,12 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const upgradeResult=permitted&&result?.operation==='upgrade'&&result.upgradeContext===upgradeContext.current?result:null;
  const removalGate=installedControllerMutation(state,'uninstall');
  const statusGates=Object.fromEntries(Object.keys(typedStatus).map(operation=>[
-  operation, ['uninstall_preflight','recovery_preflight'].includes(operation)?controllerRead(state,operation):installedControllerRead(state,operation),
+  operation, ['inventory','uninstall_preflight','recovery_preflight'].includes(operation)?controllerRead(state,operation):installedControllerRead(state,operation),
  ]));
  const identityContextCurrent=!result?.identityContext||identityContext.current===result.identityContext;
  const statusResult=permitted&&identityContextCurrent&&statusGates[result?.operation]?.available?result:null;
  const healthResult=statusResult?.operation==='health'?statusResult:null;
+ const inventoryResult=statusResult?.operation==='inventory'&&targetScopeCurrent()?statusResult:null;
  const recoveryResult=statusResult?.operation==='recovery_preflight'?statusResult:null;
  const vpnResult=permitted&&statusGates.vpn_status.available&&['vpn_status','vpn_enroll'].includes(result?.operation)?result:null;
  const enrollmentSupported=permitted&&vpnEnrollmentSupported(state);
@@ -167,7 +169,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   const reviewsCustody=Boolean(preparesCustody)||custodyPreparations.some(action=>action.preflight===operation)
    || bindsGenesis||stagesGenesis||['genesis_binding_preflight','genesis_stage_preflight','formation_status'].includes(operation);
   const reviewedIdentityContext=reviewsCustody?identityContext.current:null;
-  const scopeSensitive=reviewedInstallContext||reviewsUpgrade||reviewsRemoval||isEnrollment||isServiceAction||lifecycleContext||reviewsCustody||['health','vpn_status','identity_status'].includes(operation);
+  const scopeSensitive=reviewedInstallContext||reviewsUpgrade||reviewsRemoval||isEnrollment||isServiceAction||lifecycleContext||reviewsCustody||['health','inventory','vpn_status','identity_status'].includes(operation);
   if(!permitted||busy||removalResult||(read&&!read.available)||(isPreflight&&!preflight.canRun)||(installsNode&&!canInstall))return;
   if(isEnrollment&&(!enrollmentSupported||enrollmentBlocker||vpnResult?.operation!=='vpn_status'))return;
   if(isServiceAction&&(!serviceGates[operation].available||(operation!=='stop'&&startupBlocker)))return;
@@ -250,10 +252,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   catch(failure){if(alive.current)setError(String(failure?.message||failure));}
   finally{if(alive.current)setBusy(false);}
  }
- function button(operation,label,parameters=()=>({})){
-  const gate=controllerOperation(state,operation);
-  return <div className="native-controller-action" key={operation}><button disabled={!permitted||busy||!gate.available} onClick={()=>{try{run(operation,parameters());}catch(failure){setError(failure.message);}}}>{label}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
- }
  function statusAction(operation,label){
   const gate=statusGates[operation];
   return <div className="native-controller-action" key={operation}>
@@ -261,6 +259,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    {permitted&&!gate.available&&<small>{gate.blocker}</small>}
   </div>;
  }
+ const inventoryReview=<>
+  {statusAction('inventory','Inventory node-owned files')}
+  {inventoryResult&&<TargetInventoryEvidence report={inventoryResult}/>}
+ </>;
  const serviceControls=<>
   {nodeServiceActions.map(operation=>{
    const gate=serviceGates[operation];
@@ -361,7 +363,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     receipt={preparationResult&&<ControllerReceipt receivedAt={preparationResult.receivedAt}/>}/>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
-   {statusAction('health','Read target health')}{button('inventory','Inventory node-owned files')}
+   {statusAction('health','Read target health')}{inventoryReview}
    {serviceControls}
    {statusAction('recovery_preflight','Diagnose recovery readiness')}
    {serviceEvidence}
@@ -393,7 +395,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    result={statusResult} upgradeResult={upgradeResult} upgradeContext={upgradeContext.current} run={run}/>}
   {tab==='Installation isolation'&&<ControllerRemoval target={target} permitted={permitted} busy={busy}
    controller={state} result={statusResult} removalResult={removalResult} targetContext={targetContext.current} run={run}
-   inventoryAction={button('inventory','Inventory node-owned files')}
+   inventoryAction={inventoryReview}
    preflightAction={statusAction('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
   <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&!['install','upgrade','uninstall','vpn_enroll','genesis_bind','genesis_stage'].includes(result.operation)&&!resultIsPreparation&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {logicalRemovalObservation, removalPreflightObservation} from '../src/removal-preflight.js';
+import {logicalRemovalObservation, removalPreflightObservation, targetInventoryObservation} from '../src/removal-preflight.js';
 
 const fixture = {
  root:'/opt/Synergy',destructive:true,managedAccountRemoval:true,outsideRootAuditComplete:false,forensicErasureProven:false,
@@ -29,6 +29,18 @@ test('refuses unredacted inventories, contradictory flags, malformed counts and 
   changed({id:'custody'}), changed({files:1}), changed({directories:19_999}),
   changed({sockets:'0'}), changed({file_bytes:'123\n'}), changed({file_bytes:'0123'}),
  ]) assert.throws(() => removalPreflightObservation(invalid), /unsupported removal scope/);
+});
+
+test('standalone inventory shares exact scope totals and keeps an observed empty root distinct from invalid evidence', () => {
+ const inventory = {schema:'nodenetwork-target-inventory-v1',root:fixture.root,outsideRootAuditComplete:false,scopes:fixture.scopes};
+ const {root, sections, memberCount} = removalPreflightObservation(fixture);
+ assert.deepEqual(targetInventoryObservation(inventory), {root, sections, memberCount});
+ const empty = {...inventory,scopes:inventory.scopes.map(({id})=>({id,files:0,directories:0,sockets:0,file_bytes:'0'}))};
+ assert.equal(targetInventoryObservation(empty).memberCount,0);
+ for (const invalid of [fixture,{...inventory,root:'/opt/synergy'},{...inventory,outsideRootAuditComplete:true},
+  {...inventory,members:[{path:'keys/private'}]},{...inventory,scopes:[{...empty.scopes[0],file_bytes:'1'},...empty.scopes.slice(1)]}]) {
+  assert.throws(()=>targetInventoryObservation(invalid),/unsupported node inventory evidence/);
+ }
 });
 
 test('requires logical removal evidence for the exact reviewed root with no other result fields', () => {
