@@ -1,16 +1,23 @@
-import {useNative,rpc,chainIdNumber,useResource,ErrorMessage,short} from '@synergy-network/portal-native/dapp-sdk';
+import {useNative,rpc,useResource,ErrorMessage,short} from '@synergy-network/portal-native/dapp-sdk';
 import {amount,text} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {sourceRecords} from './source-records.js';
 import {readAtlasAddress} from './atlas-account.js';
 import {atlasEndpointRequired,canReadWalletAtlas,readScopedWalletAtlas} from './atlas-scope.js';
+import {checkWalletAccountEndpoint,requireWalletReadScope,useWalletReadScope} from './wallet-account-read.js';
 export function DappWidget({widgetKey:key}){
  const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=canReadWalletAtlas(n);
+ const scope=JSON.stringify([connection?.walletId,connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,
+  n.endpoint.networkKey||n.endpoint.id,n.endpoint.genesisHash,n.walletConsentSession,ready]);
+ const allowed=useWalletReadScope(scope,()=>canReadWalletAtlas(n));
  const value=useResource(async signal=>{
-  if(!canReadWalletAtlas(n))return null;
-  if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');
-  const data=await readAtlasAddress((path,options)=>readScopedWalletAtlas(n,path,options),connection.address,{signal});return {data,receivedAt:Date.now()};
- },JSON.stringify([connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,n.endpoint.networkKey||n.endpoint.id,n.walletConsentSession,ready]));
+  if(!allowed())return null;
+  await checkWalletAccountEndpoint(rpc,n.endpoint,signal,allowed);
+  requireWalletReadScope(signal,allowed);
+  const data=await readAtlasAddress((path,options)=>readScopedWalletAtlas(n,path,options),connection.address,{signal});
+  requireWalletReadScope(signal,allowed);
+  return {data,receivedAt:Date.now()};
+ },scope);
  if(!permitted)return <p>Allow Wallet account access in Security.</p>;
  if(!connection)return <p>Connect Synergy Wallet to see your account.</p>;
  if(!ready)return <p>{atlasEndpointRequired}</p>;

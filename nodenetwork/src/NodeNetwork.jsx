@@ -27,6 +27,7 @@ import {SavedValidatorObservation} from './SavedValidatorObservation.jsx';
 import {Troubleshooter} from './Troubleshooter.jsx';
 import {TargetDiagnostics} from './TargetDiagnostics.jsx';
 import {SavedValidatorLogs} from './SavedValidatorLogs.jsx';
+import {ReplacementRecoveryReview} from './ReplacementRecoveryReview.jsx';
 import {SavedValidatorPerformance} from './SavedValidatorPerformance.jsx';
 import {UpdatePackage} from './UpdatePackage.jsx';
 import {MaintenanceComparison} from './MaintenanceComparison.jsx';
@@ -115,6 +116,7 @@ export function NodeNetworkApp(){
   </NodeNetworkPanelCard></>:section==='logs'?<>
    <TargetDiagnostics key={JSON.stringify([target,permitted])} target={target} permitted={permitted}/>
    <SavedValidatorLogs permitted={permitted}/>
+   <ReplacementRecoveryReview permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <Troubleshooter key={JSON.stringify([profile.id,profile.rpc,profile.chainId,permitted])} profile={profile} permitted={permitted} local={local} live={live} hasTarget={Boolean(target)} targetSettingsReadable={Boolean(targetSettings.snapshot)} onOpenMonitoring={()=>setSection('monitoring')} onOpenSettings={()=>setSection('settings')}/>
   </>:tab==='Network'?<>
    <Card title="Observation sources">
@@ -148,6 +150,7 @@ export function NodeNetworkApp(){
   </div>:tab==='Management'?null:tab==='Updates'?<>
    <UpdatePackage form={form} setForm={setForm}/>
    <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
+   <ReplacementRecoveryReview permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <MaintenanceComparison permitted={permitted}/>
   </>:<div className="native-grid">
    <Card title="Single-root contract"><Detail data={{installationRoot:'/opt/Synergy',software:'/opt/Synergy/bin',configuration:'/opt/Synergy/config',custody:'/opt/Synergy/keys/apqe',network:'/opt/Synergy/network',vpnState:'/opt/Synergy/vpn',blockchainState:'/opt/Synergy/data',recovery:'/opt/Synergy/recovery',updateStaging:'/opt/Synergy/tmp',temporaryFiles:'/opt/Synergy/tmp',runtime:'/opt/Synergy/run',serviceDefinitions:'/opt/Synergy/systemd',logs:'/opt/Synergy/logs'}}/><p>Every node-owned file and directory must stay inside this root on both local and remote targets. External release, custody, VPN, checkpoint, staging or diagnostic files fail installation qualification. Any operating-system registration must reference definitions inside this root and be included in the isolation audit.</p></Card>
