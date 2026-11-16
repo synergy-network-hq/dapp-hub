@@ -1,6 +1,8 @@
 import {genesisStageFiles} from './genesis-stage-files.js';
 import {genesisDigest} from './genesis-pin.js';
 import {localSha256} from './local-sha256.js';
+import {matchedMasterInventory} from './install-preflight.js';
+import {releaseReferenceChecks,sameUpgradeParameters} from './nodeNetwork.js';
 import {exactObservationU64,parseExactNumbers} from './validator-operations-observation.js';
 
 // Testnet v3 613fa6ab: apqe_layout.py::seal_commissioning/validate_stage/validate_layout
@@ -97,7 +99,7 @@ export async function readCommissioningConfiguration(file,manifest,form,current 
   if (!object(config)) throw Error(configurationError);
   const {apqe_transport:transport, consensus, storage, aegis_provider:provider} = config;
   const etdag = Object.hasOwn(config,'etdag') ? config.etdag : {};
-  return {
+  const checks = {
    identity:config.network_id===draft.network && exactObservationU64(config.chain_id)===draft.chain && config.node_name===draft.node,
    profile:object(transport) && transport.profile===profile,
    transportPaths:canonicalPaths(transport,{
@@ -115,9 +117,22 @@ export async function readCommissioningConfiguration(file,manifest,form,current 
    providerReference:canonicalPaths(provider,{report_path:'lib/apqe/build-report.json'})
     && isDigest(provider.authenticated_report_sha256),
   };
+  return {checks,providerPin:checks.providerReference ? provider.authenticated_report_sha256 : null};
  } finally {
   new Uint8Array(bytes).fill(0);
  }
+}
+
+export function compareCommissioningProviderReport(configuration,master,form) {
+ if (configuration?.checks?.identity!==true || configuration.checks.profile!==true || configuration.checks.providerReference!==true
+  || !isDigest(configuration.providerPin)) return 'configuration-unavailable';
+ if (releaseReferenceChecks(form).some(field=>!field.valid)) return 'draft-incomplete';
+ if (!master) return 'master-required';
+ if (!sameUpgradeParameters(form,{release_id:master.release,manifest_sha256:master.manifestSha256})) return 'master-differs';
+ const provider = matchedMasterInventory(master)?.apqeProvider;
+ if (master.architecture!=='Linux x86_64' || master.releaseTrustVerified!==false || master.installAuthorized!==false || provider?.status!=='matched'
+  || provider.libraryCount!==8 || !isDigest(provider.reportSha256)) return 'report-unavailable';
+ return provider.reportSha256===configuration.providerPin ? 'matches' : 'differs';
 }
 
 export async function readCommissioningStartupPolicy(file,manifest,current = ()=>true) {

@@ -1,6 +1,6 @@
 import {Fragment,useState} from 'react';
 import {Card,Detail,ErrorMessage,Table} from '@synergy-network/portal-native/dapp-sdk';
-import {commissioningDraftIdentity,commissioningPublicArtifacts,readCommissioningConfiguration,readCommissioningManifest,readCommissioningStartupPolicy,
+import {commissioningDraftIdentity,commissioningPublicArtifacts,compareCommissioningProviderReport,readCommissioningConfiguration,readCommissioningManifest,readCommissioningStartupPolicy,
  reviewCommissioningPublicArtifacts} from './commissioning-public-evidence.js';
 import {genesisDigest} from './genesis-pin.js';
 import {useObservationFile} from './useObservationFile.js';
@@ -16,8 +16,17 @@ const configurationChecks = [
  ['providerReference','APQE provider report reference','Canonical path and digest format','Missing or unsupported reference'],
 ];
 const configurationColumns = [{key:'check',label:'Check'},{key:'status',label:'Finding'}];
+const providerFindings = {
+ 'configuration-unavailable':'Configuration identity, profile or report reference needs review',
+ 'draft-incomplete':'Enter the draft release ID and manifest SHA-256',
+ 'master-required':'Inspect the draft-matching master in Node architecture master',
+ 'master-differs':'Inspected master differs from the draft release',
+ 'report-unavailable':'Verified master report evidence unavailable',
+ matches:'Matches the inspected master report',
+ differs:'Differs from the inspected master report',
+};
 
-function ConfigurationFile({form,manifest,canRead}) {
+function ConfigurationFile({form,manifest,master,canRead}) {
  const {result,error,reading,clear,select} = useObservationFile((file,current)=>
   readCommissioningConfiguration(file,manifest,form,()=>current() && canRead()));
  return <>
@@ -27,8 +36,10 @@ function ConfigurationFile({form,manifest,canRead}) {
   <ErrorMessage error={error}/>
   {result && <section aria-label="Commissioning configuration findings">
    <p role="status">The configuration SHA-256 matches the commissioning manifest.</p>
-   <Table columns={configurationColumns} rows={configurationChecks.map(([id,check,match,mismatch])=>({id,check,status:result[id]?match:mismatch}))}/>
-   <p>Verify provider report bytes and native signatures separately.</p>
+   <Table columns={configurationColumns} rows={[
+    ...configurationChecks.map(([id,check,match,mismatch])=>({id,check,status:result.checks[id]?match:mismatch})),
+    {id:'providerReport',check:'APQE provider report bytes',status:providerFindings[compareCommissioningProviderReport(result,master,form)]},
+   ]}/>
   </section>}
  </>;
 }
@@ -74,7 +85,7 @@ function StartupFile({manifest,canRead}) {
  </>;
 }
 
-function ManifestFile({pin,form,canRead}) {
+function ManifestFile({pin,form,master,canRead}) {
  const {result,error,reading,revision,clear,select} = useObservationFile((file,current)=>
   readCommissioningManifest(file,pin,form,()=>current() && canRead()));
  return <>
@@ -85,14 +96,14 @@ function ManifestFile({pin,form,canRead}) {
   {result && <>
    <p role="status">The commissioning manifest matches the supplied digest and current draft identity.</p>
    <Fragment key={revision}>
-    <ConfigurationFile form={form} manifest={result} canRead={canRead}/>
+    <ConfigurationFile form={form} manifest={result} master={master} canRead={canRead}/>
     <StartupFile manifest={result} canRead={canRead}/>
    </Fragment>
   </>}
  </>;
 }
 
-function CommissioningPin({form,canRead}) {
+function CommissioningPin({form,master,canRead}) {
  const [input,setInput] = useState('');
  const pin = genesisDigest(input);
  const draft = commissioningDraftIdentity(form);
@@ -101,13 +112,13 @@ function CommissioningPin({form,canRead}) {
   <label>Expected commissioning manifest SHA-256 <input value={input} onChange={event=>setInput(event.target.value)} maxLength={64} autoComplete="off"/></label>
   {!draft ? <p>Enter a valid network, chain ID and node name in the provisioning draft.</p>
    : !pin ? <p>Enter the expected 64-character SHA-256 before selecting the manifest.</p>
-   : <ManifestFile key={JSON.stringify([pin,draft])} pin={pin} form={form} canRead={canRead}/>}
+   : <ManifestFile key={JSON.stringify([pin,draft])} pin={pin} form={form} master={master} canRead={canRead}/>}
  </>;
 }
 
-export function CommissioningPublicEvidence({form,permitted,canRead = ()=>permitted}) {
+export function CommissioningPublicEvidence({form,master,permitted,canRead = ()=>permitted}) {
  return <Card title="Commissioning public evidence">
-  {permitted ? <CommissioningPin form={form} canRead={canRead}/>
+  {permitted ? <CommissioningPin form={form} master={master} canRead={canRead}/>
    : <p>Allow NodeNetwork inspection in Security &amp; permissions to review saved commissioning files.</p>}
   <p>This review is scoped to engineering evidence. Native signature verification, custody, live VPN checks and production approval require separate verification.</p>
  </Card>;

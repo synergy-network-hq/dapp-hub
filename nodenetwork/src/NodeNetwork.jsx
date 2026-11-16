@@ -57,18 +57,20 @@ export function NodeNetworkApp(){
  const profile=profiles.find(p=>p.id===profileId)||CANARY_PROFILE;
  const tab=({overview:'Network',operations:'Validator setup',monitoring:'Management',settings:settingsTab})[section];
  const permitted=n.permit('node','readNetwork');
+ const inspectMasterPermitted=permitted&&!n.recoverySuspended;
  const targetScopeCurrent=()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&targetSettings.targetIsCurrent();
  const indexAvailable=permitted&&isCanonicalTestnetRpc(profile);
  const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,profile.genesisHash,permitted]);
- const masterScope=useRef({permitted,generation:0});
- if(masterScope.current.permitted!==permitted)masterScope.current={permitted,generation:masterScope.current.generation+1};
- useEffect(()=>{setMaster(null);setMasterError('');setReviewing(false);return()=>{masterScope.current.generation++;};},[permitted]);
+ const masterScope=useRef({permitted:inspectMasterPermitted,generation:0});
+ if(masterScope.current.permitted!==inspectMasterPermitted)masterScope.current={permitted:inspectMasterPermitted,generation:masterScope.current.generation+1};
+ useEffect(()=>{setMaster(null);setMasterError('');setReviewing(false);return()=>{masterScope.current.generation++;};},[inspectMasterPermitted]);
  async function reviewMaster(){
-  if(!permitted)return;
+  if(!inspectMasterPermitted||!n.permit('node','readNetwork'))return;
   const generation=++masterScope.current.generation;
+  const current=()=>masterScope.current.permitted&&masterScope.current.generation===generation&&n.permit('node','readNetwork');
   setReviewing(true);setMasterError('');setMaster(null);
-  try{const value=await nodeNetworkReviewMaster();if(masterScope.current.permitted&&masterScope.current.generation===generation)setMaster(value);}
-  catch(error){if(masterScope.current.permitted&&masterScope.current.generation===generation)setMasterError(String(error?.message||error));}
+  try{const value=await nodeNetworkReviewMaster();if(current())setMaster(value);}
+  catch(error){if(current())setMasterError(String(error?.message||error));}
   finally{if(masterScope.current.generation===generation)setReviewing(false);}
  }
  const local=useResource(()=>{
@@ -154,16 +156,16 @@ export function NodeNetworkApp(){
    <OperatorPublicKeyReview permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <SavedControllerPolicy form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <SavedInstallationReceipt form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
-   <CommissioningPublicEvidence form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
+   <CommissioningPublicEvidence form={form} master={master} permitted={inspectMasterPermitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    {!target&&<InstallPreflight checklist={installPreflightChecklist({form,permitted,master})}
     action={<button disabled={!permitted} onClick={()=>setSection('monitoring')}>Review saved preflight evidence</button>}/>}
    {!target&&<IdentityPreflight permitted={permitted} canReviewFiles={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>}
-   <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
+   <MasterReview permitted={inspectMasterPermitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
    <Card title="Local runtime compatibility"><Resource value={local}>{data=>data?<Detail data={data}/>:<p>No host inspection was returned.</p>}</Resource></Card>
 
   </div>:tab==='Management'?null:tab==='Updates'?<>
    <UpdatePackage form={form} setForm={setForm}/>
-   <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster} updateDraft={form}/>
+   <MasterReview permitted={inspectMasterPermitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster} updateDraft={form}/>
    <SavedUpgradeIntent form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <UpgradeConfiguration form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <ReplacementRecoveryReview permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>

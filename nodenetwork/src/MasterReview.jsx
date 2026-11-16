@@ -1,5 +1,5 @@
 import {Card, Detail, ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
-import {masterDraftComparison} from './install-preflight.js';
+import {masterDraftComparison,matchedMasterInventory} from './install-preflight.js';
 import {R5_BASELINE,releaseReferenceChecks} from './nodeNetwork.js';
 
 const inventoryReasons = {
@@ -49,9 +49,7 @@ function ApqeCandidateReview({result}) {
 
 function InventoryEvidence({master}) {
  const result = master.inventory;
- if (result?.status === 'matched' && Number.isInteger(result.verifiedFiles)
-     && result.verifiedFiles > 0 && result.verifiedFiles <= 4096 && result.verifiedFiles === master.fileCount
-     && Number.isSafeInteger(result.verifiedBytes) && result.verifiedBytes >= 0 && result.verifiedBytes <= 256 * 1024 * 1024) {
+ if (matchedMasterInventory(master)) {
   return <>
    <p role="status">Local files matched the manifest at inspection. Checked {result.verifiedFiles} declared files and {result.verifiedBytes} bytes.</p>
    <LayoutChecks layout={result.layout}/>

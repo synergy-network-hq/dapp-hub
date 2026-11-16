@@ -229,7 +229,9 @@ pub fn status() -> Result<Value, String> {
         let root = fixture.root();
         fixture.with_apqe_candidate();
         let result = review_master(&root).unwrap();
-        assert_eq!(result["inventory"]["apqeProvider"], json!({"status":"matched","libraryCount":8}));
+        let verified_report = fs::read(root.join("lib/apqe/build-report.json")).unwrap();
+        assert_eq!(result["inventory"]["apqeProvider"], json!({"status":"matched","libraryCount":8,
+            "reportSha256":format!("{:x}",Sha256::digest(&verified_report))}));
         assert_eq!(result["releaseTrustVerified"], false);
         assert_eq!(result["installAuthorized"], false);
 
@@ -243,6 +245,16 @@ pub fn status() -> Result<Value, String> {
         manifest["apqe_provider"]["report_sha256"] = json!("0".repeat(64));
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         assert_eq!(review_master(&root).unwrap()["inventory"]["apqeProvider"]["reason"], "report_digest");
+
+        manifest["apqe_provider"]["report_sha256"] = json!(format!("{:x}",Sha256::digest(&verified_report)));
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let mut different_report = verified_report.clone();
+        different_report.push(b'\n');
+        fs::write(root.join("lib/apqe/build-report.json"), different_report).unwrap();
+        let changed_report = review_master(&root).unwrap();
+        assert_eq!(changed_report["inventory"]["reason"], "digest_mismatch");
+        assert!(changed_report["inventory"].get("apqeProvider").is_none());
+        fs::write(root.join("lib/apqe/build-report.json"), &verified_report).unwrap();
 
         fs::write(root.join("lib/apqe/libaegisvariant0.so"), b"changed binary bytes").unwrap();
         let result = review_master(&root).unwrap();

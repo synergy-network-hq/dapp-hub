@@ -28,6 +28,14 @@ export function installationObservation(value, parameters, target) {
  return value;
 }
 
+export function matchedMasterInventory(master) {
+ const inventory = master?.inventory;
+ return inventory?.status === 'matched' && Number.isInteger(inventory.verifiedFiles)
+  && inventory.verifiedFiles > 0 && inventory.verifiedFiles <= 4096 && inventory.verifiedFiles === master.fileCount
+  && Number.isSafeInteger(inventory.verifiedBytes) && inventory.verifiedBytes >= 0 && inventory.verifiedBytes <= 256 * 1024 * 1024
+  ? inventory : null;
+}
+
 export function masterDraftComparison(master,form) {
  const check = 'Inspected master comparison';
  if (!master) return {check,status:'Not inspected',detail:'Optionally inspect the master folder and compare its release and digest with the draft.'};

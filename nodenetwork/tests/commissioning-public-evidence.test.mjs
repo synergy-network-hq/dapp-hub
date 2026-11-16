@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {commissioningDraftIdentity,commissioningPublicArtifacts,readCommissioningConfiguration,readCommissioningManifest,readCommissioningStartupPolicy,
+import {commissioningDraftIdentity,commissioningPublicArtifacts,compareCommissioningProviderReport,readCommissioningConfiguration,readCommissioningManifest,readCommissioningStartupPolicy,
  reviewCommissioningPublicArtifacts} from '../src/commissioning-public-evidence.js';
 import {commissioningDraftFixture,commissioningFixture,commissioningPin} from './fixtures/commissioning-public-evidence.mjs';
 
@@ -10,6 +10,10 @@ const named = (name,raw)=>Object.assign(file(raw),{name});
 const selections = publicFiles=>Object.entries(publicFiles).map(([name,raw])=>named(name,raw));
 const configurationMatches={identity:true,profile:true,transportPaths:true,runtimePaths:true,networkPaths:true,
  directKeyOverrides:true,publicTrustAnchors:true,providerReference:true};
+const releaseDraft={release_id:'fixture-master',manifest_sha256:'a'.repeat(64)};
+const inspectedMaster=reportSha256=>({release:releaseDraft.release_id,manifestSha256:releaseDraft.manifest_sha256,
+ architecture:'Linux x86_64',fileCount:12,releaseTrustVerified:false,installAuthorized:false,
+ inventory:{status:'matched',verifiedFiles:12,verifiedBytes:400,apqeProvider:{status:'matched',libraryCount:8,reportSha256}}});
 
 async function ready(fixture) {
  const manifest=await readCommissioningManifest(file(fixture.commissioning),fixture.expected,fixture.draft);
@@ -72,8 +76,8 @@ test('checks byte identity, exact u64 scope and owner configuration clauses with
  const fixture=commissioningFixture();
  const {manifest}=await ready(fixture);
  const status=await readCommissioningConfiguration(file(fixture.configuration),manifest,fixture.draft);
- assert.deepEqual(status,configurationMatches);
- assert.doesNotMatch(JSON.stringify(status),/fixture|\/opt\/|[a-f0-9]{64}/);
+ assert.deepEqual(status.checks,configurationMatches);
+ assert.doesNotMatch(JSON.stringify(status.checks),/fixture|\/opt\/|[a-f0-9]{64}/);
  await assert.rejects(readCommissioningConfiguration(file(fixture.configuration.trim()),manifest,fixture.draft),/configuration SHA-256 differs/);
  const chain='18446744073709551615';
  const exactConfiguration=fixture.configuration.replace('"chain_id":99999',`"chain_id":${chain}`);
@@ -81,7 +85,32 @@ test('checks byte identity, exact u64 scope and owner configuration clauses with
   .replace(manifest.configurationPin,commissioningPin(exactConfiguration));
  const draft={...fixture.draft,chain_id:chain};
  const scoped=await readCommissioningManifest(file(exactManifest),commissioningPin(exactManifest),draft);
- assert.deepEqual(await readCommissioningConfiguration(file(exactConfiguration),scoped,draft),configurationMatches);
+ assert.deepEqual((await readCommissioningConfiguration(file(exactConfiguration),scoped,draft)).checks,configurationMatches);
+});
+
+test('compares only a current draft-matching native master report with a valid configuration report pin',async()=>{
+ const fixture=commissioningFixture();
+ const {manifest}=await ready(fixture);
+ const configuration=await readCommissioningConfiguration(file(fixture.configuration),manifest,fixture.draft);
+ const master=inspectedMaster('b'.repeat(64));
+ assert.equal(compareCommissioningProviderReport(configuration,master,releaseDraft),'matches');
+ assert.equal(compareCommissioningProviderReport(configuration,inspectedMaster('d'.repeat(64)),releaseDraft),'differs');
+ assert.equal(compareCommissioningProviderReport(configuration,null,releaseDraft),'master-required');
+ assert.equal(compareCommissioningProviderReport(configuration,master,fixture.draft),'draft-incomplete');
+ assert.equal(compareCommissioningProviderReport(configuration,master,{...releaseDraft,manifest_sha256:'c'.repeat(64)}),'master-differs');
+ assert.equal(compareCommissioningProviderReport(configuration,{...master,release:'different'},releaseDraft),'master-differs');
+ for (const invalid of [inspectedMaster(undefined),inspectedMaster('B'.repeat(64)),inspectedMaster('b'.repeat(64)+'\n'),
+  {...master,releaseTrustVerified:true},{...master,installAuthorized:true},{...master,architecture:'arm64'},
+  {...master,inventory:{...master.inventory,verifiedFiles:1}},
+  {...master,inventory:{...master.inventory,apqeProvider:{...master.inventory.apqeProvider,libraryCount:7}}}]) {
+  assert.equal(compareCommissioningProviderReport(configuration,invalid,releaseDraft),'report-unavailable');
+ }
+ const invalidPath=commissioningFixture({alterConfiguration:config=>{config.aegis_provider.report_path='/fixture/never-read.json';}});
+ const changed=await readCommissioningConfiguration(file(invalidPath.configuration),(await ready(invalidPath)).manifest,invalidPath.draft);
+ assert.equal(changed.providerPin,null);
+ assert.equal(compareCommissioningProviderReport(changed,master,releaseDraft),'configuration-unavailable');
+ assert.equal(compareCommissioningProviderReport({...configuration,checks:{...configuration.checks,profile:false}},master,releaseDraft),
+  'configuration-unavailable');
 });
 
 test('reports each configuration discrepancy even when the bytes are correctly pinned',async()=>{
@@ -97,14 +126,15 @@ test('reports each configuration discrepancy even when the bytes are correctly p
  }});
  const {manifest}=await ready(bad);
  const verdict=await readCommissioningConfiguration(file(bad.configuration),manifest,bad.draft);
- assert.deepEqual(verdict,Object.fromEntries(Object.keys(configurationMatches).map(key=>[key,false])));
+ assert.deepEqual(verdict.checks,Object.fromEntries(Object.keys(configurationMatches).map(key=>[key,false])));
+ assert.equal(verdict.providerPin,null);
  assert.doesNotMatch(JSON.stringify(verdict),/foreign-fixture|non-owner|secret|bad-reference/);
  for (const change of [
   config=>{config.aegis_signing_key_path='/fixture/private';},config=>{config.aegis_key_bindings_path='/fixture/private';},
   config=>{config.consensus.signing_key_path='/fixture/private';},
  ]) {
   const scoped=commissioningFixture({alterConfiguration:change});
-  assert.equal((await readCommissioningConfiguration(file(scoped.configuration),(await ready(scoped)).manifest,scoped.draft)).directKeyOverrides,false);
+  assert.equal((await readCommissioningConfiguration(file(scoped.configuration),(await ready(scoped)).manifest,scoped.draft)).checks.directKeyOverrides,false);
  }
 });
 
@@ -159,6 +189,16 @@ test('matches pinned owner validate_stage configuration findings', {skip:!ownerL
   const raw=readFileSync(`${folder}/commissioning.json`);
   const manifest=await readCommissioningManifest(file(raw),commissioningPin(raw),commissioningDraftFixture);
   const configuration=readFileSync(`${folder}/config/node.json`);
-  assert.deepEqual(await readCommissioningConfiguration(file(configuration),manifest,commissioningDraftFixture),expected,name);
+  assert.deepEqual((await readCommissioningConfiguration(file(configuration),manifest,commissioningDraftFixture)).checks,expected,name);
  }
+});
+
+test('compares the pinned owner layout configuration against the verified report bytes', {skip:!ownerLayoutDir}, async()=>{
+ const stage=`${ownerLayoutDir}/valid`;
+ const raw=readFileSync(`${stage}/commissioning.json`);
+ const manifest=await readCommissioningManifest(file(raw),commissioningPin(raw),commissioningDraftFixture);
+ const config=await readCommissioningConfiguration(file(readFileSync(`${stage}/config/node.json`)),manifest,commissioningDraftFixture);
+ const report=readFileSync(`${ownerLayoutDir}/software/lib/apqe/build-report.json`);
+ assert.equal(compareCommissioningProviderReport(config,inspectedMaster(commissioningPin(report)),releaseDraft),'matches');
+ assert.equal(compareCommissioningProviderReport(config,inspectedMaster(commissioningPin(Buffer.concat([report,Buffer.from('\n')]))),releaseDraft),'differs');
 });

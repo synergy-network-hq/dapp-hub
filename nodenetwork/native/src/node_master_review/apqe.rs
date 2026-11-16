@@ -28,7 +28,7 @@ struct Library {
     sha256: String,
 }
 
-fn verify(manifest: &Value, report: Option<&[u8]>) -> Result<(), &'static str> {
+fn verify<'a>(manifest: &'a Value, report: Option<&[u8]>) -> Result<&'a str, &'static str> {
     let declaration = manifest["apqe_provider"]
         .as_object()
         .ok_or("declaration_missing")?;
@@ -85,12 +85,13 @@ fn verify(manifest: &Value, report: Option<&[u8]>) -> Result<(), &'static str> {
     {
         return Err("libraries_mismatch");
     }
-    Ok(())
+    // The enclosing inventory inspection already hashed these exact report bytes.
+    Ok(report_digest)
 }
 
 pub(super) fn review(manifest: &Value, report: Option<&[u8]>) -> Value {
     match verify(manifest, report) {
-        Ok(()) => json!({"status":"matched","libraryCount":LIBRARY_COUNT}),
+        Ok(report_sha256) => json!({"status":"matched","libraryCount":LIBRARY_COUNT,"reportSha256":report_sha256}),
         Err(reason) => json!({"status":"unavailable","reason":reason}),
     }
 }
