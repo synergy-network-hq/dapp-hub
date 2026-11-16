@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {targetDiagnosticsObservation} from '../src/target-diagnostics.js';
+import {serviceRegistrationAttribution, targetDiagnosticsObservation} from '../src/target-diagnostics.js';
 
 const fixture = {
  schema: 'nodenetwork-diagnostics-v1', observed_at_ms: 1763010000000,
@@ -38,4 +38,17 @@ test('refuses unknown fields, raw source content and contradictory counters', ()
  ]) {
   assert.throws(() => targetDiagnosticsObservation(input), /unsupported target diagnostics/);
  }
+});
+
+test('classifies current registration attribution without treating missing or partial evidence as a result for the prior dispatch', () => {
+ const observe = services => serviceRegistrationAttribution(targetDiagnosticsObservation({...fixture, services}));
+ assert.deepEqual(observe({node:fixture.services.node, vpn:{...fixture.services.node,state:null}}), {
+  summary:'The controller attributed both Node and VPN services.', node:'Active', vpn:'Not reported',
+ });
+ assert.deepEqual(observe(fixture.services), {
+  summary:'The controller returned partial service attribution. The observation is inconclusive.', node:'Active', vpn:'No attribution reported',
+ });
+ assert.deepEqual(observe({node:null,vpn:null}), {
+  summary:'The controller reported no attributed Node or VPN service.', node:'No attribution reported', vpn:'No attribution reported',
+ });
 });

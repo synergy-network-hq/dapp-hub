@@ -32,6 +32,17 @@ export function filterRequests(records, {status, operation, target}) {
  );
 }
 
+export function matchesUnresolvedRegistration(record, fingerprint) {
+ return Boolean(record && fingerprint && record.target_digest === fingerprint && record.operation === 'register'
+  && ['dispatch_intent', 'uncertain'].includes(record.state));
+}
+
+export function retainsRegistrationDispatch(records, reviewed) {
+ const record = records.find(entry => entry.id === reviewed.id);
+ return matchesUnresolvedRegistration(record, reviewed.target_digest)
+  && ['request_digest', 'state', 'recorded_at_ms', 'observed_at_ms'].every(field => record[field] === reviewed[field]);
+}
+
 const pin = value => typeof value === 'string' && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
 const validState = record => {

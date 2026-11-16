@@ -2,16 +2,17 @@ import {useState} from 'react';
 import {Card, Detail, ErrorMessage, ModalDialog, Resource, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {downloadJson} from './download-json.js';
 import {nodeNetworkRequests} from './native-services.js';
-import {configuredTargetFingerprint, filterRequests, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
+import {configuredTargetFingerprint, filterRequests, matchesUnresolvedRegistration, requestOperations, requestStatusLabel, requestStatusOptions, reviewRequestSelection} from './request-history.js';
+import {RegistrationDiagnosticsReview} from './TargetDiagnostics.jsx';
 
 const allRequests = {status: 'all', operation: 'all', target: null};
 const configuredTarget = 'configured';
 
-export function RequestHistory({permitted, target}) {
- return <RequestHistoryView key={JSON.stringify([permitted,target])} permitted={permitted} target={target}/>;
+export function RequestHistory({permitted, target, targetScopeCurrent = () => permitted}) {
+ return <RequestHistoryView key={JSON.stringify([permitted,target])} permitted={permitted} target={target} targetScopeCurrent={targetScopeCurrent}/>;
 }
 
-function RequestHistoryView({permitted, target}) {
+function RequestHistoryView({permitted, target, targetScopeCurrent}) {
  const [filters, setFilters] = useState(allRequests);
  const [selected, setSelected] = useState(null);
  const [exportIds, setExportIds] = useState(() => new Set());
@@ -139,6 +140,8 @@ function RequestHistoryView({permitted, target}) {
      {current.state !== 'response_received' && <p>
       The journal blocks further mutations for this configured target while the dispatch remains unresolved. Ask the node operator for qualified reconciliation before making another change.
      </p>}
+     {target && filterConfigured && matchesUnresolvedRegistration(current, configured.data) && <RegistrationDiagnosticsReview
+      key={current.id} target={target} record={current} targetScopeCurrent={targetScopeCurrent}/>}
     </div>}
    </>;
   }}</Resource>

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {filterRequests, parseRequestHistory, requestStatusLabel, reviewRequestSelection} from '../src/request-history.js';
+import {filterRequests, matchesUnresolvedRegistration, parseRequestHistory, requestStatusLabel, retainsRegistrationDispatch, reviewRequestSelection} from '../src/request-history.js';
 
 const targetA = 'a'.repeat(64);
 const targetB = 'b'.repeat(64);
@@ -47,6 +47,21 @@ test('operation and exact configured target fingerprints combine without changin
  assert.deepEqual(filterRequests(records, {...defaults, operation: 'install', target: targetB}), [unknown]);
  assert.deepEqual(filterRequests(records, {...defaults, target: targetB.slice(0, 12)}), []);
  assert.deepEqual(records, [accepted, refused, unknown, uncertain]);
+});
+
+test('requires the exact still-unresolved registration for the selected configured fingerprint', () => {
+ const reviewed = {...unknown, operation:'register'};
+ assert.equal(matchesUnresolvedRegistration(reviewed, targetB), true);
+ assert.equal(matchesUnresolvedRegistration(reviewed, targetA), false);
+ assert.equal(matchesUnresolvedRegistration(unknown, targetB), false);
+ assert.equal(retainsRegistrationDispatch([{...reviewed}], reviewed), true);
+ const received = {...reviewed, state:'response_received', response_ok:true, observed_at_ms:1001};
+ for (const changed of [received, {...reviewed, state:'uncertain', observed_at_ms:1001},
+  {...reviewed, id:accepted.id}, {...reviewed, operation:'install'}, {...reviewed, recorded_at_ms:1001},
+  {...reviewed, target_digest:targetA}, {...reviewed, request_digest:targetA}]) {
+  assert.equal(retainsRegistrationDispatch([changed], reviewed), false);
+ }
+ assert.equal(retainsRegistrationDispatch([], reviewed), false);
 });
 
 test('unsupported envelopes never yield actionable or empty history', () => {

@@ -57,6 +57,7 @@ export function NodeNetworkApp(){
  const profile=profiles.find(p=>p.id===profileId)||CANARY_PROFILE;
  const tab=({overview:'Network',operations:'Validator setup',monitoring:'Management',settings:settingsTab})[section];
  const permitted=n.permit('node','readNetwork');
+ const targetScopeCurrent=()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&targetSettings.targetIsCurrent();
  const indexAvailable=permitted&&isCanonicalTestnetRpc(profile);
  const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,profile.genesisHash,permitted]);
  const masterScope=useRef({permitted,generation:0});
@@ -122,7 +123,7 @@ export function NodeNetworkApp(){
    <p>Use public validator lookup in Overview to review attributed Atlas blocks and their receipt time.</p>
    <button onClick={()=>setSection('overview')}>Open public validator observations</button>
   </NodeNetworkPanelCard></>:section==='logs'?<>
-   <TargetDiagnostics key={JSON.stringify([target,permitted])} target={target} permitted={permitted}/>
+   <TargetDiagnostics key={JSON.stringify([target,permitted])} target={target} permitted={permitted} targetScopeCurrent={targetScopeCurrent}/>
    <SavedValidatorLogs permitted={permitted}/>
    <SavedValidatorAudit permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <ReplacementRecoveryReview permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
@@ -177,8 +178,8 @@ export function NodeNetworkApp(){
   {tab==='Management'&&<SavedValidatorObservation permitted={permitted} onOpenDiagnostics={()=>setSection('logs')}/>}
   {['Management','Validator setup'].includes(tab)&&!target&&<VpnStatus onOpenDiagnostics={()=>setSection('logs')}/>}
   {tab==='Management'&&!target&&<CustodyStatus onOpenHistory={()=>setSection('logs')}/>}
-  {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted} target={target}/>}
+  {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted} target={target} targetScopeCurrent={targetScopeCurrent}/>}
   {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} onOpenDiagnostics={()=>setSection('logs')}
-   targetScopeCurrent={()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&targetSettings.targetIsCurrent()}/>}
+   targetScopeCurrent={targetScopeCurrent}/>}
  </NodeNetworkPanelFrame>;
 }

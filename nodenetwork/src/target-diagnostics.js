@@ -44,3 +44,11 @@ export function targetDiagnosticsObservation(value) {
   log: {...log, severity: {...log.severity}},
  };
 }
+
+export function serviceRegistrationAttribution({services}) {
+ const {node, vpn} = services;
+ const summary = node && vpn ? 'The controller attributed both Node and VPN services.'
+  : node || vpn ? 'The controller returned partial service attribution. The observation is inconclusive.'
+   : 'The controller reported no attributed Node or VPN service.';
+ return {summary, node: node?.state ?? 'No attribution reported', vpn: vpn?.state ?? 'No attribution reported'};
+}

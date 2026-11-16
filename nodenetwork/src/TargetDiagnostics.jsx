@@ -1,9 +1,10 @@
 import {useState} from 'react';
 import {Detail, Resource, Table, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {NodeNetworkPanelCard} from './NodeNetworkPanelFrame.jsx';
-import {nodeNetworkController} from './native-services.js';
+import {nodeNetworkController, nodeNetworkRequests} from './native-services.js';
 import {installedControllerRead, targetControllerObservation} from './target-observation.js';
-import {diagnosticSeverity, targetDiagnosticsObservation} from './target-diagnostics.js';
+import {diagnosticSeverity, serviceRegistrationAttribution, targetDiagnosticsObservation} from './target-diagnostics.js';
+import {retainsRegistrationDispatch} from './request-history.js';
 
 const serviceColumns = [
  {key: 'label', label: 'Service'}, {key: 'state', label: 'Reported state'}, {key: 'restarts', label: 'Restarts'},
@@ -34,23 +35,40 @@ function Snapshot({value}) {
  </>;
 }
 
-export function TargetDiagnostics({target, permitted}) {
- const [requested, setRequested] = useState(false);
- const report = useResource(async signal => {
-  if (!requested || !target || !permitted) return null;
-  let controller;
-  try {
-   controller = targetControllerObservation(await nodeNetworkController(target, 'target'));
-  } catch {
-   throw Error('The selected controller could not confirm diagnostics support.');
-  }
+async function readTargetDiagnostics(target, signal, targetScopeCurrent, reviewJournal) {
+ const requireCurrent = () => {
   signal.throwIfAborted();
-  if (!installedControllerRead(controller, 'diagnostics').available) {
-   throw Error('Target diagnostics require an installed version-one controller with an available diagnostics read.');
+  if (!targetScopeCurrent()) throw Error('The target, recovery state or permission changed. Review the configured target again.');
+ };
+ const recheck = async () => {
+  requireCurrent();
+  if (reviewJournal) await reviewJournal();
+ };
+ const read = async (operation, observe, errorMessage) => {
+  await recheck();
+  requireCurrent();
+  try {
+   return observe(await nodeNetworkController(target, operation));
+  } catch {
+   throw Error(errorMessage);
   }
-  const snapshot = targetDiagnosticsObservation(await nodeNetworkController(target, 'diagnostics'));
-  return {...snapshot, receivedAt: Date.now()};
- }, requested);
+ };
+ const controller = await read('target', targetControllerObservation, 'The selected controller could not confirm diagnostics support.');
+ requireCurrent();
+ if (!installedControllerRead(controller, 'diagnostics').available) {
+  throw Error('Target diagnostics require an installed version-one controller with an available diagnostics read.');
+ }
+ const snapshot = await read('diagnostics', targetDiagnosticsObservation, 'The selected controller could not provide supported target diagnostics.');
+ const receivedAt = Date.now();
+ await recheck();
+ requireCurrent();
+ return {...snapshot, receivedAt};
+}
+
+export function TargetDiagnostics({target, permitted, targetScopeCurrent = () => permitted}) {
+ const [requested, setRequested] = useState(false);
+ const report = useResource(signal => requested && target && permitted
+  ? readTargetDiagnostics(target, signal, targetScopeCurrent) : null, requested);
 
  return <NodeNetworkPanelCard title="Target diagnostics" action={target && <button
   disabled={!permitted || (requested && report.loading)}
@@ -60,4 +78,30 @@ export function TargetDiagnostics({target, permitted}) {
   {target && !permitted && <p>Allow NodeNetwork inspection in Security &amp; permissions to read target diagnostics.</p>}
   {target && permitted && requested && <Resource value={{...report, reload: null}}>{value => <Snapshot value={value}/>}</Resource>}
  </NodeNetworkPanelCard>;
+}
+
+export function RegistrationDiagnosticsReview({target, record, targetScopeCurrent}) {
+ const [requested, setRequested] = useState(false);
+ const report = useResource(signal => requested ? readTargetDiagnostics(target, signal, targetScopeCurrent, async () => {
+  const journal = await nodeNetworkRequests().catch(() => {throw Error('The local registration dispatch could not be rechecked. Refresh local history.');});
+  if (!retainsRegistrationDispatch(journal.records, record)) {
+   throw Error('The selected registration dispatch changed. Refresh local history and select it again.');
+  }
+ }) : null, requested);
+ return <section aria-label="Current service attribution">
+  <p>Read current Node and VPN attribution from the selected controller. This observation leaves the prior dispatch unresolved.</p>
+  <div className="native-actions">
+   <button disabled={requested && report.loading} onClick={() => requested ? report.reload() : setRequested(true)}>Read current service attribution</button>
+   {requested && <button onClick={() => setRequested(false)}>Dismiss service evidence</button>}
+  </div>
+  {requested && <Resource value={{...report, reload: null}}>{value => {
+   const attribution = serviceRegistrationAttribution(value);
+   return <>
+    <p role="status">{attribution.summary}</p>
+    <p>Target observation {new Date(value.observedAt).toISOString()} · Local receipt {new Date(value.receivedAt).toISOString()}</p>
+    <Detail data={{nodeService: attribution.node, vpnService: attribution.vpn}}/>
+    <p>Reconcile the prior request with the node operator. Canary relay registration and other installation effects require separate evidence.</p>
+   </>;
+  }}</Resource>}
+ </section>;
 }
