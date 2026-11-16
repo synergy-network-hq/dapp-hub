@@ -16,6 +16,20 @@ export function installPreflightObservation(value, parameters, target) {
  return value;
 }
 
+export function masterDraftComparison(master,form) {
+ const check = 'Inspected master comparison';
+ if (!master) return {check,status:'Not inspected',detail:'Optionally inspect the master folder and compare its release and digest with the draft.'};
+ const references = releaseReferenceChecks({release_id:master.release,manifest_sha256:master.manifestSha256});
+ if (references.some(field=>!field.valid)) return {check,status:'Unavailable',detail:'Inspect the master folder again.'};
+ if (releaseReferenceChecks(form).some(field=>!field.valid)) {
+  return {check,status:'Draft references incomplete',detail:'Enter a release ID and manifest digest to compare with the inspected master.'};
+ }
+ const matches = master.release === form.release_id && master.manifestSha256 === form.manifest_sha256;
+ return {check,status:matches?'References match':'References differ',detail:matches
+  ? 'The inspected release and digest match the draft.'
+  : 'The inspected release or digest differs from the current draft.'};
+}
+
 export function installPreflightChecklist({form, target, permitted, capabilities, master, attempt}) {
  const fields = provisioningChecks(form);
  const invalid = fields.filter(field => !field.valid);
@@ -28,28 +42,7 @@ export function installPreflightChecklist({form, target, permitted, capabilities
    : 'Release, manifest, network, chain and node name are ready to submit for native validation.',
  };
 
- let packageReview = {
-  check: 'Inspected master comparison',
-  status: 'Not inspected',
-  detail: 'Optionally inspect the master folder and compare its release and digest with the draft.',
- };
- if (master && permitted) {
-  const references = releaseReferenceChecks({
-   release_id: master.release,
-   manifest_sha256: master.manifestSha256,
-  });
-  if (references.some(field => !field.valid)) {
-   packageReview = {...packageReview, status: 'Unavailable', detail: 'Inspect the approved master folder again.'};
-  } else {
-   const matches = master.release === form.release_id && master.manifestSha256 === form.manifest_sha256;
-   packageReview = {...packageReview,
-    status: matches ? 'References match' : 'References differ',
-    detail: matches
-     ? 'The inspected release and digest match the draft. Check release authorization separately.'
-     : 'Compare the draft with the approved release before using the inspected manifest.',
-   };
-  }
- }
+ const packageReview = masterDraftComparison(permitted ? master : null,form);
 
  const capability = controllerRead(capabilities?.data, 'install_preflight');
  const capabilityAvailable = permitted && !capabilities?.loading && !capabilities?.error && capability.available;

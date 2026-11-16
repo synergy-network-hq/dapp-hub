@@ -153,7 +153,7 @@ export function NodeNetworkApp(){
 
   </div>:tab==='Management'?null:tab==='Updates'?<>
    <UpdatePackage form={form} setForm={setForm}/>
-   <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
+   <MasterReview permitted={permitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster} updateDraft={form}/>
    <SavedUpgradeIntent form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <ReplacementRecoveryReview permitted={permitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
    <MaintenanceComparison permitted={permitted}/>

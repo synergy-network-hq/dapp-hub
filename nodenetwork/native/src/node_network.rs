@@ -2,6 +2,7 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::{Path, Component}};
+use super::node_bootstrap::matches_builtin_release;
 
 fn read_public_bytes(root: &Path, relative: &str) -> Result<Vec<u8>, String> {
     let relative = Path::new(relative);
@@ -62,8 +63,10 @@ pub fn review_master(root: &Path) -> Result<Value, String> {
     let inventory = super::node_master_review::review(&folder, &manifest, &manifest_sha256);
     #[cfg(not(unix))]
     let inventory = json!({"status":"unavailable","reason":"platform"});
+    let builtin_bootstrap_release_match = matches_builtin_release(release, &manifest_sha256);
     Ok(json!({"release":release,"architecture":"Linux x86_64","fileCount":files.len(),
         "manifestSha256":manifest_sha256,"inventory":inventory,
+        "builtinBootstrapReleaseMatch":builtin_bootstrap_release_match,
         "releaseTrustVerified":false,"installAuthorized":false}))
 }
 
@@ -204,6 +207,17 @@ pub fn status() -> Result<Value, String> {
         let bytes = fs::read(root.join("package.json")).unwrap();
         let hash = format!("{:x}", Sha256::digest(&bytes));
         assert_eq!(result["manifestSha256"], hash);
+        assert_eq!(result["builtinBootstrapReleaseMatch"], false);
+        assert_eq!(result["releaseTrustVerified"], false);
+        assert_eq!(result["installAuthorized"], false);
+
+        // The public release ID alone cannot make other manifest bytes match the pin.
+        let mut manifest: Value = serde_json::from_slice(&bytes).unwrap();
+        manifest["release_id"] = json!("synergy-linux-389c509e47e55219");
+        fs::write(root.join("package.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let result = review_master(&root).unwrap();
+        assert_eq!(result["inventory"]["status"], "matched");
+        assert_eq!(result["builtinBootstrapReleaseMatch"], false);
         assert_eq!(result["releaseTrustVerified"], false);
         assert_eq!(result["installAuthorized"], false);
     }
@@ -369,7 +383,9 @@ pub fn status() -> Result<Value, String> {
         let Some(path) = std::env::var_os("SYNERGY_NODE_MASTER_TEST_PATH") else { return };
         let root = Path::new(&path);
         let value = review_master(root).unwrap();
-        assert_eq!(value["manifestSha256"], format!("{:x}", Sha256::digest(fs::read(root.join("package.json")).unwrap())));
+        let pin = format!("{:x}", Sha256::digest(fs::read(root.join("package.json")).unwrap()));
+        assert_eq!(value["manifestSha256"], pin);
+        assert_eq!(value["builtinBootstrapReleaseMatch"], matches_builtin_release(value["release"].as_str().unwrap(), &pin));
         assert_eq!(value["releaseTrustVerified"], false);
         assert_eq!(value["installAuthorized"], false);
     }

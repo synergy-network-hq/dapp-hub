@@ -9,8 +9,11 @@ const BOOTSTRAP:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/boo
 
 const R5_RELEASE:&str="synergy-linux-389c509e47e55219";
 const R5_PIN:&str="43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b";
+pub(super) fn matches_builtin_release(release:&str,pin:&str)->bool{
+    release==R5_RELEASE&&pin==R5_PIN
+}
 fn authenticate_release(release:&str,pin:&str)->Result<(),String>{
-    if release==R5_RELEASE&&pin==R5_PIN{return Ok(());}
+    if matches_builtin_release(release,pin){return Ok(());}
     if cfg!(debug_assertions)&&option_env!("SYNERGY_NODENETWORK_QUALIFICATION_MANIFEST_SHA256").is_some_and(|approved|approved==pin){return Ok(());}
     Err("The selected release has no independent native approval. Self-declared manifests cannot authorize privileged installation.".into())
 }
@@ -168,6 +171,16 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
         assert!(authenticate_release("self-declared",&pin).is_err());
         assert!(authenticate_release(R5_RELEASE,R5_PIN).is_ok());
         assert!(authenticate_release("different-release",R5_PIN).is_err());
+    }
+    #[test] fn builtin_release_reference_requires_the_exact_owner_id_and_digest(){
+        // Testnet v3 613fa6ab build_package.py: R5_RELEASE and R5_MANIFEST_SHA256.
+        let release="synergy-linux-389c509e47e55219";
+        let pin="43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b";
+        assert!(matches_builtin_release(release,pin));
+        assert!(authenticate_release(release,pin).is_ok());
+        assert!(!matches_builtin_release("different-release",pin));
+        assert!(!matches_builtin_release(release,&"a".repeat(64)));
+        assert!(!matches_builtin_release(release,&pin.to_uppercase()));
     }
     #[test] fn static_tar_and_operator_contract_is_restricted(){
         assert!(safe_member("tools/controller.py"));for name in ["/etc/passwd","../keys","a/../b","a\\b"]{assert!(!safe_member(name));}

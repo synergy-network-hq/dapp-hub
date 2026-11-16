@@ -1,4 +1,6 @@
 import {Card, Detail, ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
+import {masterDraftComparison} from './install-preflight.js';
+import {R5_BASELINE,releaseReferenceChecks} from './nodeNetwork.js';
 
 const inventoryReasons = {
  changed: 'The folder changed during inspection. Inspect a stable copy of the package.',
@@ -62,13 +64,27 @@ function InventoryEvidence({master}) {
  return <p role="status">The native inspection supplied no supported local file verification result.</p>;
 }
 
-export function MasterReview({permitted, reviewing, master, error, onInspect}) {
+function BuiltinBootstrapReference({master}) {
+ const {release,manifestSha256,releaseTrustVerified,installAuthorized} = master;
+ const references = {release_id:release,manifest_sha256:manifestSha256};
+ const expected = release === R5_BASELINE.release_id && manifestSha256 === R5_BASELINE.manifest_sha256;
+ const reported = master.builtinBootstrapReleaseMatch;
+ const supported = releaseReferenceChecks(references).every(field=>field.valid)
+  && reported === expected && releaseTrustVerified === false && installAuthorized === false;
+ if (!supported) return <p role="status">Built-in R5 bootstrap reference comparison is unavailable.</p>;
+ return <p role="status">{reported ? 'The manifest matches the built-in R5 bootstrap release ID and SHA-256.'
+  : 'The manifest differs from the built-in R5 bootstrap release ID or SHA-256.'}</p>;
+}
+
+export function MasterReview({permitted, reviewing, master, error, onInspect, updateDraft}) {
  return <Card title="Node architecture master">
   <button disabled={!permitted || reviewing} onClick={onInspect}>{reviewing ? 'Inspecting…' : 'Inspect Synergy master folder'}</button>
   {permitted && <ErrorMessage error={error}/>}
   {permitted && master && <>
    <Detail data={{release:master.release, architecture:master.architecture, declaredFiles:master.fileCount, manifestSha256:master.manifestSha256}}/>
+   <BuiltinBootstrapReference master={master}/>
    <InventoryEvidence master={master}/>
+   {updateDraft && <p role="status">{masterDraftComparison(master,updateDraft).detail}</p>}
   </>}
   <p>Verify the manifest digest against the independently approved release. Installation and updates require separate authorization.</p>
  </Card>;

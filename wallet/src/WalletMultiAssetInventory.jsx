@@ -3,11 +3,13 @@ import {Card, Detail, Resource, Table, rpcMultiAssetInventoryObservation} from '
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {ownerMultiAssetObservation, RPC_MULTI_ASSET_LIMIT} from './collectible-observations.js';
 import {useWalletOwnerSnapshot} from './wallet-owner-readiness.js';
+import {WalletMultiAssetItemCheck} from './WalletMultiAssetItemCheck.jsx';
 
 const columns = [{key: 'itemId', label: 'Item ID'}, {key: 'collectionId', label: 'Collection'},
   {key: 'amount', label: 'Reported atomic quantity'}];
 
-function MultiAssetRows({items}) {
+function MultiAssetRows({inventory, endpoint, canRead}) {
+  const {items} = inventory;
   const [collection, setCollection] = useState('');
   const [selection, setSelection] = useState(null);
   const collections = [...new Set(items.map(item => item.collectionId))];
@@ -28,6 +30,7 @@ function MultiAssetRows({items}) {
       <h3>Item {selected.itemId}</h3>
       <Detail data={{collectionId: selected.collectionId, itemId: selected.itemId,
         reportedOwner: selected.ownerAddress, reportedAtomicQuantity: selected.amount}}/>
+      <WalletMultiAssetItemCheck key={selected.key} {...{endpoint, inventory, selected, canRead}}/>
     </aside>}
   </>;
 }
@@ -46,8 +49,8 @@ export function WalletMultiAssetInventory({account, endpoint, canRead}) {
       {requested && <Resource value={{...observation, reload: undefined}}>{value => <>
         <SourceAge source="Selected RPC multi-asset snapshot" updatedAt={value.receivedAt}/>
         <Detail data={{reportedSnapshotHeight: value.snapshotHeight, reportedSnapshotHash: value.snapshotHash}}/>
-        <p>The balance response supplies atomic quantities. Item type, decimal precision and media are unavailable.</p>
-        <MultiAssetRows items={value.items}/>
+        <p>The balance response supplies atomic quantities. Select an item to check its reported type and decimal precision.</p>
+        <MultiAssetRows inventory={value} {...{endpoint, canRead}}/>
       </>}</Resource>}
     </> : <p>A current protected Wallet address is required for this check.</p>}
   </Card>;

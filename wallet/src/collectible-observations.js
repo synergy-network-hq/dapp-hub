@@ -185,3 +185,31 @@ export function ownerMultiAssetObservation(response, account, readiness) {
   });
   return {...snapshot, items};
 }
+
+const multiAssetItemTypes = {fungible: 'Fungible', non_fungible: 'Non-fungible', semi_fungible: 'Semi-fungible'};
+const multiAssetTransferPolicies = {open: 'Open', non_transferable: 'Non-transferable', authority_only: 'Authority only'};
+
+// Testnet-v3 release a6a434f2, sts_multi_asset_item_json and sts_multi_asset_item_item_json.
+export function multiAssetItemObservation(response, selected, inventory, readiness) {
+  const snapshot = collectibleSnapshot(response, readiness, 'multi-asset item');
+  const item = response.value.item;
+  if (item?.asset_kind !== 'multi_asset_item' || item.collection_id !== selected.collectionId ||
+      !isStsMultiAssetCollectionId(item.collection_id) || exactRpcAmount(item.item_id, maxU64) !== selected.itemId) {
+    throw Error('The selected RPC did not return the selected collection and item ID.');
+  }
+  if (BigInt(snapshot.snapshotHeight) < BigInt(inventory.snapshotHeight) ||
+      (snapshot.snapshotHeight === inventory.snapshotHeight && snapshot.snapshotHash !== inventory.snapshotHash)) {
+    throw Error('The item definition snapshot is older or conflicts with the selected holding. Check the holdings again.');
+  }
+  const {item_type, decimals, transfer_policy, metadata_hash} = item;
+  const total = exactRpcAmount(item.total_supply, maxU128), maximum = exactRpcAmount(item.max_supply, maxU128);
+  if (typeof item_type !== 'string' || !Object.hasOwn(multiAssetItemTypes, item_type) ||
+      typeof transfer_policy !== 'string' || !Object.hasOwn(multiAssetTransferPolicies, transfer_policy) ||
+      !Number.isInteger(decimals) || decimals < 0 || decimals > 9 || (item_type === 'non_fungible' && decimals !== 0) ||
+      total === null || (item.max_supply !== null && (maximum === null || BigInt(maximum) < BigInt(total))) ||
+      (metadata_hash !== null && !metadataHash(metadata_hash))) {
+    throw Error('The selected RPC returned unsupported item definition fields.');
+  }
+  return {...snapshot, type: multiAssetItemTypes[item_type], policy: multiAssetTransferPolicies[transfer_policy],
+    decimals, total, maximum, metadataHash: metadata_hash};
+}
