@@ -21,6 +21,17 @@ export async function nodeNetworkReviewCustodyReceipt(target, recordId, operatio
  }
  return reply.status;
 }
+export async function nodeNetworkReviewUpgradeReceipt(target,recordId,selection) {
+ if (!isTauri()) throw Error('The upgrade receipt review requires the native Portal app.');
+ const reply=await invoke('portal_nodenetwork_review_upgrade_receipt',{
+  target,recordId,releaseId:selection.release_id,manifestSha256:selection.manifest_sha256,
+ });
+ if (!reply || typeof reply!=='object' || Array.isArray(reply) || Object.keys(reply).length!==2
+  || reply.schema!=='nodenetwork-upgrade-receipt-review-v1' || !['match','different','unavailable'].includes(reply.status)) {
+  throw Error('The native bridge returned unsupported upgrade receipt evidence.');
+ }
+ return reply.status;
+}
 // First-party native extension only; remote community HTML has no Tauri bridge.
 export async function nodeNetworkHostStatus(){if(!isTauri())throw new Error('Open the native Portal app to inspect this machine.');return invoke('portal_nodenetwork_status');}
 export async function nodeNetworkReviewMaster(){if(!isTauri())throw new Error('Open the native Portal app to inspect the node master.');return invoke('portal_nodenetwork_review_master');}

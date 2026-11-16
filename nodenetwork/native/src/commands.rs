@@ -28,6 +28,51 @@ pub async fn portal_nodenetwork_review_formation_receipt(window:tauri::WebviewWi
  read_custody_receipt(window,app,target,record_id,CustodyReceiptKind::Formation).await
 }
 
+#[tauri::command]
+pub async fn portal_nodenetwork_review_upgrade_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
+ target:node_controller::Target,record_id:String,release_id:String,manifest_sha256:String)->Result<Value,String>{
+ main_only(&window)?;
+ target.validate()?;
+ let selection=node_controller::Request{version:1,operation:"upgrade".into(),
+  parameters:serde_json::json!({"release_id":release_id,"manifest_sha256":manifest_sha256})};
+ let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
+ let journal=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable.")?;
+ let serial=node_controller::SERIAL.lock().await;
+ review_upgrade_receipt(&target,&record_id,&selection,&journal,|request| {
+  let (target,directory,serial)=(&target,&directory,&serial);
+  async move {
+   if request.operation=="target" {
+    node_controller::execute_locked(target,&request,directory,None,serial).await
+   } else {
+    node_controller::execute_receipt_raw_locked(target,&request,directory,serial).await
+   }
+  }
+ }).await
+}
+
+async fn review_upgrade_receipt<Fut>(target:&node_controller::Target,record_id:&str,selection:&node_controller::Request,
+ journal:&Path,mut read:impl FnMut(node_controller::Request)->Fut)->Result<Value,String>
+where Fut:Future<Output=Result<Value,String>> {
+ if selection.operation!="upgrade" || !selection.validate()? {return Err("Select an exact upgrade request review.".into());}
+ let fingerprint=target.journal_identity();
+ let digest=selection.approval_id();
+ let lookup=||request_journal::unresolved_upgrade_receipt(journal,&fingerprint,record_id,&digest);
+ let record=lookup()?;
+ let recheck=|| {
+  if lookup()?==record {return Ok(());}
+  Err("The selected upgrade dispatch changed. Refresh local history and select it again.".to_owned())
+ };
+ let query=|operation:&str|node_controller::Request{version:1,operation:operation.into(),parameters:serde_json::json!({})};
+ let controller=read(query("target")).await;
+ recheck()?;
+ let status=if controller.as_ref().is_ok_and(|reply|node_controller::supports_receipt_review(reply,"diagnostics")) {
+  let diagnostics=read(query("diagnostics")).await;
+  recheck()?;
+  diagnostics.as_ref().map_or("unavailable",|reply|crate::node_diagnostics::upgrade_receipt_status(reply,&selection.parameters["manifest_sha256"]))
+ } else {"unavailable"};
+ Ok(serde_json::json!({"schema":"nodenetwork-upgrade-receipt-review-v1","status":status}))
+}
+
 async fn read_custody_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,
  record_id:String,kind:CustodyReceiptKind)->Result<Value,String>{
  main_only(&window)?;
@@ -41,7 +86,7 @@ async fn read_custody_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,t
    if request.operation=="target" {
     node_controller::execute_locked(target,&request,directory,None,serial).await
    } else {
-    node_controller::execute_custody_receipt_raw_locked(target,&request,directory,serial).await
+    node_controller::execute_receipt_raw_locked(target,&request,directory,serial).await
    }
   }
  }).await
@@ -65,7 +110,7 @@ where Fut:Future<Output=Result<Value,String>> {
   CustodyReceiptKind::GenesisBinding=>("nodenetwork-genesis-binding-receipt-review-v1","genesis_binding_preflight"),
   CustodyReceiptKind::Formation=>("nodenetwork-formation-receipt-review-v1","formation_status"),
  };
- let status=if controller.as_ref().is_ok_and(|reply|node_controller::supports_custody_receipt_review(reply,read_operation)) {
+ let status=if controller.as_ref().is_ok_and(|reply|node_controller::supports_receipt_review(reply,read_operation)) {
   match (read(query(read_operation)).await,kind) {
    (Ok(reply),CustodyReceiptKind::GenesisStaging)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),"stage_request_sha256"),
    (Ok(reply),CustodyReceiptKind::GenesisBinding)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),"request_sha256"),
@@ -1405,6 +1450,84 @@ mod tests {
     assert_eq!(outcome.unwrap()["ok"],false);
    }
    std::fs::remove_dir_all(&journal).unwrap();
+  }
+ }
+
+ fn upgrade_receipt_fixture()->(Target,Request,PathBuf,Value,Value) {
+  let (target,selection,journal,mut report,_,_)=reviewed_upgrade_fixture();
+  report["result"]["operations"]=json!([{"operation":"diagnostics","kind":"read","available":true,"blocker":null}]);
+  let diagnostics=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-diagnostics-v1","observed_at_ms":200,
+   "installation":{"role":"validator","network_id":"fixture-network","node_name":"fixture-private-node","chain_id":"18446744073709551615",
+    "package_sha256":selection.parameters["manifest_sha256"]},"services":{"node":null,"vpn":null},
+   "storage":{"capacity_bytes":100,"available_bytes":50},"log":{"available":false,"size_bytes":null,
+    "window_bytes":0,"complete_lines":0,"severity":{"error":0,"warn":0,"info":0,"debug":0,"trace":0,"unclassified":0}}}});
+  (target,selection,journal,report,diagnostics)
+ }
+
+ #[test]
+ fn reviewed_upgrade_receipt_compares_only_reported_installation_and_preserves_journal_bytes() {
+  let (target,selection,journal,report,diagnostics)=upgrade_receipt_fixture();
+  // Exact hash also emitted by the pinned Testnet owner for this request.
+  assert_eq!(selection.approval_id(),"9c4f1dc658029d4de17f8466073297e964e8feb130e0be44d8ade4cf50f24f95");
+  request_journal::Dispatch::begin(&journal,&target.journal_identity(),"upgrade",&selection.canonical()).unwrap()
+   .finish(&Err("unknown outcome".into())).unwrap();
+  let history=request_journal::inspect(&journal).unwrap();
+  let record_id=history["records"][0]["id"].as_str().unwrap();
+  let entry=journal.join("nodenetwork-requests-v1").join(format!("{record_id}.json"));
+  let original=std::fs::read(&entry).unwrap();
+  let mut different=diagnostics.clone();
+  different["result"]["installation"]["package_sha256"]=json!("b".repeat(64));
+  let mut invalid=diagnostics.clone();
+  invalid["result"]["installation"]["chain_id"]=json!(1266);
+  let mut unsupported=report.clone();
+  unsupported["result"]["operations"][0]["kind"]=json!("mutation");
+  for (controller,reply,status,count) in [(report.clone(),Ok(diagnostics),"match",2),(report.clone(),Ok(different),"different",2),
+   (report.clone(),Ok(invalid),"unavailable",2),(report,Err("private fixture".into()),"unavailable",2),
+   (unsupported,Err("not admitted".into()),"unavailable",1)] {
+   let mut calls=Vec::new();
+   let result=tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&selection,&journal,|query| {
+    calls.push(query.canonical());
+    std::future::ready(match query.operation.as_str(){"target"=>Ok(controller.clone()),"diagnostics"=>reply.clone(),_=>panic!("unadmitted request")})
+   })).unwrap();
+   assert_eq!(result,json!({"schema":"nodenetwork-upgrade-receipt-review-v1","status":status}));
+   let expected=["target","diagnostics"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}}));
+   assert_eq!(calls,&expected[..count]);
+   assert_eq!(std::fs::read(&entry).unwrap(),original);
+   assert_eq!(request_journal::inspect(&journal).unwrap(),history);
+  }
+  assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"upgrade",&selection.canonical()).is_err());
+  std::fs::remove_dir_all(journal).unwrap();
+ }
+
+ #[test]
+ fn reviewed_upgrade_receipt_refuses_wrong_request_before_transport_and_retires_drift() {
+  for changed_at in ["target","diagnostics"] {
+   let (target,selection,journal,report,diagnostics)=upgrade_receipt_fixture();
+   let dispatch=request_journal::Dispatch::begin(&journal,&target.journal_identity(),"upgrade",&selection.canonical()).unwrap();
+   let history=request_journal::inspect(&journal).unwrap();
+   let record_id=history["records"][0]["id"].as_str().unwrap();
+   let mut wrong=selection.clone();
+   wrong.parameters["release_id"]=json!("other-fixture-release");
+   let denied=tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&wrong,&journal,
+    |_| -> std::future::Ready<Result<Value,String>> {panic!("wrong release must refuse before transport")}));
+   assert!(denied.unwrap_err().contains("do not match this upgrade dispatch"));
+   wrong.parameters["release_id"]=selection.parameters["release_id"].clone();
+   wrong.parameters["manifest_sha256"]=json!("z".repeat(64));
+   assert!(tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&wrong,&journal,
+    |_| -> std::future::Ready<Result<Value,String>> {panic!("invalid digest must refuse before transport")})).is_err());
+   let foreign=Target{kind:"remote".into(),host:Some("another-fixture.invalid".into()),port:None,root:ROOT.into()};
+   assert!(tauri::async_runtime::block_on(review_upgrade_receipt(&foreign,record_id,&selection,&journal,
+    |_| -> std::future::Ready<Result<Value,String>> {panic!("wrong target must refuse before transport")})).is_err());
+   let mut pending=Some(dispatch);
+   let mut calls=Vec::new();
+   let drift=tauri::async_runtime::block_on(review_upgrade_receipt(&target,record_id,&selection,&journal,|query| {
+    if query.operation==changed_at {pending.take().unwrap().finish(&Err("record progressed".into())).unwrap();}
+    calls.push(query.operation.clone());
+    std::future::ready(Ok(if query.operation=="target" {report.clone()} else {diagnostics.clone()}))
+   }));
+   assert!(drift.unwrap_err().contains("selected upgrade dispatch changed"));
+   assert_eq!(calls,if changed_at=="target" {vec!["target"]} else {vec!["target","diagnostics"]});
+   std::fs::remove_dir_all(journal).unwrap();
   }
  }
 

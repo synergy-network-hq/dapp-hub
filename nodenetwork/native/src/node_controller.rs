@@ -770,7 +770,7 @@ fn genesis_binding_reply(reply: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
-pub(super) fn supports_custody_receipt_review(reply: &Value, read: &str) -> bool {
+pub(super) fn supports_receipt_review(reply: &Value, read: &str) -> bool {
     qualified_software_target(reply, true, &[(read, "read")])
 }
 
@@ -803,39 +803,39 @@ pub(super) fn exact_genesis_mutation_reply(reply: &Value) -> bool {
         }
 }
 
-// Owner Genesis success and refusal objects have scalar fields. The enrollment
-// document is an exact string, whose bytes are checked separately.
-struct UniqueGenesisReply(serde_json::Map<String,Value>);
+// Receipt identity fields are checked before a JSON object can discard duplicate
+// keys. Genesis enrollment remains an exact string checked separately.
+struct UniqueReceiptObject(serde_json::Map<String,Value>);
 
-impl<'de> Deserialize<'de> for UniqueGenesisReply {
+impl<'de> Deserialize<'de> for UniqueReceiptObject {
     fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
         struct UniqueFields;
         impl<'de> de::Visitor<'de> for UniqueFields {
-            type Value = UniqueGenesisReply;
+            type Value = UniqueReceiptObject;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("an owner Genesis response object with unique field names")
+                formatter.write_str("an owner receipt object with unique field names")
             }
 
             fn visit_map<M: de::MapAccess<'de>>(self, mut input: M) -> Result<Self::Value, M::Error> {
                 let mut fields = serde_json::Map::new();
                 while let Some(key) = input.next_key::<String>()? {
-                    if fields.contains_key(&key) { return Err(de::Error::custom("duplicate Genesis response field")); }
+                    if fields.contains_key(&key) { return Err(de::Error::custom("duplicate owner receipt field")); }
                     let value = match key.as_str() {
-                        "result" | "error" => Value::Object(input.next_value::<UniqueGenesisReply>()?.0),
+                        "result" | "error" | "installation" => Value::Object(input.next_value::<UniqueReceiptObject>()?.0),
                         _ => input.next_value()?,
                     };
                     fields.insert(key, value);
                 }
-                Ok(UniqueGenesisReply(fields))
+                Ok(UniqueReceiptObject(fields))
             }
         }
         decoder.deserialize_map(UniqueFields)
     }
 }
 
-fn decode_genesis_mutation_reply(bytes: &[u8]) -> serde_json::Result<Value> {
-    serde_json::from_slice::<UniqueGenesisReply>(bytes).map(|fields| Value::Object(fields.0))
+fn decode_receipt_reply(bytes: &[u8]) -> serde_json::Result<Value> {
+    serde_json::from_slice::<UniqueReceiptObject>(bytes).map(|fields| Value::Object(fields.0))
 }
 
 fn genesis_bind_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
@@ -1108,16 +1108,16 @@ pub(super) async fn execute_genesis_stage_locked(target:&Target,wire:&str,contro
     exchange(target,wire.as_bytes(),180,control_dir,None,true).await
 }
 
-pub(super) async fn execute_custody_receipt_raw_locked(target:&Target,request:&Request,control_dir:&Path,
+pub(super) async fn execute_receipt_raw_locked(target:&Target,request:&Request,control_dir:&Path,
     _serial:&tokio::sync::MutexGuard<'_, ()>) -> Result<Value,String> {
     // Only the native journal comparison consumes these unprojected, fixed reads.
-    if !matches!(request.operation.as_str(),"genesis_binding_preflight"|"formation_status") || request.validate()? {
-        return Err("Unsupported custody receipt read.".into());
+    if !matches!(request.operation.as_str(),"genesis_binding_preflight"|"formation_status"|"diagnostics") || request.validate()? {
+        return Err("Unsupported receipt review read.".into());
     }
-    exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None,false).await
+    exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None,request.operation=="diagnostics").await
 }
 
-async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known_hosts:Option<&Path>,genesis_mutation:bool) -> Result<Value,String> {
+async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known_hosts:Option<&Path>,strict_receipt:bool) -> Result<Value,String> {
     target.validate()?;
     if !cfg!(unix) { return Err("This Portal platform has no qualified native controller transport.".into()); }
     let mut command = if target.kind=="local" {
@@ -1141,7 +1141,7 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         if bytes.len()>LIMIT as usize { return Err("Controller response exceeds safe limit."); }
         let status=child.wait().await.map_err(|_|"Controller did not finish.")?;
         if !status.success() { return Err("Controller connection failed. Check enrolled target, pinned SSH identity, agent authentication and restricted sudo policy."); }
-        let decoded=if genesis_mutation {decode_genesis_mutation_reply(&bytes)} else {serde_json::from_slice(&bytes)};
+        let decoded=if strict_receipt {decode_receipt_reply(&bytes)} else {serde_json::from_slice(&bytes)};
         let value:Value=decoded.map_err(|_|"Controller returned an invalid response.")?;
         if value["version"]!=1 || !value["ok"].is_boolean() { return Err("Unsupported controller response."); }
         Ok(value)
@@ -1789,15 +1789,20 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
 
     #[test] fn genesis_bind_and_stage_reject_ambiguous_raw_response_keys() {
         let valid=genesis_binding_fixture(true);
-        assert_eq!(decode_genesis_mutation_reply(valid.to_string().as_bytes()).unwrap(),valid);
+        assert_eq!(decode_receipt_reply(valid.to_string().as_bytes()).unwrap(),valid);
         for wire in [
             r#"{"version":1,"ok":true,"o\u006b":false,"error":{"code":"x","message":"y"}}"#,
             r#"{"version":1,"ok":false,"error":{"code":"x","message":"old","message":"new"}}"#,
             r#"{"version":1,"ok":true,"result":{"staged":false,"staged":true}}"#,
             r#"{"version":1,"ok":true,"result":{"bound":false,"boun\u0064":true}}"#,
         ] {
-            assert!(decode_genesis_mutation_reply(wire.as_bytes()).is_err());
+            assert!(decode_receipt_reply(wire.as_bytes()).is_err());
         }
+    }
+
+    #[test] fn reviewed_upgrade_receipt_rejects_ambiguous_raw_installation_identity() {
+        let raw=r#"{"version":1,"ok":true,"result":{"installation":{"package_sha256":"first","package_sha\u0032\u0035\u0036":"second"}}}"#;
+        assert!(decode_receipt_reply(raw.as_bytes()).is_err());
     }
 
     #[test] fn genesis_stage_and_bind_target_gate_requires_exact_distinct_owner_capabilities() {

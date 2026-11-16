@@ -46,6 +46,10 @@ export function matchesUnresolvedCustodyReceipt(record, fingerprint) {
  return matchesUnresolvedDispatch(record, fingerprint) && custodyReceiptOperations.includes(record.operation);
 }
 
+export function matchesUnresolvedUpgradeReceipt(record, fingerprint) {
+ return matchesUnresolvedDispatch(record, fingerprint) && record.operation === 'upgrade';
+}
+
 export function retainsUnresolvedDispatch(records, reviewed, fingerprint) {
  const record = records.find(entry => entry.id === reviewed.id);
  return matchesUnresolvedDispatch(reviewed, fingerprint) && matchesUnresolvedDispatch(record, fingerprint)

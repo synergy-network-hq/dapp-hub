@@ -193,11 +193,22 @@ impl CustodyReceiptKind {
 }
 
 pub(super) fn unresolved_custody_receipt(base: &Path, target: &Value, record_id: &str, kind: CustodyReceiptKind) -> Result<Record, String> {
-    let label = kind.label();
+    unresolved_dispatch(base,target,record_id,kind.operation(),kind.label())
+}
+
+pub(super) fn unresolved_upgrade_receipt(base: &Path, target: &Value, record_id: &str, request_digest: &str) -> Result<Record, String> {
+    let record=unresolved_dispatch(base,target,record_id,"upgrade","upgrade")?;
+    if record.request_digest!=request_digest {
+        return Err("The entered release and manifest do not match this upgrade dispatch.".into());
+    }
+    Ok(record)
+}
+
+fn unresolved_dispatch(base: &Path, target: &Value, record_id: &str, operation: &str, label: &str) -> Result<Record, String> {
     if !pin(record_id) { return Err(format!("Select an exact local {label} journal entry.")); }
     let target_digest = digest(target);
     inspect_records(base)?.into_iter().find(|record| record.id == record_id && record.target_digest == target_digest
-        && record.operation == kind.operation() && matches!(record.state.as_str(), "dispatch_intent" | "uncertain"))
+        && record.operation == operation && matches!(record.state.as_str(), "dispatch_intent" | "uncertain"))
         .ok_or_else(|| format!("The unresolved {label} entry does not match this target. Refresh local history and select it again."))
 }
 

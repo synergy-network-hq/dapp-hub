@@ -172,6 +172,11 @@ pub(super) fn reply(value: &Value) -> Result<Value, &'static str> {
     }}))
 }
 
+pub(super) fn upgrade_receipt_status(value: &Value, expected_pin: &Value) -> &'static str {
+    if reply(value).is_err() { return "unavailable"; }
+    if &value["result"]["installation"]["package_sha256"] == expected_pin { "match" } else { "different" }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
