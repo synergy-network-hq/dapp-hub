@@ -4,6 +4,15 @@ const readiness = ['ready', 'pending', 'blocked'];
 const fieldCount = (value, count) => value && typeof value === 'object'
  && !Array.isArray(value) && Object.keys(value).length === count;
 
+export const nodeServiceActions = Object.freeze(['start','stop','restart']);
+
+export function nodeServiceActionObservation(operation,value) {
+ if (!nodeServiceActions.includes(operation) || !fieldCount(value,2) || value.requested !== operation || value.healthNotInferred !== true) {
+  throw Error('Node service action outcome is uncertain. Inspect the selected controller before another change.');
+ }
+ return {requested:operation,healthNotInferred:true};
+}
+
 export function targetHealthObservation(value) {
  const unsupported = 'The selected controller returned unsupported service health evidence.';
  if (!fieldCount(value, 2) || value.schema_version !== 1

@@ -41,3 +41,15 @@ export function installedControllerRead(controller, operation) {
  }
  return capability;
 }
+
+export function installedControllerMutation(controller,operation) {
+ const capability = controllerOperation(controller,operation);
+ if (!capability.available) return capability;
+ const {summary} = controller;
+ if (summary?.controllerVersion !== 1 || summary.controllerReportedInstalled !== true
+  || summary.reportedPlatform !== 'linux' || summary.reportedArchitecture !== 'x86_64' || summary.controllerReportedLocalSupport !== true
+  || controller.operations.find(row=>row?.operation===operation)?.kind !== 'mutation') {
+  return {available:false,blocker:'An installed Linux x86-64 controller must advertise this exact action.'};
+ }
+ return capability;
+}

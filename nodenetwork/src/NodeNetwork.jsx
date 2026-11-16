@@ -179,6 +179,6 @@ export function NodeNetworkApp(){
   {tab==='Management'&&!target&&<CustodyStatus onOpenHistory={()=>setSection('logs')}/>}
   {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted} target={target}/>}
   {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} onOpenDiagnostics={()=>setSection('logs')}
-   canEnroll={()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&targetSettings.targetIsCurrent()}/>}
+   targetScopeCurrent={()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&targetSettings.targetIsCurrent()}/>}
  </NodeNetworkPanelFrame>;
 }

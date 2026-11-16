@@ -261,6 +261,30 @@ fn vpn_enrollment_reply(reply: &Value) -> Result<Value, &'static str> {
     Ok(result)
 }
 
+fn node_service_reply(operation: &str, reply: &Value) -> Result<Value, &'static str> {
+    const UNCERTAIN: &str = "Node service action outcome is uncertain. Inspect the selected controller before another change.";
+    if reply["ok"] == false {
+        // Only the pinned controller's exact pre-dispatch refusals release the local journal fence.
+        let error = &reply["error"];
+        let (code, message) = match (error["code"].as_str(), error["message"].as_str()) {
+            (Some("vpn_readiness_required"), Some("Current native VPN must match the recorded, independently server-bound validator peer"))
+                if operation != "stop" => ("vpn_readiness_required", "The controller could not confirm the current bound VPN. Read VPN status again."),
+            (Some("qualification_required"), Some("Operation has not passed host qualification")) =>
+                ("qualification_required", "The host policy does not qualify this node service action."),
+            (Some("authorization_required"), Some("Exact request needs one-time host operator authorization" | "Host authorization expired or differs")) =>
+                ("authorization_required", "A matching one-use host grant is required for this node service action."),
+            _ => return Err(UNCERTAIN),
+        };
+        return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
+    }
+    let result = &reply["result"];
+    if reply["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 2)
+        || result["requested"] != operation || result["healthNotInferred"] != true {
+        return Err(UNCERTAIN);
+    }
+    Ok(json!({"version":1,"ok":true,"result":{"requested":operation,"healthNotInferred":true}}))
+}
+
 fn lowercase_digest(value: &Value) -> bool {
     value.as_str().is_some_and(|pin| pin.len() == 64 && pin.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
 }
@@ -489,6 +513,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
             "uninstall_preflight" => crate::node_removal_scope::reply(&value),
             "vpn_status" => vpn_status_reply(&value),
             "vpn_enroll" => vpn_enrollment_reply(&value),
+            "start" | "stop" | "restart" => node_service_reply(&request.operation, &value),
             "identity_preflight" | "formation_preflight" => preparation_reply(&request.operation, &value),
             "genesis_binding_preflight" => genesis_binding_reply(&value),
             "genesis_stage_preflight" => genesis_stage_policy_reply(&value),
@@ -654,6 +679,65 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert_eq!(request.validate(), Ok(false));
         request.parameters = json!({"address":"fixture"});
         assert!(request.validate().is_err());
+    }
+    #[test] fn node_service_actions_are_empty_mutations_with_exact_acknowledgements() {
+        for operation in ["start","stop","restart"] {
+            let mut request=Request{version:1,operation:operation.into(),parameters:json!({})};
+            assert_eq!(request.validate(),Ok(true));
+            request.parameters=json!({"service":"fixture"});
+            assert!(request.validate().is_err());
+            let result=json!({"requested":operation,"healthNotInferred":true});
+            let reply=json!({"version":1,"ok":true,"result":result,"metadata":"fixture"});
+            assert_eq!(node_service_reply(operation,&reply),Ok(json!({"version":1,"ok":true,"result":result})));
+            for invalid in [json!({"requested":"another","healthNotInferred":true}),
+                            json!({"requested":operation,"healthNotInferred":false}),
+                            json!({"requested":operation,"healthNotInferred":true,"ready":true})] {
+                assert!(node_service_reply(operation,&json!({"version":1,"ok":true,"result":invalid})).is_err());
+            }
+        }
+    }
+    #[test] fn node_service_replies_distinguish_exact_owner_refusals_from_uncertain_outcomes() {
+        let refused=|code,message| json!({"version":1,"ok":false,"error":{"code":code,"message":message}});
+        let vpn=refused("vpn_readiness_required","Current native VPN must match the recorded, independently server-bound validator peer");
+        assert_eq!(node_service_reply("start",&vpn).unwrap()["error"]["code"],"vpn_readiness_required");
+        assert_eq!(node_service_reply("restart",&vpn).unwrap()["error"]["code"],"vpn_readiness_required");
+        assert!(node_service_reply("stop",&vpn).is_err());
+        for (code,message) in [
+            ("qualification_required","Operation has not passed host qualification"),
+            ("authorization_required","Exact request needs one-time host operator authorization"),
+            ("authorization_required","Host authorization expired or differs"),
+        ] {
+            let result=node_service_reply("start",&refused(code,message)).unwrap();
+            assert_eq!(result["ok"],false);
+            assert_eq!(result["error"]["code"],code);
+            assert_ne!(result["error"]["message"],message);
+        }
+        for code in ["qualification_required","authorization_required","vpn_readiness_required","operation_refused"] {
+            let error=node_service_reply("start",&refused(code,"fixture private detail")).unwrap_err();
+            assert!(error.contains("outcome is uncertain"));
+            assert!(!error.contains("fixture"));
+        }
+    }
+    #[cfg(unix)]
+    #[test] fn node_service_ambiguous_acknowledgement_fences_start_without_inferring_health() {
+        use crate::request_journal::{inspect,Dispatch};
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base=std::env::temp_dir().canonicalize().unwrap().join(format!("nodenetwork-start-journal-{}-{stamp}",std::process::id()));
+        let target=json!({"kind":"remote","host":"fixture.invalid","port":22,"root":ROOT});
+        let request=Request{version:1,operation:"start".into(),parameters:json!({})}.canonical();
+        let run=|reply| {
+            Dispatch::begin(&base,&target,"start",&request).unwrap()
+                .finish(&node_service_reply("start",&reply).map_err(String::from)).unwrap();
+        };
+        run(json!({"version":1,"ok":true,"result":{"requested":"start","healthNotInferred":true}}));
+        run(json!({"version":1,"ok":true,"result":{"requested":"restart","healthNotInferred":true}}));
+        let history=inspect(&base).unwrap();
+        let records=history["records"].as_array().unwrap();
+        assert!(records.iter().any(|row| row["operation"] == "start" && row["state"] == "response_received" && row["response_ok"] == true));
+        assert!(records.iter().any(|row| row["operation"] == "start" && row["state"] == "uncertain" && row["response_ok"].is_null()));
+        assert!(Dispatch::begin(&base,&target,"start",&request).is_err());
+        assert!(!history.to_string().contains("health"));
+        std::fs::remove_dir_all(base).unwrap();
     }
     #[test] fn vpn_enrollment_is_a_fixed_empty_mutation() {
         let mut request = Request{version:1,operation:"vpn_enroll".into(),parameters:json!({})};

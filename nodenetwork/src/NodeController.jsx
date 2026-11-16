@@ -4,18 +4,18 @@ import {Card,Detail,ErrorMessage,useResource,Resource,Table} from "@synergy-netw
 import {controllerOperation,installParameters} from './nodeNetwork.js';
 import {installPreflightChecklist,installPreflightObservation} from './install-preflight.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
-import {controllerRead,installedControllerRead,targetControllerObservation} from './target-observation.js';
+import {controllerRead,installedControllerMutation,installedControllerRead,targetControllerObservation} from './target-observation.js';
 import {ControllerUpdate} from './UpdatePackage.jsx';
 import {upgradePreflightObservation} from './upgrade-preflight.js';
 import {ControllerRemoval} from './Offboarding.jsx';
 import {removalPreflightObservation} from './removal-preflight.js';
 import {VpnStatus} from './VpnStatus.jsx';
-import {vpnEnrollmentBlocker,vpnEnrollmentObservation,vpnEnrollmentSupported,vpnStatusObservation} from './vpn-status.js';
+import {validatorStartupBlocker,vpnEnrollmentBlocker,vpnEnrollmentObservation,vpnEnrollmentSupported,vpnStatusObservation} from './vpn-status.js';
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {custodyStatusObservation,custodyStatusReads} from './custody-status.js';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
 import {identityPreflightObservation,identityPreflightReads} from './identity-preflight.js';
-import {targetHealthObservation} from './target-health.js';
+import {nodeServiceActions,nodeServiceActionObservation,targetHealthObservation} from './target-health.js';
 import {recoveryPreflightObservation} from './recovery-handoff.js';
 
 const typedStatus = {
@@ -38,6 +38,7 @@ const healthColumns = [
   key,label,render:row=>row[key][0].toUpperCase()+row[key].slice(1),
  })),
 ];
+const serviceLabels = {start:'Start node',stop:'Stop node',restart:'Restart node'};
 
 function TargetHealth({report}) {
  return <div>
@@ -61,10 +62,11 @@ function ControllerReceipt({receivedAt}) {
  </p>;
 }
 
-export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onOpenDiagnostics,canEnroll=()=>permitted}){
+export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onOpenDiagnostics,targetScopeCurrent=()=>permitted}){
  const [operator,setOperator]=useState('');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null);
  const [preflightAttempt,setPreflightAttempt]=useState(null);
+ const [serviceAcknowledgement,setServiceAcknowledgement]=useState(null);
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const key=JSON.stringify(target);
  const capabilities=useResource(async()=>{
@@ -82,37 +84,45 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const vpnResult=permitted&&statusGates.vpn_status.available&&['vpn_status','vpn_enroll'].includes(result?.operation)?result:null;
  const enrollmentSupported=permitted&&vpnEnrollmentSupported(state);
  const enrollmentBlocker=vpnEnrollmentBlocker(vpnResult?.result);
+ const startupBlocker=validatorStartupBlocker(vpnResult?.operation==='vpn_status'?vpnResult.result:null);
+ const serviceGates=Object.fromEntries(nodeServiceActions.map(operation=>[operation,installedControllerMutation(state,operation)]));
  const custodyResult=custodyStatusReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  const preparationResult=identityPreflightReads.some(read=>read.operation===statusResult?.operation)?statusResult:null;
  async function run(operation,parameters={}){
   const read=statusGates[operation];
   const isPreflight=operation==='install_preflight';
   const isEnrollment=operation==='vpn_enroll';
+  const isServiceAction=nodeServiceActions.includes(operation);
+  const scopeSensitive=isEnrollment||isServiceAction||operation==='health'||operation==='vpn_status';
   if(!permitted||busy||(read&&!read.available)||(isPreflight&&!preflight.canRun))return;
-  if(isEnrollment){
-   if(!enrollmentSupported||enrollmentBlocker||vpnResult?.operation!=='vpn_status')return;
-   if(!canEnroll()){
-    setResult(null);
-    setError('The target, recovery state or permission changed. Review VPN status again.');
-    return;
-   }
+  if(isEnrollment&&(!enrollmentSupported||enrollmentBlocker||vpnResult?.operation!=='vpn_status'))return;
+  if(isServiceAction&&(!serviceGates[operation].available||(operation!=='stop'&&startupBlocker)))return;
+  if(scopeSensitive&&!targetScopeCurrent()){
+   setResult(null);setServiceAcknowledgement(null);
+   setError('The target, recovery state or permission changed. Review the selected controller again.');
+   return;
   }
   setBusy(true);setError('');setResult(null);
+  if(operation!=='health')setServiceAcknowledgement(null);
   const submitted={...parameters};
   setPreflightAttempt(isPreflight?{parameters:submitted,state:'pending'}:null);
   try{
    const raw=await nodeNetworkController(target,operation,submitted);
-   const response=isPreflight?installPreflightObservation(raw,submitted,target):
-    isEnrollment?vpnEnrollmentObservation(raw):read?typedStatus[operation](raw,submitted):raw;
-   if(alive.current&&(!isEnrollment||canEnroll())){
+   let response=raw;
+   if(isPreflight)response=installPreflightObservation(raw,submitted,target);
+   else if(isEnrollment)response=vpnEnrollmentObservation(raw);
+   else if(isServiceAction)response=nodeServiceActionObservation(operation,raw);
+   else if(read)response=typedStatus[operation](raw,submitted);
+   if(alive.current&&(!scopeSensitive||targetScopeCurrent())){
     const receivedAt=Date.now();
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'received',receivedAt,observation:response});
+    else if(isServiceAction)setServiceAcknowledgement({operation:response.requested,receivedAt});
     else setResult({operation,submitted,result:response,receivedAt});
     if(!read&&!isPreflight)capabilities.reload();
    }
   }
   catch(failure){
-   if(alive.current&&(!isEnrollment||canEnroll())){
+   if(alive.current&&(!scopeSensitive||targetScopeCurrent())){
     if(isPreflight)setPreflightAttempt({parameters:submitted,state:'failed'});
     setError(String(failure?.message||failure));
    }
@@ -138,10 +148,28 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    {permitted&&!gate.available&&<small>{gate.blocker}</small>}
   </div>;
  }
+ const serviceControls=<>
+  {nodeServiceActions.map(operation=>{
+   const gate=serviceGates[operation];
+   return <div className="native-controller-action" key={operation}>
+    <button disabled={!permitted||busy||!gate.available||(operation!=='stop'&&!!startupBlocker)}
+     onClick={()=>run(operation)}>{serviceLabels[operation]}</button>
+    {permitted&&!gate.available&&<small>{gate.blocker}</small>}
+   </div>;
+  })}
+  {permitted&&(serviceGates.start.available||serviceGates.restart.available)&&startupBlocker&&<p>{startupBlocker}</p>}
+ </>;
+ const serviceEvidence=<>
+  {permitted&&serviceAcknowledgement&&<section aria-label="Node service action acknowledgement">
+   <p>The controller acknowledged the {serviceAcknowledgement.operation} request. Read target health for the service state.</p>
+   <ControllerReceipt receivedAt={serviceAcknowledgement.receivedAt}/>
+  </section>}
+  {healthResult&&<TargetHealth report={healthResult}/>}
+ </>;
  return <div className="native-controller">
   <Card title="Authenticated target controller" action={<button disabled={!permitted||busy} onClick={()=>{
    if(typedStatus[result?.operation]||result?.operation==='vpn_enroll')setResult(null);
-   setPreflightAttempt(null);
+   setPreflightAttempt(null);setServiceAcknowledgement(null);
    capabilities.reload();
   }}>Inspect selected target</button>}>
    <Resource value={capabilities}>{data=><>
@@ -164,8 +192,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     {button('register','Register contained service')}
    </Card>
    <Card title="Lifecycle and monitoring">
-    {statusAction('health','Read target health')}{button('start','Start node')}{button('stop','Stop node')}{button('restart','Restart node')}
-    {healthResult&&<TargetHealth report={healthResult}/>}
+    {statusAction('health','Read target health')}{serviceControls}
+    {serviceEvidence}
     <p>Mutations require native operator confirmation and a matching one-time grant on the target. Software installation does not grant consensus membership.</p>
    </Card>
    <InstallPreflight checklist={preflight} action={
@@ -178,9 +206,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
    {statusAction('health','Read target health')}{button('inventory','Inventory node-owned files')}
-   {button('start','Start node')}{button('stop','Stop node')}{button('restart','Restart node')}
+   {serviceControls}
    {statusAction('recovery_preflight','Diagnose recovery readiness')}
-   {healthResult&&<TargetHealth report={healthResult}/>}
+   {serviceEvidence}
    {recoveryResult&&<section aria-label="Recovery preflight evidence">
     <ControllerReceipt receivedAt={recoveryResult.receivedAt}/>
     <p>The controller reports that checkpoint import is unqualified for the selected release.</p>

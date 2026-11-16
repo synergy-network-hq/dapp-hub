@@ -1,4 +1,4 @@
-import {controllerOperation} from './nodeNetwork.js';
+import {installedControllerMutation} from './target-observation.js';
 
 const fields = [
  'service_registered', 'enrollment_staged', 'enrollment_recorded', 'reconciliation_required', 'server_bound', 'connected',
@@ -24,11 +24,14 @@ export function vpnEnrollmentObservation(value) {
 }
 
 export function vpnEnrollmentSupported(controller) {
- const {summary}=controller??{};
- return summary?.controllerVersion === 1 && summary.controllerReportedInstalled === true
-  && summary.reportedPlatform === 'linux' && summary.reportedArchitecture === 'x86_64' && summary.controllerReportedLocalSupport === true
-  && controllerOperation(controller, 'vpn_enroll').available
-  && controller.operations.find(row=>row?.operation==='vpn_enroll')?.kind === 'mutation';
+ return installedControllerMutation(controller,'vpn_enroll').available;
+}
+
+export function validatorStartupBlocker(status) {
+ if (!status) return 'Read VPN status before starting or restarting the validator.';
+ if (status.service_registered === true && status.enrollment_recorded === true && status.reconciliation_required === false
+  && status.server_bound === true && status.connected === true) return null;
+ return 'Resolve the reported VPN prerequisites before starting or restarting the validator.';
 }
 
 export function vpnEnrollmentBlocker(status) {

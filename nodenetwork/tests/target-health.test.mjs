@@ -1,6 +1,8 @@
 import {strict as assert} from 'node:assert';
 import test from 'node:test';
-import {targetHealthObservation} from '../src/target-health.js';
+import {nodeServiceActionObservation,targetHealthObservation} from '../src/target-health.js';
+import {installedControllerMutation,targetControllerObservation} from '../src/target-observation.js';
+import {validatorStartupBlocker,vpnStatusObservation} from '../src/vpn-status.js';
 
 const network = {id: 'network', state: 'running', health: 'degraded', readiness: 'pending'};
 const storage = {id: 'storage', state: 'starting', health: 'healthy', readiness: 'blocked'};
@@ -23,5 +25,35 @@ test('rejects unprojected, unknown, duplicate or unbounded service evidence', ()
   unexpected: {...report, services: [{...network, detail: 'private fixture'}]},
  })) {
   assert.throws(() => targetHealthObservation(value), /unsupported service health evidence/i, label);
+ }
+});
+
+test('requires installed controller mutation metadata and the five exact VPN prerequisites for startup', () => {
+ const start = {operation:'start',kind:'mutation',available:true};
+ const controller = {root:'/opt/Synergy',controllerVersion:1,installed:true,platform:'linux',architecture:'x86_64',
+  localValidatorSupported:true,operations:[start]};
+ assert.equal(installedControllerMutation(targetControllerObservation(controller),'start').available,true);
+ for (const change of [{installed:false},{operations:[start,start]},{architecture:'arm64'},
+  {operations:[{...start,kind:'read'}]},{operations:[{...start,available:false}]}]) {
+  assert.equal(installedControllerMutation(targetControllerObservation({...controller,...change}),'start').available,false);
+ }
+ const vpn = vpnStatusObservation({schema:'nodenetwork-vpn-status-v1',service_registered:true,enrollment_staged:false,
+  enrollment_recorded:true,reconciliation_required:false,server_bound:true,connected:true});
+ assert.equal(validatorStartupBlocker(vpn),null);
+ assert.match(validatorStartupBlocker(null),/Read VPN status/);
+ for (const key of ['service_registered','enrollment_recorded','reconciliation_required','server_bound','connected']) {
+  assert.match(validatorStartupBlocker({...vpn,[key]:!vpn[key]}),/Resolve the reported/);
+  assert.match(validatorStartupBlocker({...vpn,[key]:undefined}),/Resolve the reported/);
+ }
+});
+
+test('admits an exact service acknowledgement without health, progress or activation fields', () => {
+ for (const requested of ['start','restart','stop']) {
+  const acknowledged = {requested,healthNotInferred:true};
+  assert.deepEqual(nodeServiceActionObservation(requested,acknowledged),acknowledged);
+  for (const invalid of [{...acknowledged,requested:'other'},{...acknowledged,healthNotInferred:false},
+   {...acknowledged,healthy:true},{requested}]) {
+   assert.throws(()=>nodeServiceActionObservation(requested,invalid),/outcome is uncertain/);
+  }
  }
 });
