@@ -137,8 +137,10 @@ pub(super) fn with_latest_success<T>(base:&Path,target:&Value,operation:&str,app
     let _writer=WriterLock::acquire(&path)?;
     let scope=scoped_digest(base,target)?;
     let records=load(&path)?;
-    let record=records.iter().find(|r|r.target_digest==scope).ok_or_else(failure)?;
-    if record.operation!=operation||record.state!="response_received"||record.response_ok!=Some(true){return Err("The latest native operation is not the required successful terminal outcome; reconcile without resetting history".into())}
+    let scoped=records.iter().filter(|r|r.target_digest==scope).collect::<Vec<_>>();
+    if scoped.iter().any(|r|matches!(r.state.as_str(),"dispatch_intent"|"uncertain")){return Err("An original incarnation operation is uncertain; preserve and reconcile it before replacement".into())}
+    let record=scoped.first().ok_or_else(failure)?;
+    if record.recorded_at_ms>now()?||scoped.iter().skip(1).any(|r|r.recorded_at_ms==record.recorded_at_ms)||record.operation!=operation||record.state!="response_received"||record.response_ok!=Some(true){return Err("The latest native operation is not unambiguously the required successful terminal outcome; reconcile without resetting history".into())}
     apply(json!({"id":record.id,"request_sha256":record.request_digest}))
 }
 
@@ -221,6 +223,15 @@ pub fn inspect(base: &Path) -> Result<Value, String> {
   let d=Dispatch::begin(&c.0,&t,"bootstrap",&json!({"new":1})).unwrap();d.finish(&Err("interrupted".into())).unwrap();
   assert!(with_latest_success(&c.0,&t,"uninstall",Ok).is_err());assert!(with_latest_success(&c.0,&t,"bootstrap",Ok).is_err());
   assert!(Dispatch::begin(&c.0,&t,"install",&json!({})).is_err());assert_eq!(inspect(&c.0).unwrap()["records"].as_array().unwrap().len(),2);
+ }
+ #[test]fn terminal_selection_rejects_all_uncertainty_and_ambiguous_timestamp_ties(){
+  let c=scratch();let t=json!({"host":"example","root":"/opt/synergy"});let path=directory(&c.0,true).unwrap().unwrap();let when=now().unwrap();
+  let terminal=Record{version:1,id:"a".repeat(64),target_digest:scoped_digest(&c.0,&t).unwrap(),request_digest:"b".repeat(64),operation:"uninstall".into(),recorded_at_ms:when,observed_at_ms:Some(when),state:"response_received".into(),response_ok:Some(true)};write(&path,&terminal,true).unwrap();
+  let mut other=Record{version:1,id:"f".repeat(64),target_digest:terminal.target_digest.clone(),request_digest:"c".repeat(64),operation:"bootstrap".into(),recorded_at_ms:when,observed_at_ms:Some(when),state:"uncertain".into(),response_ok:None};write(&path,&other,true).unwrap();
+  assert!(with_latest_success(&c.0,&t,"uninstall",|_|->Result<(),String>{panic!("uncertainty must not invoke transition")}).is_err());
+  other.recorded_at_ms=when.saturating_sub(1);write(&path,&other,false).unwrap();assert!(with_latest_success(&c.0,&t,"uninstall",|_|->Result<(),String>{panic!("older uncertainty must remain visible")}).is_err());
+  other.recorded_at_ms=when;other.state="response_received".into();other.response_ok=Some(true);write(&path,&other,false).unwrap();assert!(with_latest_success(&c.0,&t,"uninstall",|_|->Result<(),String>{panic!("tie must not authorize transition")}).is_err());
+  assert_eq!(inspect(&c.0).unwrap()["records"].as_array().unwrap().len(),2);
  }
  #[test]fn incarnation_changes_journal_scope_without_deleting_old_history(){
   let c=scratch();let t=json!({"host":"example","root":"/opt/synergy"});

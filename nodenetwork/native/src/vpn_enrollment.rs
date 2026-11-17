@@ -102,6 +102,10 @@ pub(super) fn require_terminal(base:&Path,target:&Target,doc:&Value)->Result<(),
  let load=|name:&str|->Result<Value,String>{serde_json::from_slice(&read(&directory.join(name),32768,true)?).map_err(|_|"Invalid original provider terminal receipt".into())};
  let intent=load("intent.json")?;let bound=load("bound.json")?;let retired=load("retired.json")?;let deletion=load("retire-intent.json")?;
  let expected=json!({"target_sha256":hash(target.journal_identity().to_string().as_bytes()),"manifest_sha256":doc["manifest_sha256"],"formation_sha256":doc["artifacts"]["formation-context.json"],"network_id":doc["network_id"],"chain_id":doc["chain_id"]});
+ let identifier=|v:&Value|v.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=253&&s.bytes().all(|b|b.is_ascii_alphanumeric()||b"_.-".contains(&b)));
+ let pin=|v:&Value|v.as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)));
+ if [&intent["account_id"],&intent["name"],&bound["peer_id"],&bound["name"],&bound["hostname"],&bound["provider_account_id"]].iter().any(|v|!identifier(v))||bound["provider_account_id"]!=intent["account_id"]||bound["new_peer_verified"]!=true||bound["one_off_usage_verified"]!=true||bound["ip"].as_str().is_none_or(|s|s.parse::<std::net::IpAddr>().is_err())||bound["wireguard_public_key"].as_str().and_then(|s|STANDARD.decode(s).ok()).is_none_or(|b|b.len()!=32)||[&intent["provider_sha256"],&deletion["enrollment_sha256"],&deletion["binding_sha256"]].iter().any(|v|!pin(v)){return Err("Original provider retirement lacks exact typed attribution and commitments".into())}
+
  if intent["binding"]!=expected||bound["binding"]!=expected||deletion["binding"]!=expected||retired["format"]!="synergy-vpn-retirement-v1"||retired["retired"]!=true||retired["absence_verified"]!=true||retired["account_id"]!=intent["account_id"]||retired["peer_name"]!=intent["name"]||retired["peer_id"]!=bound["peer_id"]||retired["peer_name"]!=bound["name"]||retired["hostname"]!=bound["hostname"]||retired["ip"]!=bound["ip"]||deletion["peer_id"]!=bound["peer_id"]||retired["enrollment_sha256"]!=deletion["enrollment_sha256"]||retired["binding_sha256"]!=deletion["binding_sha256"]{return Err("Original provider peer is not exactly retired; reconcile without issuing new access".into())}
  Ok(())
 }
@@ -201,11 +205,16 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
   struct Cleanup(std::path::PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}let _cleanup=Cleanup(base.clone());std::fs::create_dir(&base).unwrap();
   let(t,doc,status,pin)=super::tests::fixture();let binding=super::binding(&t,&status,&doc,&pin).unwrap();
   assert!(require_terminal(&base,&t,&doc).is_ok());let directory=state_directory(&base,&t).unwrap();std::fs::create_dir_all(&directory).unwrap();assert!(require_terminal(&base,&t,&doc).is_err());
-  let intent=json!({"binding":binding,"account_id":"account","name":"exact"});let bound=json!({"binding":binding,"peer_id":"peer","name":"exact","hostname":"host","ip":"100.64.0.2"});
+  let intent=json!({"binding":binding,"account_id":"account","name":"exact","provider_sha256":"c".repeat(64)});let bound=json!({"binding":binding,"peer_id":"peer","name":"exact","hostname":"host","ip":"100.64.0.2","provider_account_id":"account","wireguard_public_key":STANDARD.encode([3u8;32]),"new_peer_verified":true,"one_off_usage_verified":true});
   let deletion=json!({"binding":binding,"peer_id":"peer","enrollment_sha256":"a".repeat(64),"binding_sha256":"b".repeat(64)});
   let retired=json!({"format":"synergy-vpn-retirement-v1","retired":true,"absence_verified":true,"account_id":"account","peer_id":"peer","peer_name":"exact","hostname":"host","ip":"100.64.0.2","enrollment_sha256":"a".repeat(64),"binding_sha256":"b".repeat(64)});
   for(n,v)in[("intent.json",&intent),("bound.json",&bound),("retire-intent.json",&deletion),("retired.json",&retired)]{write(&directory.join(n),v)}assert!(require_terminal(&base,&t,&doc).is_ok());
   for key in["retired","absence_verified","peer_id","peer_name","account_id","ip","enrollment_sha256","binding_sha256"]{let mut wrong=retired.clone();wrong[key]=Value::Null;write(&directory.join("retired.json"),&wrong);assert!(require_terminal(&base,&t,&doc).is_err(),"{key}");}write(&directory.join("retired.json"),&retired);
+  // Matching absent JSON fields must never count as attribution (Null != proof).
+  for key in["account_id","name","peer_id","hostname","ip","enrollment_sha256","binding_sha256","provider_account_id","wireguard_public_key","new_peer_verified","one_off_usage_verified","provider_sha256"]{
+   for(n,v)in[("intent.json",&intent),("bound.json",&bound),("retire-intent.json",&deletion),("retired.json",&retired)]{let mut missing=v.clone();missing.as_object_mut().unwrap().remove(key);write(&directory.join(n),&missing)}assert!(require_terminal(&base,&t,&doc).is_err(),"missing {key}");
+  }
+  for(n,v)in[("intent.json",&intent),("bound.json",&bound),("retire-intent.json",&deletion),("retired.json",&retired)]{write(&directory.join(n),v)}
   let mut foreign=doc.clone();foreign["manifest_sha256"]=json!("f".repeat(64));assert!(require_terminal(&base,&t,&foreign).is_err());
   let app=base.join("nodenetwork-engineering-v1");std::fs::create_dir(&app).unwrap();#[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&app,std::fs::Permissions::from_mode(0o700)).unwrap();}
   write(&app.join(format!("incarnation-{}.json",hash(t.journal_identity().to_string().as_bytes()))),&json!({"initial_sha256":"f".repeat(64),"target_sha256":hash(t.journal_identity().to_string().as_bytes())}));assert_ne!(state_directory(&base,&t).unwrap(),directory);assert!(directory.join("retired.json").exists());
