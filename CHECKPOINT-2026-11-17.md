@@ -1,3 +1,7 @@
+# Reviewed master bootstrap acknowledgement binding
+
+Positive bootstrap acknowledgement is now checked against the reviewed release/manifest and the pinned owner staging-only response before journal settlement. It cannot claim software installation, activation or community enrollment. Exact managed host records and operator-authorization-required remain required. Five bootstrap tests and all 122 host-independent native tests passed, two actual-host tests excluded. No host selected. New source follows the earlier 250-check full paired baseline; a full rerun remains pending.
+
 # Exact bootstrap outcomes and uncertain journal preservation
 
 Bootstrap now reuses the native duplicate-rejecting receipt decoder and requires exact version/ok/result-or-error envelopes before accepting an outcome. Six malformed wire cases in one real-process regression remain uncertain through the actual scratch request journal and retain the second-mutation fence. All four bootstrap transport tests and all 121 host-independent native cases passed; two actual-host tests excluded. No host selected. The existing Portal bootstrap transport validator filter automatically includes the new case; a full paired rerun after this source change remains pending.

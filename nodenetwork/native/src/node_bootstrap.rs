@@ -173,6 +173,7 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
     let mut input=child.stdin.take().ok_or("Bootstrap input unavailable.")?;
     let output=child.stdout.take().ok_or("Bootstrap output unavailable.")?;
     let mut header=parameters;header["version"]=json!(1);header["operator_public_key"]=json!(prepared.public_key.0);
+    let expected_release=prepared.release.clone();let expected_manifest=prepared.manifest_sha256.clone();
     let transfer=async move {
         input.write_all(format!("{}\n",header).as_bytes()).await.map_err(|_|"Cannot send bootstrap header.")?;
         for member in &prepared.members{
@@ -187,10 +188,31 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
         input.write_all(&[0u8;1024]).await.map_err(|_|"Cannot finish master archive.")?;drop(input);Ok::<(),&str>(())
     };
     let mut upload=tokio::spawn(transfer);
-    let result=tokio::time::timeout(Duration::from_secs(300),bootstrap_transport_reply(output,&mut upload,&mut child)).await;
+    let result=tokio::time::timeout(Duration::from_secs(300),async {
+        let reply=bootstrap_transport_reply(output,&mut upload,&mut child).await?;
+        validate_bootstrap_acknowledgement(&reply,&expected_release,&expected_manifest)?;
+        Ok::<Value,&'static str>(reply)
+    }).await;
     upload.abort();
     node_controller::close_connection(&target,control_dir).await;
     match result{Ok(out)=>out.map_err(String::from),Err(_)=>Err("Bootstrap timed out. Inspect target state before retrying; no automatic retry occurred.".into())}
+}
+
+// Staging is narrower than installing, activation or community enrollment.
+// A successful transport cannot attest a different release or expand that scope.
+fn validate_bootstrap_acknowledgement(reply:&Value,release:&str,manifest:&str)->Result<(),&'static str>{
+ const UNCERTAIN:&str="Bootstrap acknowledgement differs from the reviewed master or enrollment scope. Inspect the target before another change; no automatic retry occurred.";
+ if reply["ok"]==false{return Ok(())}
+ let result=&reply["result"];
+ let records=["system-account:synergy-nodenetwork","/etc/ssh/sshd_config.d/synergy-nodenetwork.conf","/etc/sudoers.d/synergy-nodenetwork"];
+ if !result.as_object().is_some_and(|fields|fields.len()==9)
+  ||result["root"]!=node_controller::ROOT||result["stagedRelease"]!=release||result["manifestSha256"]!=manifest
+  ||result["controllerEnrolled"]!=true||result["softwareInstalled"]!=false||result["activationAuthorized"]!=false
+  ||result["communityEnrollment"]!=false||result["operatorAuthorizationRequired"]!=true
+  ||!result["hostManagedRecords"].as_array().is_some_and(|items|items.len()==records.len()&&records.iter().all(|record|items.contains(&json!(record)))){
+  return Err(UNCERTAIN)
+ }
+ Ok(())
 }
 
 // A verified-host refusal can close stdin before the archive is fully sent.
@@ -281,6 +303,27 @@ async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload
        std::fs::remove_dir_all(base).unwrap();
       }
      });
+    }
+
+    #[test]
+    fn bootstrap_transport_acknowledgement_binds_master_and_staging_only_scope(){
+     let release="fixture-release";let pin="a".repeat(64);
+     let result=json!({"root":"/opt/Synergy","stagedRelease":release,"manifestSha256":pin,
+      "controllerEnrolled":true,"softwareInstalled":false,"activationAuthorized":false,"communityEnrollment":false,
+      "operatorAuthorizationRequired":true,"hostManagedRecords":["system-account:synergy-nodenetwork",
+       "/etc/ssh/sshd_config.d/synergy-nodenetwork.conf","/etc/sudoers.d/synergy-nodenetwork"]});
+     let wrap=|result|json!({"version":1,"ok":true,"result":result});
+     assert!(validate_bootstrap_acknowledgement(&wrap(result.clone()),release,&pin).is_ok());
+     let mut reordered=result.clone();reordered["hostManagedRecords"].as_array_mut().unwrap().reverse();
+     assert!(validate_bootstrap_acknowledgement(&wrap(reordered),release,&pin).is_ok());
+     for (key,value) in [("root",json!("/opt/synergy")),("stagedRelease",json!("another-release")),
+      ("manifestSha256",json!("b".repeat(64))),("controllerEnrolled",json!(false)),("softwareInstalled",json!(true)),
+      ("activationAuthorized",json!(true)),("communityEnrollment",json!(true)),("operatorAuthorizationRequired",json!(false)),
+      ("hostManagedRecords",json!(["system-account:synergy-nodenetwork"])),("unknown",json!("excluded"))]{
+      let mut altered=result.clone();altered[key]=value;
+      assert!(validate_bootstrap_acknowledgement(&wrap(altered),release,&pin).is_err(),"{key}");
+     }
+     assert!(validate_bootstrap_acknowledgement(&wrap(json!({})),release,&pin).is_err());
     }
 
     use super::*;
