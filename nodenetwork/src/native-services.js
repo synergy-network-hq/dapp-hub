@@ -80,7 +80,7 @@ export async function nodeNetworkVpn(target,operation){
 
 export async function nodeNetworkTransport(target,operation,reviewSha256=null){
  if(!isTauri())throw Error('Transport registry formation requires native Portal.');
- if(!['status','prepare','sign','export'].includes(operation))throw Error('Unsupported transport operation.');
+ if(!['status','prepare','sign','export','stage'].includes(operation))throw Error('Unsupported transport operation.');
  const call=()=>invoke('portal_nodenetwork_transport',{target,operation,reviewSha256});
  const reply=await(operation==='status'?call():withNodeChange(call));
  if(reply===null)return null;
