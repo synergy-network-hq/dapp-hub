@@ -24,7 +24,8 @@ function parseReport(outcome, draft, hash, readiness) {
   const {value, chainContext} = outcome ?? {};
   if (chainContext?.genesis !== STS_TESTNET_GENESIS || chainContext.incarnation !== 5 ||
       !matchesCollectibleReadiness(chainContext, readiness) || value?.hash !== hash || !reports.has(value.status)) {
-    throw Error('The Spark mint receipt evidence does not match this draft and the selected RPC context.');
+    const operation = draft.action === 'mint' ? 'mint' : 'sale';
+    throw Error(`The Spark ${operation} receipt evidence does not match this draft and the selected RPC context.`);
   }
   const {receipt, payloadSha256, status} = value;
   const height = exactRpcAmount(receipt?.height, maxU64);
@@ -38,6 +39,8 @@ function parseReport(outcome, draft, hash, readiness) {
 }
 
 export function WalletSparkMintReceiptCheck({draft, endpoint, canRead}) {
+  const isMint = draft.action === 'mint';
+  const operation = isMint ? 'mint' : 'sale';
   const [input, setInput] = useState('');
   const [request, setRequest] = useState(null);
   const [invalid, setInvalid] = useState(false);
@@ -55,7 +58,7 @@ export function WalletSparkMintReceiptCheck({draft, endpoint, canRead}) {
         sender: draft.sender, payloadSha256: draft.payloadSha256});
     } catch {
       checkScope();
-      throw Error('The Spark mint receipt comparison is unavailable from the selected RPC.');
+      throw Error(`The Spark ${operation} receipt comparison is unavailable from the selected RPC.`);
     }
     checkScope();
     return parseReport(outcome, draft, request.hash, readiness);
@@ -75,11 +78,11 @@ export function WalletSparkMintReceiptCheck({draft, endpoint, canRead}) {
     setInvalid(false);
   }
 
-  return <section aria-label="Spark mint receipt comparison">
-    <h4>Compare a reported mint receipt</h4>
+  return <section aria-label={`Spark ${operation} receipt comparison`}>
+    <h4>Compare a reported {operation} receipt</h4>
     <p>Portal sends the public transaction hash and the reported receipt block height. The draft comparison stays in Portal.</p>
     <form onSubmit={compare}>
-      <label>Mint transaction hash<input autoComplete="off" spellCheck={false} maxLength={71} value={input}
+      <label>{isMint ? 'Mint' : 'Sale'} transaction hash<input autoComplete="off" spellCheck={false} maxLength={71} value={input}
         aria-invalid={invalid} aria-describedby={invalid ? inputError : undefined} onChange={event => {
           current.current = null;
           setRequest(null);
@@ -91,7 +94,7 @@ export function WalletSparkMintReceiptCheck({draft, endpoint, canRead}) {
     </form>
     {!!request && canRead() && <Resource value={{...observation, reload: undefined}}>{value => <>
       <p role="status">{reports.get(value.status)}</p>
-      <SourceAge source="Selected RPC mint receipt comparison" updatedAt={value.receivedAt}/>
+      <SourceAge source={`Selected RPC ${operation} receipt comparison`} updatedAt={value.receivedAt}/>
       <Detail data={{transactionHash: value.hash, reportedReceiptHeight: value.receipt?.height,
         reportedReceiptBlock: value.receipt?.blockHash, reportedTransactionIndex: value.receipt?.index,
         matchingPayloadSha256: value.payloadSha256}}/>

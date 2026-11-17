@@ -700,6 +700,44 @@ fn validator_address(value: &Value) -> bool {
     value.as_str().is_some_and(valid_validator_address)
 }
 
+// Optional c92/a984 owner evidence. This admits only the public DTO; the
+// uppercase target, controller inventory, host policy and grants stay separate.
+#[derive(Clone, Copy)]
+enum IdentityEvidence { Preflight, Generation, Status }
+
+fn identity_evidence(result: &Value, kind: IdentityEvidence) -> bool {
+    let Some(fields) = result.as_object() else { return false; };
+    if !validator_network_context(result) || result["genesis_authority_verified"] != true
+        || !lowercase_digest(&result["genesis_sha256"]) { return false; }
+    let base = match kind {
+        IdentityEvidence::Preflight => 4,
+        IdentityEvidence::Generation | IdentityEvidence::Status => {
+            if !validator_address(&result["address"]) || result["possession_verified"] != true
+                || result["membership_granted"] != false { return false; }
+            if matches!(kind, IdentityEvidence::Status) {
+                if result["pending"] != true { return false; }
+                8
+            } else { 7 }
+        },
+    };
+    if !fields.contains_key("schema") { return fields.len() == base; }
+    if result["schema"] != "nodenetwork-existing-identity-network-v1" || result["membership_granted"] != false {
+        return false;
+    }
+    let staged = fields.contains_key("stage_request_sha256");
+    if staged && !lowercase_digest(&result["stage_request_sha256"]) { return false; }
+    let attributed = fields.contains_key("request_sha256");
+    if matches!(kind, IdentityEvidence::Preflight) && attributed
+        || matches!(kind, IdentityEvidence::Generation) && !attributed { return false; }
+    if attributed {
+        let request = Request {version:1, operation:"identity_generate".into(),
+            parameters:json!({"genesis_sha256":result["genesis_sha256"]})};
+        if !lowercase_digest(&result["request_sha256"]) || result["request_sha256"] != request.approval_id() { return false; }
+    }
+    let scoped = if matches!(kind, IdentityEvidence::Preflight) { 2 } else { 1 };
+    fields.len() == base + scoped + usize::from(staged) + usize::from(attributed)
+}
+
 pub(super) fn valid_validator_address(address: &str) -> bool {
     address.strip_prefix("synv1").is_some_and(|tail| {
         (10..=90).contains(&tail.len())
@@ -718,8 +756,7 @@ fn preparation_reply(operation: &str, reply: &Value) -> Result<Value, &'static s
     let result = &reply["result"];
     let fields = result.as_object().ok_or(UNSUPPORTED)?;
     let valid_operation = match operation {
-        "identity_preflight" => fields.len() == 4 && result["genesis_authority_verified"] == true
-            && lowercase_digest(&result["genesis_sha256"]),
+        "identity_preflight" => identity_evidence(result, IdentityEvidence::Preflight),
         "formation_preflight" => fields.len() == 5 && result["schema"] == "nodenetwork-formation-v1"
             && lowercase_digest(&result["formation_sha256"]) && lowercase_digest(&result["formation_id"])
             && result["formation_id"].as_str().is_some_and(|id| id.bytes().any(|byte| byte != b'0')),
@@ -793,15 +830,16 @@ pub(super) fn formation_receipt_status(reply: &Value, expected_request_digest: &
     if result["request_sha256"] == expected_request_digest { "match" } else { "different" }
 }
 
-pub(super) fn identity_receipt_status(reply: &Value, expected_request_digest: &str) -> &'static str {
-    if reply["version"]!=1 || !reply.as_object().is_some_and(|fields|fields.len()==3) {return "unsupported";}
-    let Ok(result)=custody_status_fields("identity_status",reply) else {return "unsupported";};
-    if result["pending"]==false {return "absent";}
-    // The owner verifies custody and its Genesis input, but this status does not
-    // identify the operation that created the pending custody.
+pub(super) fn identity_receipt_status(reply: &Value, expected_request_digest: &str) -> (&'static str, &'static str) {
+    if reply["version"]!=1 || !reply.as_object().is_some_and(|fields|fields.len()==3) {return ("unsupported","none");}
+    let Ok(result)=custody_status_fields("identity_status",reply) else {return ("unsupported","none");};
+    if result["pending"]==false {return ("absent","none");}
+    // The optional owner receipt attributes custody to a durable identity
+    // request. Without it, matching Genesis alone cannot identify its producer.
     let request=Request {version:1,operation:"identity_generate".into(),
         parameters:json!({"genesis_sha256":result["genesis_sha256"]})};
-    if request.approval_id()==expected_request_digest {"match"} else {"different"}
+    let provenance=if result.get("request_sha256").is_some() {"identity_request"} else {"genesis_input"};
+    (if request.approval_id()==expected_request_digest {"match"} else {"different"},provenance)
 }
 
 pub(super) fn exact_genesis_mutation_reply(reply: &Value) -> bool {
@@ -900,7 +938,7 @@ fn formation_request_digest(pin: &Value) -> String {
 
 fn custody_status_fields<'a>(operation: &str, reply: &'a Value) -> Result<&'a Value, &'static str> {
     const UNSUPPORTED: &str = "The selected controller returned unsupported pending custody evidence.";
-    if operation == "formation_status" && (reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3)) {
+    if reply["version"] != 1 || !reply.as_object().is_some_and(|fields| fields.len() == 3) {
         return Err(UNSUPPORTED);
     }
     if reply["ok"] != true {
@@ -919,7 +957,7 @@ fn custody_status_fields<'a>(operation: &str, reply: &'a Value) -> Result<&'a Va
         return Err(UNSUPPORTED);
     }
     let valid_kind = match operation {
-        "identity_status" => fields.len() == 8 && result["genesis_authority_verified"] == true && lowercase_digest(&result["genesis_sha256"]),
+        "identity_status" => identity_evidence(result, IdentityEvidence::Status),
         "formation_status" => fields.len() == 10 && result["schema"] == "nodenetwork-formation-v1"
             && ["formation_sha256", "formation_id", "request_sha256"].iter().all(|key| lowercase_digest(&result[*key]))
             && result["request_sha256"] == formation_request_digest(&result["formation_sha256"])
@@ -969,10 +1007,8 @@ fn identity_generation_reply(request: &Request, reply: &Value) -> Result<Value, 
         return Ok(json!({"version":1,"ok":false,"error":{"code":code,"message":message}}));
     }
     let result = &reply["result"];
-    if reply["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 7)
-        || !validator_network_context(result) || !validator_address(&result["address"])
-        || result["genesis_authority_verified"] != true || result["possession_verified"] != true || result["membership_granted"] != false
-        || !lowercase_digest(&result["genesis_sha256"]) || result["genesis_sha256"] != request.parameters["genesis_sha256"] {
+    if reply["ok"] != true || !identity_evidence(result, IdentityEvidence::Generation)
+        || result["genesis_sha256"] != request.parameters["genesis_sha256"] {
         return Err(UNCERTAIN);
     }
     Ok(json!({"version":1,"ok":true,"result":result}))
@@ -1088,7 +1124,8 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
     request.validate()?;
     let wire=request.canonical().to_string();
     let deadline=if request.operation == "vpn_enroll" { 240 } else { 180 };
-    let value=exchange(target,wire.as_bytes(),deadline,control_dir,known_hosts,request.operation=="genesis_bind").await?;
+    let strict=matches!(request.operation.as_str(),"genesis_bind"|"identity_preflight"|"identity_generate"|"identity_status");
+    let value=exchange(target,wire.as_bytes(),deadline,control_dir,known_hosts,strict).await?;
     let result=match request.operation.as_str() {
         "health" => health_reply(&value),
         "diagnostics" => crate::node_diagnostics::reply(&value),
@@ -1625,6 +1662,70 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         assert_eq!(inspect(&base).unwrap(),history);
         assert!(Dispatch::begin(&base,&target,&request.operation,&request.canonical()).is_err());
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    fn scoped_identity_fixture() -> (Request,Value) {
+        let request=Request{version:1,operation:"identity_generate".into(),parameters:json!({"genesis_sha256":"b".repeat(64)})};
+        let result=json!({"network_id":"test-network","chain_id":"999999","genesis_sha256":"b".repeat(64),
+            "genesis_authority_verified":true,"schema":"nodenetwork-existing-identity-network-v1",
+            "membership_granted":false,"address":"synv11lrh6jcxaejkj4zv994j7qwn2rk6u3ar4emn",
+            "possession_verified":true,"request_sha256":request.approval_id()});
+        (request,result)
+    }
+
+    #[test] fn identity_generation_scoped_owner_receipt_binds_exact_canonical_request() {
+        let (request,result)=scoped_identity_fixture();
+        assert_eq!(request.approval_id(),"31f7fc6d1f59c72c450c45c0c8c1f3e307ea7b038d9459d14a3aaca37626892e");
+        let mut preflight=result.clone();
+        for key in ["address","possession_verified","request_sha256"] {preflight.as_object_mut().unwrap().remove(key);}
+        for staged in [false,true] {
+            let mut result=result.clone();
+            let mut preflight=preflight.clone();
+            if staged {
+                result["stage_request_sha256"]=json!("c".repeat(64));
+                preflight["stage_request_sha256"]=json!("c".repeat(64));
+            }
+            let wrap=|result|json!({"version":1,"ok":true,"result":result});
+            assert_eq!(preparation_reply("identity_preflight",&wrap(preflight.clone())),Ok(wrap(preflight)));
+            assert_eq!(identity_generation_reply(&request,&wrap(result.clone())),Ok(wrap(result)));
+        }
+        for (key,value) in [("request_sha256",Value::Null),("request_sha256",json!("a".repeat(64))),
+            ("request_sha256",json!(request.approval_id()+"\n")),("stage_request_sha256",Value::Null),
+            ("schema",json!("future-v2")),("membership_granted",json!(true)),("private_metadata",json!("excluded"))] {
+            let mut altered=result.clone();
+            altered[key]=value;
+            assert!(identity_generation_reply(&request,&json!({"version":1,"ok":true,"result":altered})).is_err(),"{key}");
+        }
+        let mut missing=result;
+        missing.as_object_mut().unwrap().remove("request_sha256");
+        assert!(identity_generation_reply(&request,&json!({"version":1,"ok":true,"result":missing})).is_err());
+    }
+
+    #[test] fn identity_generation_scoped_status_distinguishes_durable_receipt_from_input_only() {
+        let (request,mut pending)=scoped_identity_fixture();
+        pending["pending"]=json!(true);
+        let wrap=|result|json!({"version":1,"ok":true,"result":result});
+        assert_eq!(identity_receipt_status(&wrap(pending.clone()),&request.approval_id()),("match","identity_request"));
+        assert_eq!(identity_receipt_status(&wrap(pending.clone()),&"c".repeat(64)),("different","identity_request"));
+        for attributed in [true,false] {
+            let mut current=pending.clone();
+            if !attributed {current.as_object_mut().unwrap().remove("request_sha256");}
+            current["stage_request_sha256"]=json!("c".repeat(64));
+            assert!(custody_status_reply("identity_status",&wrap(current.clone())).is_ok());
+            assert_eq!(identity_receipt_status(&wrap(current),&request.approval_id()),
+                ("match",if attributed {"identity_request"} else {"genesis_input"}));
+        }
+        for (key,value) in [("request_sha256",Value::Null),("request_sha256",json!("c".repeat(64))),
+            ("stage_request_sha256",json!("c".repeat(63)+"\n")),("schema",Value::Null)] {
+            let mut altered=pending.clone();altered[key]=value;
+            assert_eq!(identity_receipt_status(&wrap(altered),&request.approval_id()),("unsupported","none"));
+        }
+        let mut without_schema=pending.clone();without_schema.as_object_mut().unwrap().remove("schema");
+        assert_eq!(identity_receipt_status(&wrap(without_schema),&request.approval_id()),("unsupported","none"));
+        let refused=json!({"version":1,"ok":false,"error":{"code":"reconciliation_required","message":"private fixture"}});
+        assert_eq!(identity_receipt_status(&refused,&request.approval_id()),("unsupported","none"));
+        let duplicate=format!(r#"{{"version":1,"ok":true,"result":{{"request_sha256":"{}","request_sha256":"{}"}}}}"#,request.approval_id(),request.approval_id());
+        assert!(decode_receipt_reply(duplicate.as_bytes()).is_err());
     }
 
     #[test] fn identity_generation_requires_only_exact_genesis_sha256_and_projects_public_custody() {

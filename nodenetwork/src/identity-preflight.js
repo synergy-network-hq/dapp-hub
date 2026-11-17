@@ -1,5 +1,6 @@
 import {genesisStageFiles} from './genesis-stage-files.js';
 import {custodyStatusObservation} from './custody-status.js';
+import {identityEvidence} from './identity-evidence.js';
 
 export const identityPreflightReads = [
  {operation: 'identity_preflight', label: 'Check existing-network inputs', title: 'Existing-network preflight'},
@@ -49,7 +50,8 @@ export function genesisBindingObservation(value,review) {
 
 export function identityGenerationObservation(value,review) {
  const uncertain = 'Validator identity preparation outcome is uncertain. Preserve pending custody and read its status before another change.';
- if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 7
+ try {identityEvidence(value,'generation');} catch {throw Error(uncertain);}
+ if (!value || typeof value !== 'object' || Array.isArray(value)
   || value.network_id !== review?.networkId || value.chain_id !== review?.chainId || value.genesis_sha256 !== review?.genesisSha256
   || !validatorAddress(value.address)) throw Error(uncertain);
  try {return custodyStatusObservation('identity_status',{...value,pending:true});}
@@ -100,10 +102,12 @@ export function identityPreflightObservation(operation, value) {
    bound: value.bound, stageReceiptVerified: value.stage_receipt_verified};
  }
  if (operation === 'identity_preflight') {
-  if (Object.keys(value).length !== 4 || value.genesis_authority_verified !== true || !digest(value.genesis_sha256)) {
+  let scoped;
+  try {scoped=identityEvidence(value,'preflight');} catch {throw Error(unsupported);}
+  if (value.genesis_authority_verified !== true || !digest(value.genesis_sha256)) {
    throw Error(unsupported);
   }
-  return {...common, genesisSha256: value.genesis_sha256};
+  return {...common, genesisSha256: value.genesis_sha256,...scoped};
  }
  if (Object.keys(value).length !== 5 || value.schema !== 'nodenetwork-formation-v1'
   || !digest(value.formation_sha256) || !digest(value.formation_id) || value.formation_id === '0'.repeat(64)) {

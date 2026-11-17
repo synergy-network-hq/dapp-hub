@@ -27,6 +27,10 @@ const identityFindings = {
  absent:'The controller reported no pending validator custody.',
  unsupported:'The selected target could not provide supported pending custody evidence.',
 };
+const attributedIdentityFindings = {
+ match:'The controller verified a durable identity preparation receipt for the same request.',
+ different:'The controller verified a durable identity preparation receipt for a different request.',
+};
 
 const views = {
  genesis_stage:{label:'Genesis staging',action:'staging',findings:stagingFindings,
@@ -70,6 +74,10 @@ export function CustodyReceiptReview({target,record,fingerprint,targetScopeCurre
    <button disabled={requested && report.loading} onClick={() => requested ? report.reload() : setRequested(true)}>Compare current {action} receipt</button>
    {requested && <button onClick={() => setRequested(false)}>Dismiss {action} evidence</button>}
   </div>
-  {requested && <Resource value={{...report,reload:null}}>{status => <p role="status">{findings[status]}</p>}</Resource>}
+  {requested && <Resource value={{...report,reload:null}}>{result => <>
+   <p role="status">{typeof result==='string'?findings[result]
+    :(result.provenance==='identity_request'?attributedIdentityFindings:findings)[result.status]}</p>
+   {result?.provenance==='identity_request'&&<p>The receipt attributes the pending custody to an identity request. Completion and recovery remain separate; the dispatch stays unresolved.</p>}
+  </>}</Resource>}
  </section>;
 }

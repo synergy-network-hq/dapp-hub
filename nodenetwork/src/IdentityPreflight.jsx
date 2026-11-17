@@ -22,6 +22,9 @@ export function IdentityPreflight({actions,observation,receipt,bindingAcknowledg
    {!staging && !binding && <p>{observation.genesisSha256
     ? 'The controller verified the signed Genesis and its authority for the installed network.'
     : 'The controller matched the formation context to the operator pin and installation network.'}</p>}
+   {observation.existingNetworkScoped&&<p>The controller reports the scoped existing-network identity contract. {observation.stagingReceiptRecorded
+    ?'It also verified the retained public Genesis staging receipt.'
+    :'No public Genesis staging receipt was reported.'} This does not authorize a host or custody operation.</p>}
    <Detail data={{
     networkId: observation.networkId, chainId: observation.chainId, genesisSha256: observation.genesisSha256,
     formationSha256: observation.formationSha256, formationId: observation.formationId, validatorAddress: observation.validatorAddress,

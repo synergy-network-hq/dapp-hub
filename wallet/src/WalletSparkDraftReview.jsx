@@ -133,6 +133,7 @@ function SaleDraftSummary({value, draftBytes, isCurrent}) {
       {value.expiresAtHeight && <div><dt>Listing expiry height</dt><dd>{value.expiresAtHeight}</dd></div>}
       <div><dt>Draft file SHA-256</dt><dd><code>{value.sha256}</code></dd></div>
     </dl>
+    <SparkDraftRpcChecks draft={value} isCurrent={isCurrent}/>
     <p>Ownership, listing state, fees and transaction approval require separate verification.</p>
     {value.action === 'buy' && <WalletSparkSaleEvidenceReview key={value.sha256} draftBytes={draftBytes} isCurrent={isCurrent}/>}
   </section>;
@@ -150,7 +151,7 @@ function SparkDraftRpcChecks({draft, isCurrent}) {
   const canRead = useWalletReadScope(scope, allowed);
   if (draft.action === 'launch') return allowed() && <WalletSparkLaunchDefinitionCheck key={scope} {...{draft, endpoint, canRead}}/>;
   return allowed() && <Fragment key={scope}>
-    <WalletSparkMintAuthorityCheck {...{draft, endpoint, canRead}}/>
+    {draft.action === 'mint' && <WalletSparkMintAuthorityCheck {...{draft, endpoint, canRead}}/>}
     <WalletSparkMintReceiptCheck {...{draft, endpoint, canRead}}/>
   </Fragment>;
 }

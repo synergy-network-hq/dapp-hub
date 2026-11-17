@@ -12,6 +12,9 @@ export function CustodyStatus({actions, observation, prepared, receipt, onOpenHi
      :'The controller reports verified possession for this pending identity.'} {observation.genesisSha256&&'It also reports verified signed Genesis authority. '}Consensus membership requires separate evidence.</p>
     <Detail data={{networkId:observation.networkId,chainId:observation.chainId,validatorAddress:observation.validatorAddress,
      genesisSha256:observation.genesisSha256,formationSha256:observation.formationSha256}}/>
+    {observation.existingNetworkScoped&&<p>{observation.identityRequestRecorded
+     ?'The controller reports a verified durable identity preparation request receipt.'
+     :'No durable identity preparation request receipt was reported. This evidence identifies the Genesis input only.'} The local dispatch fence remains in place.</p>}
    </> : <p>The selected controller reported no pending custody for this check.</p>}
   </section>}
   <p>Current installation, interrupted dispatches and custody retirement require their own review.</p>

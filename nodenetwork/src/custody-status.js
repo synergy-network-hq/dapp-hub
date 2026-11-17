@@ -1,3 +1,5 @@
+import {identityEvidence} from './identity-evidence.js';
+
 export const custodyStatusReads = [
  {operation:'identity_status', label:'Read existing-network custody status', title:'Existing-network custody'},
  {operation:'formation_status', label:'Read formation custody status', title:'Formation custody'},
@@ -16,8 +18,10 @@ export function custodyStatusObservation(operation, value) {
   || typeof value.address !== 'string' || !/^synv1[a-z0-9]{10,90}$/.test(value.address)) throw Error(unsupported);
  const common = {kind:read.title, pending:true, networkId:value.network_id, chainId:value.chain_id, validatorAddress:value.address};
  if (operation === 'identity_status') {
+  let scoped;
+  try {scoped=identityEvidence(value,'status');} catch {throw Error(unsupported);}
   if (value.genesis_authority_verified !== true || !digest(value.genesis_sha256)) throw Error(unsupported);
-  return {...common, genesisSha256:value.genesis_sha256};
+  return {...common, genesisSha256:value.genesis_sha256,...scoped};
  }
  if (value.schema !== 'nodenetwork-formation-v1' || !digest(value.formation_sha256)
   || !digest(value.formation_id) || value.formation_id === '0'.repeat(64) || !digest(value.request_sha256)) throw Error(unsupported);

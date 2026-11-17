@@ -1,6 +1,7 @@
 import {isTauri,invoke} from "@tauri-apps/api/core";
 import {parseRequestHistory} from './request-history.js';
 import {genesisStageLocalReview} from './genesis-stage-files.js';
+import {verifyIdentityRequest} from './identity-evidence.js';
 export async function nodeNetworkRequests(){
  if(!isTauri())throw Error('Local request history requires the native Portal app. No native history has been read.');
  return parseRequestHistory(await invoke('portal_nodenetwork_requests'));
@@ -16,9 +17,19 @@ export async function nodeNetworkReviewCustodyReceipt(target, recordId, operatio
  const {command,schema,label}=custodyReceiptPorts[operation];
  if (!isTauri()) throw Error(`The ${label} receipt review requires the native Portal app.`);
  const reply=await invoke(command,{target,recordId});
- if (!reply || typeof reply !== 'object' || Array.isArray(reply) || Object.keys(reply).length !== 2
+ const identity=operation==='identity_generate';
+ const attributed=identity&&Object.hasOwn(reply??{},'provenance');
+ if (!reply || typeof reply !== 'object' || Array.isArray(reply) || Object.keys(reply).length !== (attributed?3:2)
   || reply.schema !== schema || !['match','different','absent','unsupported'].includes(reply.status)) {
   throw Error(`The native bridge returned unsupported ${label} receipt evidence.`);
+ }
+ if(identity) {
+  const pending=['match','different'].includes(reply.status);
+  const provenance=attributed?reply.provenance:pending?'genesis_input':'none';
+  if(!(pending?['identity_request','genesis_input']:['none']).includes(provenance)) {
+   throw Error('The native bridge returned unsupported identity preparation receipt evidence.');
+  }
+  return {status:reply.status,provenance};
  }
  return reply.status;
 }
@@ -60,6 +71,9 @@ export async function nodeNetworkController(target,operation,parameters={},bindi
  const reply=await (readOperations.has(operation)?call():withNodeChange(call));
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid controller response.');
  if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Controller refused the operation.'}`);
+ if(operation==='identity_generate'||operation==='identity_status'&&reply.result?.pending===true) {
+  await verifyIdentityRequest(reply.result,operation==='identity_generate'?'generation':'status');
+ }
  return reply.result;
 }
 
