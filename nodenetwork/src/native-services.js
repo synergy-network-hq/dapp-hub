@@ -110,3 +110,12 @@ export async function nodeNetworkSelectGuest(target,guestId){
  if(target?.guest||!/^[a-z][a-z0-9-]{0,31}$/.test(guestId))throw Error('Select a physical host and a valid guest.');
  return withNodeChange(()=>invoke('portal_nodenetwork_select_guest',{target,guestId}));
 }
+
+export async function nodeNetworkConfigureGuest(target){
+ if(!isTauri())throw Error('Guest policy approval requires native Portal.');
+ if(target?.guest)throw Error('Select the physical hosting machine.');
+ const result=await withNodeChange(()=>invoke('portal_nodenetwork_configure_guest',{target}));
+ if(result===null)return null;
+ if(result?.schema!=='nodenetwork-guest-configuration-v1'||result.configured!==true||result.guest_created!==false||!/^[a-z][a-z0-9-]{0,31}$/.test(result.guest_id))throw Error('Invalid native guest configuration receipt.');
+ return result;
+}

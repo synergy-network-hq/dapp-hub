@@ -39,3 +39,19 @@ test('bare rollback IPC preserves old release reference and never retries a canc
   globalThis.__nnRollbackTest.native=false;await assert.rejects(rollbackBareNodeBootstrap(target,'root','synergy-linux-277269106d979097'),/native Portal/);assert.equal(calls,2);
  }finally{delete globalThis.__nnRollbackTest;}
 });
+
+test('guest configuration IPC accepts only native selection and never retries an uncertain grant',async()=>{
+ let calls=0,reply=null;
+ const target={kind:'remote',host:'approved-host',root:'/opt/synergy'};
+ globalThis.__nnConfig={native:true,invoke:async(command,args)=>{calls++;assert.equal(command,'portal_nodenetwork_configure_guest');assert.deepEqual(args,{target});if(reply instanceof Error)throw reply;return reply;}};
+ try{
+  const source=(await readFile(new URL('../src/native-services.js',import.meta.url),'utf8')).replace('import {isTauri,invoke} from "@tauri-apps/api/core";','const isTauri=()=>globalThis.__nnConfig.native;const invoke=(...args)=>globalThis.__nnConfig.invoke(...args);');
+  const {nodeNetworkConfigureGuest}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  assert.equal(await nodeNetworkConfigureGuest(target),null);assert.equal(calls,1);
+  await assert.rejects(nodeNetworkConfigureGuest({...target,guest:{guest_id:'x'}}),/physical hosting/);assert.equal(calls,1);
+  reply={schema:'nodenetwork-guest-configuration-v1',configured:true,guest_created:false,guest_id:'validator-guest'};assert.deepEqual(await nodeNetworkConfigureGuest(target),reply);
+  reply={...reply,guest_created:true};await assert.rejects(nodeNetworkConfigureGuest(target),/Invalid native/);
+  reply=Error('uncertain');const before=calls;await assert.rejects(nodeNetworkConfigureGuest(target),/uncertain/);assert.equal(calls,before+1);
+  globalThis.__nnConfig.native=false;await assert.rejects(nodeNetworkConfigureGuest(target),/native Portal/);
+ }finally{delete globalThis.__nnConfig;}
+});

@@ -24,7 +24,7 @@ pub struct Prepared {wire:Zeroizing<Vec<u8>>,pub summary:Value,pub host_key:Opti
 fn digest(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
 fn pin(s:&str)->bool{s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))}
 fn limit(name:&str)->Option<usize>{match name{
- "formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
+ "managed-guest.json"=>Some(16384),"formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
  "commissioning/config/node.json"=>Some(1024*1024),"commissioning/config/start-authorized.json"=>Some(65536),
  "commissioning/network/genesis.json"=>Some(4*1024*1024),"commissioning/network/authority.json"|
  "commissioning/network/network-manifest.json"|"commissioning/network/transport-registry.json"=>Some(1024*1024),
@@ -61,7 +61,7 @@ fn validate(raw:&str,target:&Target,expected:&str,now:u64)->Result<Document,Stri
  Request{version:1,operation:"install_preflight".into(),parameters:json!({"release_id":d.release_id,"manifest_sha256":d.manifest_sha256,"network_id":d.network_id,"chain_id":d.chain_id,"node_name":d.node_name})}.validate()?;
  if d.artifacts.len()>10||d.artifacts.iter().any(|(n,p)|limit(n).is_none()||!pin(p))||d.requests.is_empty()||d.requests.len()>16{return Err("Authorization inputs or requests exceed exact fixed scope".into());}
  let mut requests=std::collections::BTreeSet::new();
- for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
+ for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_remove"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
  if d.genesis_pins.as_ref().is_some_and(|p|p.len()!=3||!["genesis.json","authority.json","authority-root.pub"].iter().all(|n|p.get(*n).is_some_and(|s|pin(s)))){return Err("Exact independently approved Genesis pins required".into());}
  Ok(d)
 }
@@ -88,7 +88,8 @@ pub async fn execute(target:Target,operator:String,prepared:Prepared,control:&Pa
  target.validate()?;node_bootstrap::validate_operator(&operator)?;
  let _serial=node_controller::SERIAL.lock().await;
  // Retire only this app-owned prior channel before applying the exact new pin.
- node_controller::close_connection(&target,control,&operator).await;
+ node_controller::close_connection_checked(&target,control,"synergy-nodenetwork").await?;
+ node_controller::close_connection_checked(&target,control,&operator).await?;
  let pin_path=control.join(format!("authorization-{}.known-hosts",prepared.sha256));
  if let Some(host_key)=&prepared.host_key{
   node_controller::protect_control_directory(control)?;
@@ -116,7 +117,8 @@ pub async fn execute(target:Target,operator:String,prepared:Prepared,control:&Pa
   if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported authorization response");}
   Ok(reply)
  }).await;
- node_controller::close_connection(&target,control,&operator).await;
+ node_controller::close_connection_checked(&target,control,"synergy-nodenetwork").await?;
+ node_controller::close_connection_checked(&target,control,&operator).await?;
  // No automatic replay, even after timeout or partial upload.
  match result{Ok(value)=>value.map_err(String::from),Err(_)=>Err("Authorization outcome uncertain; use read-only target reconciliation, do not resend".into())}
 }
@@ -170,6 +172,18 @@ pub(super) fn vpn_continuation(mut doc:Value,target:&Target,initial:&str,parent:
  prepared.document=text;prepared.sha256=hash.clone();prepared.summary=json!({"sha256":hash,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
 }
 
+
+pub(super) struct NativeGuestArtifact<'a>{pub bytes:&'a [u8],pub request:&'a Request}
+pub(super) fn guest_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,artifact:NativeGuestArtifact<'_>)->Result<Prepared,String>{
+ if target.guest.is_some()||artifact.bytes.is_empty()||artifact.bytes.len()>16384||artifact.request.operation!="guest_create"||artifact.request.validate()!=Ok(true)||doc["requests"][0]["request_sha256"]!=artifact.request.approval_id()||doc["requests"][0]["operation"]!="guest_create"{return Err("Managed guest artifact must authorize only its exact creation request on the physical host".into())}
+ let value:Value=serde_json::from_slice(artifact.bytes).map_err(|_|"Malformed public managed guest policy")?;
+ for key in ["guest_id","image_sha256","cpu_count","memory_mib","disk_gib"]{if value[key]!=artifact.request.parameters[key]{return Err("Guest policy and exact request differ".into())}}
+ let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ doc["artifacts"]=json!({"managed-guest.json":digest(artifact.bytes)});let text=doc.to_string();let hash=digest(text.as_bytes());
+ validate(&text,target,&hash,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ prepared.wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{"managed-guest.json":STANDARD.encode(artifact.bytes)}})).map_err(|_|"Cannot encode exact guest policy")?);
+ prepared.document=text;prepared.sha256=hash.clone();prepared.summary=json!({"sha256":hash,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
+}
 
 #[cfg(test)]mod tests{
  use super::*;

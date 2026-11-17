@@ -1,7 +1,7 @@
 import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
-import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap,nodeNetworkSelectGuest} from './native-services.js';
+import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap,nodeNetworkSelectGuest,nodeNetworkConfigureGuest} from './native-services.js';
 import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
@@ -187,7 +187,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <p>Bound public enrollment can be used by the independent transport registry signer. No private key is exported. Signed membership does not prove the required 50,000 SNRG stake, runtime admission or participation.</p>
    </Card>
    <Card title="4. Connect VPN, commission and verify runtime">
-  {!target.guest&&<GuestHosts onSelectGuest={async(host,id)=>{const selected=await nodeNetworkSelectGuest(host,id);if(selected&&onSelectTarget)onSelectTarget(selected);return selected;}} target={target} disabled={!permitted||!state||!!pending} invokeGuest={nodeNetworkGuest} onMutation={()=>setState(null)}/>}
+  {!target.guest&&<GuestHosts invokeConfigureGuest={nodeNetworkConfigureGuest} onSelectGuest={async(host,id)=>{const selected=await nodeNetworkSelectGuest(host,id);if(selected&&onSelectTarget)onSelectTarget(selected);return selected;}} target={target} disabled={!permitted||!state||!!pending} invokeGuest={nodeNetworkGuest} onMutation={()=>setState(null)}/>}
    {target.guest&&<Card title="Managed guest target"><Detail data={{physicalHost:target.host,guest:target.guest.guest_id,creationRequest:target.guest.create_request_sha256}}/><p>SSH is routed through the authenticated hosting machine. Guest administration uses its approved synergy account.</p><button type="button" disabled={!!pending} onClick={()=>{const physical={...target};delete physical.guest;onSelectTarget?.(physical);}}>Return to hosting machine</button></Card>}
      <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
     <p>{vpn?.connected&&vpn?.server_bound?'VPN connected and server binding observed':vpn?'VPN enrollment or connection pending':'VPN status not verified'}</p>

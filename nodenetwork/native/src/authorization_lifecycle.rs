@@ -166,6 +166,36 @@ pub(super) async fn eligible(base:&Path,target:&Target,control:&Path)->Result<bo
  let request=Request{version:1,operation:"restart".into(),parameters:json!({})};
  continuation_document(&doc,&reply["result"],&request,None,1)?;Ok(true)
 }
+pub(super) async fn guest_grant(base:&Path,target:&Target,request:&Request,control:&Path,bytes:&[u8],resources:&Value)->Result<Value,String>{
+ if !cfg!(debug_assertions)||target.guest.is_some(){return Err("Guest policy staging is isolated engineering on the physical host only".into())}
+ let(record,doc)=initial(base,target)?;
+ let reply=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
+ let status=&reply["result"];if reply["ok"]!=true||status["initial_sha256"]!=hash(record.document.as_bytes()){return Err("Guest host does not match its original independent authorization".into())}
+ if status["selection"]["release_id"]!=resources["release_id"]||status["selection"]["manifest_sha256"]!=resources["manifest_sha256"]{return Err("Guest resources changed after native review; inspect the current master before approval".into())}
+ let intent=folder(base)?.join(format!("guest-continuation-{}.json",hash(target.journal_identity().to_string().as_bytes())));
+ if intent.exists()||intent.is_symlink(){
+  let old:Value=serde_json::from_slice(&read(&intent,4096)?).map_err(|_|"Malformed guest continuation intent")?;
+  if old["authorization_sha256"]==status["authorization"]["sha256"]&&old["request_sha256"]==request.approval_id()&&old["artifact_sha256"]==hash(bytes)&&status["pending_grants"].as_array().is_some_and(|a|a.iter().any(|v|v.as_str()==Some(request.approval_id().as_str()))){
+   crate::request_journal::reconcile_verified(base,&target.journal_identity(),"authorization_stage",&request.approval_id())?;
+   std::fs::remove_file(intent).map_err(|_|"Guest grant is verified; local reconciliation interrupted")?;
+   return Ok(json!({"schema":"nodenetwork-guest-configuration-v1","request_sha256":request.approval_id(),"policy_sha256":hash(bytes),"guest_id":request.parameters["guest_id"],"configured":true,"guest_created":false}));
+  }return Err("Guest policy staging is uncertain; inspect the original intent without restaging".into())
+ }
+ let now=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs();
+ let next=continuation_document(&doc,status,request,None,now)?;
+ let prepared=authorization::guest_continuation(next,target,&hash(record.document.as_bytes()),status["authorization"]["sha256"].as_str().ok_or("Missing authorization parent")?,status["formation_sha256"].as_str().ok_or("Missing formation")?,authorization::NativeGuestArtifact{bytes,request})?;
+ let expected=prepared.sha256.clone();
+ let dispatch=crate::request_journal::Dispatch::begin(base,&target.journal_identity(),"authorization_stage",&request.canonical())?;
+ let result=async{
+  save(&intent,&json!({"authorization_sha256":expected,"request_sha256":request.approval_id(),"artifact_sha256":hash(bytes)}))?;
+  let reply=authorization::execute(target.clone(),record.operator,prepared,control).await?;
+  if reply["ok"]!=true||reply["result"]["sha256"]!=expected||reply["result"]["applied"]!=true{return Err("Guest policy outcome uncertain or refused; do not restage".into())}
+  std::fs::remove_file(&intent).map_err(|_|"Guest policy applied; local confirmation interrupted")?;
+  Ok(json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-guest-configuration-v1","request_sha256":request.approval_id(),"policy_sha256":hash(bytes),"guest_id":request.parameters["guest_id"],"configured":true,"guest_created":false}}))
+ }.await;
+ dispatch.finish(&result)?;result.map(|v|v["result"].clone())
+}
+
 #[cfg(test)]mod tests{
  use super::*;use base64::{engine::general_purpose::STANDARD,Engine as _};
  fn context()->(Value,Value){let doc=json!({"target":{"kind":"remote","host":"host.example","port":22,"root":"/opt/synergy","host_key":"pinned","machine_id_sha256":null},"release_id":"reviewed","manifest_sha256":"a".repeat(64),"network_id":"isolated-network","chain_id":99999,"node_name":"validator-test","artifacts":{"formation-context.json":"b".repeat(64)}});let status=json!({"target":doc["target"],"selection":{"release_id":doc["release_id"],"manifest_sha256":doc["manifest_sha256"],"network_id":doc["network_id"],"chain_id":doc["chain_id"],"node_name":doc["node_name"]},"formation_sha256":"b".repeat(64),"genesis_pins":null,"authorization":{"sequence":3,"sha256":"c".repeat(64)}});(doc,status)}

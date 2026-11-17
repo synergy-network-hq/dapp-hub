@@ -3,7 +3,7 @@ import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk'
 
 // invokeGuest must be the host SDK's serialized native operation wrapper. No
 // browser fallback, generic command executor, or direct SSH is supported here.
-export function GuestHosts({target,disabled,invokeGuest,onSelectGuest,onMutation=()=>{}}){
+export function GuestHosts({target,disabled,invokeGuest,invokeConfigureGuest,onSelectGuest,onMutation=()=>{}}){
  const [guestId,setGuestId]=useState(''),[observed,setObserved]=useState(null),[pending,setPending]=useState(''),[error,setError]=useState(''),[uncertain,setUncertain]=useState('');
  const generation=useRef(0),locked=useRef(false),mounted=useRef(true);
  const key=JSON.stringify(target);
@@ -11,6 +11,16 @@ export function GuestHosts({target,disabled,invokeGuest,onSelectGuest,onMutation
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
  const validId=/^[a-z][a-z0-9-]{0,31}$/.test(guestId);
  const available=typeof invokeGuest==='function'&&!disabled&&validId&&!pending;
+ async function configure(){
+  if(disabled||locked.current||(uncertain&&uncertain!=='configure')||!invokeConfigureGuest)return;
+  locked.current=true;const epoch=generation.current;setPending('configure');setError('');
+  try{const result=await invokeConfigureGuest(target);if(result===null)return;
+   onMutation();if(!mounted.current||generation.current!==epoch)return;
+   if(result.schema!=='nodenetwork-guest-configuration-v1'||result.configured!==true||result.guest_created!==false)throw Error('Invalid native guest configuration receipt.');
+   setGuestId(result.guest_id);setObserved(null);
+  }catch(failure){if(mounted.current&&generation.current===epoch){setError(failure?.message||'Guest policy outcome uncertain.');setUncertain('configure');}}
+  finally{locked.current=false;if(mounted.current)setPending('');}
+ }
  async function perform(operation){
   if(!available||locked.current||(uncertain&&!['status','preflight'].includes(operation)))return;
   locked.current=true;const epoch=generation.current;setPending(operation);setError('');
@@ -33,8 +43,9 @@ export function GuestHosts({target,disabled,invokeGuest,onSelectGuest,onMutation
  const exists=observed?.schema==='nodenetwork-guest-status-v1'&&observed.exists===true;
  return <Card title="Managed isolated Linux guest">
   <p>Select the physical host above, then enter its independently approved guest identifier. The master verifies the exact contained OS image, tools, firmware and resource quota. No image download or validator installation is performed.</p>
-  <label>Approved guest identifier <input autoCapitalize="none" autoCorrect="off" spellCheck={false} value={guestId} maxLength={32} disabled={disabled||!!pending} onChange={event=>setGuestId(event.target.value)} autoComplete="off" spellCheck={false}/></label>
+  <label>Approved guest identifier <input autoCapitalize="none" autoCorrect="off" spellCheck={false} value={guestId} maxLength={32} disabled={disabled||!!pending} onChange={event=>setGuestId(event.target.value)} autoComplete="off"/></label>
   <div className="button-row">
+   <button type="button" disabled={disabled||!!pending||(!!uncertain&&uncertain!=='configure')||!invokeConfigureGuest} onClick={configure}>{uncertain==='configure'?'Reconcile exact guest configuration':'Review master-owned guest configuration'}</button>
    <button type="button" disabled={!available} onClick={()=>perform('status')}>Read guest status</button>
    <button type="button" disabled={!available||exists} onClick={()=>perform('preflight')}>Verify approved guest inputs</button>
    <button type="button" disabled={!available||uncertain||observed?.schema!=='nodenetwork-guest-preflight-v1'} onClick={()=>perform('create')}>Review and create guest</button>

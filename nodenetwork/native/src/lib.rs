@@ -22,3 +22,5 @@ pub mod guest_hosts;
 pub mod bare_rollback;
 
 pub mod managed_guest;
+
+pub mod guest_configuration;

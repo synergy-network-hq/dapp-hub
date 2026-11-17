@@ -35,7 +35,24 @@ fn public_key(path:&Path)->Result<String,String>{
     }
     Ok(format!("{} {}",fields[0],fields[1]))
 }
-fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,String>,total:&mut u64)->Result<(),String>{
+fn archive_limit(manifest:&Value)->Result<u64,String>{
+ let Some(meta)=manifest.get("managed_guest_resources")else{return Ok(MAX_ARCHIVE)};
+ let m=meta.as_object().ok_or("Invalid managed guest resources declaration")?;
+ let pin=meta["manifest_sha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)));
+ let limit=meta["archive_limit_bytes"].as_u64().ok_or("Missing approved guest archive limit")?;
+ if m.len()!=4||meta["version"]!=1||!pin||!matches!(limit,536870912|1073741824){return Err("Unapproved guest archive limit or resource declaration".into())}
+ let files=manifest["files"].as_object().ok_or("Missing managed guest file inventory")?;
+ for path in ["hosted-machines/images/os.qcow2","lib/guest-tools/bin/qemu-system-x86_64","lib/guest-tools/bin/qemu-img","lib/guest-tools/bin/ssh-keygen","lib/guest-tools/bin/genisoimage","lib/guest-tools/bios.bin","lib/guest-tools/bin/ld-linux-x86-64.so.2"]{if !files.contains_key(path){return Err("Incomplete pinned guest resource inventory".into())}}
+ let guest_files:serde_json::Map<String,Value>=files.iter().filter(|(name,_)|name.starts_with("lib/guest-tools/")||name.starts_with("hosted-machines/")).map(|(name,pin)|(name.clone(),pin.clone())).collect();
+ if meta["files"].as_object()!=Some(&guest_files){return Err("Declared guest resources differ from the sealed package inventory".into())}
+ let mut runtime=0;
+ for name in guest_files.keys(){
+  if let Some(base)=name.strip_prefix("lib/guest-tools/lib/"){if base.is_empty()||base=="."||base==".."||base.len()>128||!base.bytes().all(|b|b.is_ascii_alphanumeric()||b"._+-".contains(&b)){return Err("Unsafe guest runtime library name".into())}runtime+=1;}
+  else if !["hosted-machines/images/os.qcow2","lib/guest-tools/bin/qemu-system-x86_64","lib/guest-tools/bin/qemu-img","lib/guest-tools/bin/ssh-keygen","lib/guest-tools/bin/genisoimage","lib/guest-tools/bios.bin","lib/guest-tools/bin/ld-linux-x86-64.so.2"].contains(&name.as_str()){return Err("Undeclared guest resource path".into())}
+ }
+ if runtime>127{return Err("Guest runtime library inventory exceeds bound".into())}Ok(limit)
+}
+fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,String>,total:&mut u64,archive_limit:u64)->Result<(),String>{
     let mut children=fs::read_dir(at).map_err(|_|"Cannot inventory the master folder.")?.collect::<Result<Vec<_>,_>>().map_err(|_|"Cannot inventory the master folder.")?;
     children.sort_by_key(|e|e.file_name());
     for entry in children {
@@ -43,12 +60,12 @@ fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,Stri
         if entry.file_name().to_string_lossy().starts_with("._"){continue;}
         if !safe_member(&name)||members.len()>=8192{return Err("Unsafe or oversized master inventory.".into());}
         let metadata=fs::symlink_metadata(&path).map_err(|_|"Cannot inspect master member.")?;
-        if metadata.is_dir(){*total=total.checked_add(512).ok_or("Master archive exceeds its limit.")?;if *total>MAX_ARCHIVE{return Err("Master archive exceeds 256 MiB.".into());}members.push(Member{name,size:0,directory:true,digest:None,file:None});walk(root,&path,members,files,total)?;}
+        if metadata.is_dir(){*total=total.checked_add(512).ok_or("Master archive exceeds its limit.")?;if *total>archive_limit{return Err("Master archive exceeds its authenticated limit.".into());}members.push(Member{name,size:0,directory:true,digest:None,file:None});walk(root,&path,members,files,total,archive_limit)?;}
         else if metadata.is_file(){
             #[cfg(unix)] {use std::os::unix::fs::MetadataExt;if metadata.nlink()!=1{return Err("Hard-linked master member refused.".into());}}
             if name!="package.json"&&!files.contains_key(&name){return Err("Master contains an undeclared file.".into());}
             let size=metadata.len();*total=total.checked_add(512+size.div_ceil(512)*512).ok_or("Master archive exceeds its limit.")?;
-            if *total>MAX_ARCHIVE{return Err("Master archive exceeds 256 MiB.".into());}
+            if *total>archive_limit{return Err("Master archive exceeds its authenticated limit.".into());}
             members.push(Member{digest:files.get(&name).cloned(),name,size,directory:false,file:None});
         } else{return Err("Master symlinks and special files are forbidden.".into());}
     } Ok(())
@@ -73,7 +90,7 @@ fn prepare_master(root:&Path,parameters:&Value,operator_public_key:String,requir
     if require_build_pin{authenticate_release(&pin)?;}
     let files:BTreeMap<String,String>=serde_json::from_value(manifest["files"].clone()).map_err(|_|"Invalid master file inventory.")?;
     if files.is_empty()||files.len()>4096||files.iter().any(|(name,pin)|!safe_member(name)||pin.len()!=64||!pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Invalid master inventory paths or digests.".into());}
-    let mut members=Vec::new();let mut total=1024;walk(root,root,&mut members,&files,&mut total)?;
+    let mut members=Vec::new();let mut total=1024;walk(root,root,&mut members,&files,&mut total,archive_limit(&manifest)?)?;
     if members.iter().filter(|m|!m.directory&&m.name!="package.json").count()!=files.len(){return Err("Master inventory is incomplete.".into());}
     members.sort_by_key(|member|if member.name=="package.json"{0}else{1});
     for member in &mut members {
@@ -112,7 +129,7 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
     target.validate()?;validate_operator(&operator)?;
     if target.guest.is_some()&&operator!="synergy"{return Err("Managed guest bootstrap uses its approved synergy account".into())}
     let _guard=node_controller::SERIAL.lock().await;
-    if target.kind=="remote" {node_controller::close_connection(&target,control_dir,&operator).await;}
+    if target.kind=="remote" {node_controller::close_connection_checked(&target,control_dir,"synergy-nodenetwork").await?;node_controller::close_connection_checked(&target,control_dir,&operator).await?;}
     if update.is_none(){authenticate_release(&prepared.manifest_sha256)?;}
     let script=if let Some(context)=&update{format!("NATIVE_AUTHENTICATED_UPDATE_CONTEXT=__import__('json').loads({})\n{}",serde_json::to_string(&context.to_string()).map_err(|_|"Cannot encode reviewed update")?,BOOTSTRAP)}else{format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP)};
     let arguments=if update.is_some(){format!(" --stage-engineering-update {} {}",prepared.release,prepared.manifest_sha256)}else{String::new()};
@@ -142,11 +159,27 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
     let mut upload=tokio::spawn(transfer);
     let result=tokio::time::timeout(Duration::from_secs(300),async {let bytes=response.await?;(&mut upload).await.map_err(|_|"Master upload task did not finish.")??;let status=child.wait().await.map_err(|_|"Bootstrap did not finish.")?;if !status.success(){return Err("Bootstrap transport failed; verify SSH host identity, agent authentication and restricted sudo permissions.");}let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid bootstrap response.")?;if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported bootstrap response.");}Ok(reply)}).await;
     upload.abort();
-    node_controller::close_connection(&target,control_dir,&operator).await;
+    node_controller::close_connection_checked(&target,control_dir,&operator).await?;
     match result{Ok(out)=>out.map_err(String::from),Err(_)=>Err("Bootstrap timed out. Inspect target state before retrying; no automatic retry occurred.".into())}
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn guest_archive_cap_is_only_extended_for_exact_declared_master_resources(){
+     let mut m=serde_json::json!({"files":{}});assert_eq!(super::archive_limit(&m).unwrap(),super::MAX_ARCHIVE);
+     // Exact four-field shape emitted by canonical build_package.py, including its resource file map.
+     for path in ["hosted-machines/images/os.qcow2","lib/guest-tools/bin/qemu-system-x86_64","lib/guest-tools/bin/qemu-img","lib/guest-tools/bin/ssh-keygen","lib/guest-tools/bin/genisoimage","lib/guest-tools/bios.bin","lib/guest-tools/bin/ld-linux-x86-64.so.2","lib/guest-tools/lib/libc.so.6"]{m["files"][path]=serde_json::json!("a".repeat(64));}
+     let guest_files=m["files"].clone();m["files"]["bin/synergy-node"]=serde_json::json!("b".repeat(64));
+     m["managed_guest_resources"]=serde_json::json!({"version":1,"manifest_sha256":"a".repeat(64),"archive_limit_bytes":536870912,"files":guest_files});
+     assert_eq!(super::archive_limit(&m).unwrap(),536870912);
+     let mut b=m.clone();b["managed_guest_resources"]["archive_limit_bytes"]=serde_json::json!(1073741824);assert_eq!(super::archive_limit(&b).unwrap(),1073741824);
+     for path in ["lib/guest-tools/lib/..","lib/guest-tools/bin/arbitrary"]{let mut b=m.clone();b["files"][path]=serde_json::json!("a".repeat(64));b["managed_guest_resources"]["files"][path]=serde_json::json!("a".repeat(64));assert!(super::archive_limit(&b).is_err());}
+     let mut b=m.clone();b["managed_guest_resources"].as_object_mut().unwrap().remove("files");assert!(super::archive_limit(&b).is_err());
+     let mut b=m.clone();b["managed_guest_resources"]["files"]["lib/guest-tools/lib/libc.so.6"]=serde_json::json!("c".repeat(64));assert!(super::archive_limit(&b).is_err());
+     let mut b=m.clone();b["managed_guest_resources"]["files"]["bin/synergy-node"]=serde_json::json!("b".repeat(64));assert!(super::archive_limit(&b).is_err());
+     let mut b=m.clone();b["files"].as_object_mut().unwrap().remove("lib/guest-tools/bin/ld-linux-x86-64.so.2");b["managed_guest_resources"]["files"].as_object_mut().unwrap().remove("lib/guest-tools/bin/ld-linux-x86-64.so.2");assert!(super::archive_limit(&b).is_err());
+     m["managed_guest_resources"]["archive_limit_bytes"]=serde_json::json!(u64::MAX);assert!(super::archive_limit(&m).is_err());
+    }
+
     use super::*;
     #[test]
     #[ignore="Requires a specifically authorized clean disposable Linux target, pinned host key and isolated debug release approval"]
