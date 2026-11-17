@@ -186,15 +186,70 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
         }
         input.write_all(&[0u8;1024]).await.map_err(|_|"Cannot finish master archive.")?;drop(input);Ok::<(),&str>(())
     };
-    let response=async {let mut bytes=Vec::new();output.take(1_000_001).read_to_end(&mut bytes).await.map_err(|_|"Cannot read bootstrap response.")?;if bytes.len()>1_000_000{return Err("Bootstrap response exceeds its limit.");}Ok::<Vec<u8>,&str>(bytes)};
     let mut upload=tokio::spawn(transfer);
-    let result=tokio::time::timeout(Duration::from_secs(300),async {let bytes=response.await?;(&mut upload).await.map_err(|_|"Master upload task did not finish.")??;let status=child.wait().await.map_err(|_|"Bootstrap did not finish.")?;if !status.success(){return Err("Bootstrap transport failed; verify SSH host identity, agent authentication and restricted sudo permissions.");}let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid bootstrap response.")?;if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported bootstrap response.");}Ok(reply)}).await;
+    let result=tokio::time::timeout(Duration::from_secs(300),bootstrap_transport_reply(output,&mut upload,&mut child)).await;
     upload.abort();
     node_controller::close_connection(&target,control_dir).await;
     match result{Ok(out)=>out.map_err(String::from),Err(_)=>Err("Bootstrap timed out. Inspect target state before retrying; no automatic retry occurred.".into())}
 }
 
+// A verified-host refusal can close stdin before the archive is fully sent.
+// Preserve that negative envelope; success still requires every upload integrity
+// check and a successful transport exit. Stderr remains discarded, never exposed.
+async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload:&mut tokio::task::JoinHandle<Result<(),&'static str>>,child:&mut tokio::process::Child)->Result<Value,&'static str>{
+ let mut bytes=Vec::new();output.take(1_000_001).read_to_end(&mut bytes).await.map_err(|_|"Cannot read bootstrap response.")?;
+ if bytes.len()>1_000_000{return Err("Bootstrap response exceeds its limit.")}
+ let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid bootstrap response.")?;
+ if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported bootstrap response.")}
+ if reply["ok"]==false{
+  if !reply["error"]["code"].is_string()||!reply["error"]["message"].is_string(){return Err("Unsupported bootstrap refusal.")}
+  upload.abort();let _=upload.await;let _=child.wait().await;return Ok(reply)
+ }
+ upload.await.map_err(|_|"Master upload task did not finish.")??;
+ let status=child.wait().await.map_err(|_|"Bootstrap did not finish.")?;
+ if !status.success(){return Err("Bootstrap transport failed; verify SSH host identity, agent authentication and restricted sudo permissions.")}
+ Ok(reply)
+}
+
 #[cfg(test)] mod tests {
+    fn bootstrap_transport_child(script:&str)->tokio::process::Child{
+     let mut command=tokio::process::Command::new("/usr/bin/python3");command.args(["-I","-B","-c",script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);command.spawn().unwrap()
+    }
+    #[test]
+    fn bootstrap_transport_preserves_early_remote_refusal_over_broken_pipe(){
+     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+     let mut child=bootstrap_transport_child("import os,sys,json\nos.close(0)\nprint(json.dumps({'version':1,'ok':False,'error':{'code':'bootstrap_refused','message':'Exact pre-root validation refused'}}),flush=True)\nsys.exit(17)\n");
+     let mut input=child.stdin.take().unwrap();let output=child.stdout.take().unwrap();
+     let (finished,completion)=tokio::sync::oneshot::channel();
+     let mut upload=tokio::spawn(async move{let result=async{let bytes=[0u8;65536];for _ in 0..128{input.write_all(&bytes).await.map_err(|_|"Cannot stream master package.")?;}Ok(())}.await;let _=finished.send(());result});
+     // Force the real closed-stdin upload error to be present before resolving stdout.
+     completion.await.unwrap();
+     let result=super::bootstrap_transport_reply(output,&mut upload,&mut child).await.unwrap();
+     assert_eq!(result["ok"],false);assert_eq!(result["error"]["code"],"bootstrap_refused");assert_eq!(result["error"]["message"],"Exact pre-root validation refused");
+     });
+    }
+    #[test]
+    fn bootstrap_transport_success_never_overrides_upload_integrity_failure(){
+     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+     let mut child=bootstrap_transport_child("import sys,json\nsys.stdin.buffer.read()\nprint(json.dumps({'version':1,'ok':True,'result':{}}))\n");
+     let mut input=child.stdin.take().unwrap();let output=child.stdout.take().unwrap();
+     let mut upload=tokio::spawn(async move{input.write_all(b"changed bytes").await.unwrap();drop(input);Err("Master changed during upload; bootstrap must refuse installation.")});
+     assert_eq!(super::bootstrap_transport_reply(output,&mut upload,&mut child).await.unwrap_err(),"Master changed during upload; bootstrap must refuse installation.");
+     });
+    }
+    #[test]
+    fn bootstrap_transport_success_requires_complete_upload_and_successful_exit(){
+     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+     for exit in [0,17]{
+      let script=format!("import sys,json\nassert sys.stdin.buffer.read()==b'authenticated master'\nprint(json.dumps({{'version':1,'ok':True,'result':{{'complete':True}}}}))\nsys.exit({exit})\n");
+      let mut child=bootstrap_transport_child(&script);let mut input=child.stdin.take().unwrap();let output=child.stdout.take().unwrap();
+      let mut upload=tokio::spawn(async move{input.write_all(b"authenticated master").await.unwrap();drop(input);Ok(())});
+      let result=super::bootstrap_transport_reply(output,&mut upload,&mut child).await;
+      if exit==0{assert_eq!(result.unwrap()["result"]["complete"],true)}else{assert!(result.unwrap_err().starts_with("Bootstrap transport failed"));}
+     }
+     });
+    }
+
     use super::*;
     const OPENSSH_VECTOR: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINdamAGCsQq31Uv+08lkBzoO4XLz2qYjJa8CGmj3B1Ea";
     const VECTOR_SHA256: &str = "6442aab9f902438a4cb8c8937e7cd0d0a66737acab731501554caaeb89a59774";

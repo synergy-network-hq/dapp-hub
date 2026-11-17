@@ -1,3 +1,7 @@
+# Bootstrap refusal transport correction
+
+Ported the bounded owner transport fix from bbd04724dc99e7b0d40c5f834d2ea1460f08460a without adopting its engine, target or deployment changes. Authenticated negative bootstrap replies now survive concurrent broken-pipe upload failure. Success still requires every upload-integrity check and transport exit success. Three actual local process cases and all 120 host-independent Node native cases passed; two actual-host cases remain excluded. No host selected or bootstrap dispatched. Portal paired validator now registers the new bootstrap_transport_ test filter; a fresh full paired matrix is pending.
+
 # Native and desktop identity verification follow-up
 
 Portal focused identity-generation and Genesis-stage-journal suites passed all 26 cases. Native cargo test -p nodenetwork-native --lib identity passed all 12 matching cases, including scoped canonical request binding, legacy input-only status, duplicate/contradictory provenance refusal, redacted command output and unchanged journal fencing. Corrected an old custody-status fixture to assert strict refusal of an extra envelope field before testing the canonical envelope; the reconciliation error fixture now includes required version 1. No production parser relaxation. Full paired matrix and selected-host/runtime acceptance remain pending.
