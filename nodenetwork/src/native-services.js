@@ -4,7 +4,7 @@ export async function nodeNetworkRequests(){
  const value=await invoke('portal_nodenetwork_requests');
  const pin=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
  const states=new Set(['dispatch_intent','uncertain','response_received','verified_target_outcome']);
- const operations=new Set(['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','guest_create','guest_stop','guest_remove','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
+ const operations=new Set(['authorization_stage','update_stage','bare_bootstrap_rollback','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','guest_create','guest_stop','guest_remove','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
  const time=value=>Number.isSafeInteger(value)&&value>=0&&value<=8640000000000000;
  if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','guest_create','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
  return value;
@@ -98,4 +98,9 @@ export async function nodeNetworkGuest(target,operation,guestId){
  const preflight=operation==='preflight';
  if(reply?.schema!==(preflight?'nodenetwork-guest-preflight-v1':'nodenetwork-guest-status-v1')||(preflight?reply.selection?.guest_id:reply.guest_id)!==guestId)throw Error('Invalid native guest response for the selected guest.');
  return reply;
+}
+
+export async function rollbackBareNodeBootstrap(target,operator,releaseId){
+ if(!isTauri())throw Error('Bare bootstrap cleanup requires native Portal.');
+ return withNodeChange(()=>invoke('portal_nodenetwork_bare_rollback',{target,operator,releaseId}));
 }

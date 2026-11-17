@@ -195,3 +195,35 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
   assert!(prepared.public_key.is_empty());fs::write(root.join("tools/example.py"),b"tampered").unwrap();assert!(prepare_update(&root,&selection).is_err());
  }
 }
+
+pub(super) fn bare_rollback_scope(target:&Target,release:&str,pin:Option<&str>,debug:bool)->Result<String,String>{
+    target.validate()?;
+    if !debug||target.kind!="remote"||target.host.as_deref()!=Some("127.0.0.1")||target.port!=Some(22280)||option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN").is_none(){return Err("Bare bootstrap rollback has no independent isolated native target approval".into())}
+    let pin=pin.filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))).ok_or("No independently compiled old master approval")?;
+    if release.is_empty()||release.len()>128||!release.bytes().all(|b|b.is_ascii_alphanumeric()||b"._-".contains(&b)){return Err("Invalid old release reference".into())}Ok(pin.into())
+}
+pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&str,review:Option<&str>,control:&Path)->Result<Value,String>{
+    let pin=bare_rollback_scope(&target,release,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_BARE_ROLLBACK_MANIFEST_SHA256"),cfg!(debug_assertions))?;
+    validate_operator(operator)?;
+    if review.is_some_and(|s|s.len()!=64||!s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Invalid exact rollback review".into())}
+    let _guard=node_controller::SERIAL.lock().await;
+    node_controller::close_connection_checked(&target,control,"synergy-nodenetwork").await?;
+    node_controller::close_connection_checked(&target,control,operator).await?;
+    let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{pin}\"\n{BOOTSTRAP}");
+    let flag=if review.is_some(){"--bare-rollback-apply"}else{"--bare-rollback-preflight"};
+    let remote=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {} {} {}{}",shell_quote_static(&script),flag,release,pin,review.map(|s|format!(" {s}")).unwrap_or_default());
+    let mut command=node_controller::remote_command(&target,control,operator,&remote,None)?;
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    let result=async{
+        let mut child=command.spawn().map_err(|_|"Cannot open approved rollback admin transport")?;
+        let output=child.stdout.take().ok_or("Rollback output unavailable")?;
+        let mut bytes=Vec::new();output.take(65537).read_to_end(&mut bytes).await.map_err(|_|"Cannot read rollback response")?;
+        if bytes.len()>65536{return Err("Rollback response exceeds bound".into())}
+        let status=child.wait().await.map_err(|_|"Rollback admin transport interrupted")?;
+        if !status.success(){return Err("Rollback transport interrupted; do not repeat apply".into())}
+        let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Malformed rollback response")?;
+        if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported rollback response".into())}Ok(reply)
+    };
+    let out=match tokio::time::timeout(Duration::from_secs(180),result).await{Ok(value)=>value,Err(_)=>Err("Rollback outcome uncertain; do not replay apply".into())};
+    node_controller::close_connection_checked(&target,control,operator).await?;out
+}

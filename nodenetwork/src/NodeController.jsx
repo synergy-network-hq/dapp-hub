@@ -1,7 +1,7 @@
 import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
-import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest} from './native-services.js';
+import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap} from './native-services.js';
 import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
@@ -89,6 +89,13 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   }catch(failure){if(active.current)setError(`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
   finally{locked.current=false;if(active.current)setPending(null);}
  }
+ async function rollbackBare(){
+  if(!permitted||locked.current||!operator)return;
+  locked.current=true;setPending('bare_bootstrap_rollback');setError('');
+  try{const value=await rollbackBareNodeBootstrap(target,operator,form.release_id);if(!active.current||value===null)return;setState(null);setLatest({operation:'bare_bootstrap_rollback',parameters:{},response:value,receivedAt:Date.now()});}
+  catch(failure){if(active.current)setError(`${String(failure?.message||failure)} Do not repeat removal after an uncertain result.`);}
+  finally{locked.current=false;if(active.current)setPending(null);}
+ }
  async function stageUpdate(){
   if(!permitted||!state||locked.current)return;
   locked.current=true;setPending('update_stage');setError('');setReview(null);
@@ -117,7 +124,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   const gate=gateFor(operation);
   return <div className="native-controller-action" key={operation}><button type="button" disabled={!!pending||!gate.available} onClick={()=>perform(operation)}>{LABELS[operation]}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
  }
- const field=(key,label)=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" disabled={!!pending} onChange={event=>setForm({...form,[key]:event.target.value})}/></label>;
+ const field=(key,label)=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={!!pending} onChange={event=>setForm({...form,[key]:event.target.value})}/></label>;
  const sample=results.diagnostics?.response;
  const setup=['install_preflight','install'];
  const vpn=results.vpn_status?.response;
@@ -131,8 +138,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <Card title="2. Enroll a clean host, or resume on an enrolled host">
     <p>Inspect an existing controller first. For a clean host, native review verifies the selected package, SSH host key and public operator key. Enrollment stages the release; it does not grant installation, consensus membership or activation.</p>
     {master&&<button type="button" disabled={!!pending} onClick={()=>setForm({...form,release_id:master.release,manifest_sha256:master.manifestSha256})}>Copy inspected release reference into draft</button>}
-    <label>Existing administrative account<input value={operator} maxLength={32} autoComplete="off" disabled={!!pending} onChange={event=>setOperator(event.target.value)}/></label>
+    <label>Existing administrative account<input value={operator} maxLength={32} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={!!pending} onChange={event=>setOperator(event.target.value)}/></label>
     <button type="button" disabled={!permitted||!!pending||!!state||!operator||(target.kind==='local'&&!localSupported)} onClick={()=>perform('bootstrap')}>{LABELS.bootstrap}</button>
+    <p>For an independently approved isolated engineering target only: review removal of a completed bare bootstrap before retrying setup with a corrected master. Any installed software, authorization, custody or runtime state makes this operation refuse.</p>
+    <button type="button" disabled={!permitted||!!pending||!operator||!form.release_id} onClick={rollbackBare}>Review exact bare bootstrap removal</button>
    </Card>
    <Card title="3. Review exact engineering formation authorization">
     <p>The isolated native build independently pins up to five exact initial host authorization documents. Select the matching document and fixed-name inputs through native review. Later native-confirmed operations can use short-lived one-request continuations bound to that same target, master and formation. This does not approve production, membership or stake.</p>
@@ -201,7 +210,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   {tab==='Installation isolation'&&<Card title="Containment and removal">
    {action('inventory')}{action('uninstall_preflight')}
    <p>Removal destroys node custody, signing-safety records and chain data. Review the exact scope and preserve required material using an approved procedure first.</p>
-   <label>Confirm destructive root<input autoComplete="off" value={confirmation} disabled={!!pending} onChange={event=>setConfirmation(event.target.value)} placeholder={target.root}/></label>
+   <label>Confirm destructive root<input autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={confirmation} disabled={!!pending} onChange={event=>setConfirmation(event.target.value)} placeholder={target.root}/></label>
    {action('uninstall')}
   </Card>}
   {(tab==='Performance'||tab==='Logs')&&<Card title={tab==='Performance'?'Target resource sample':'Bounded node log summary'} action={action('diagnostics')}>

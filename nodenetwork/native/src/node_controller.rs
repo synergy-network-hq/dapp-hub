@@ -198,6 +198,15 @@ pub(super) async fn close_connection(target:&Target,directory:&Path,account:&str
         .args(["-O","exit","--"]).arg(target.host.as_deref().unwrap_or("")).stdout(Stdio::null()).stderr(Stdio::null()).status()).await;
 }
 
+pub(super) async fn close_connection_checked(target:&Target,directory:&Path,account:&str)->Result<(),String>{
+    close_connection(target,directory,account).await;
+    if target.kind!="remote"{return Ok(())}
+    let result=tokio::time::timeout(Duration::from_secs(5),tokio::process::Command::new("/usr/bin/ssh")
+        .args(["-F","/dev/null","-S"]).arg(control_socket(target,directory,account))
+        .args(["-O","check","--"]).arg(target.host.as_deref().unwrap_or("")).stdout(Stdio::null()).stderr(Stdio::null()).status()).await;
+    match result {Ok(Ok(status)) if !status.success()=>Ok(()),_=>Err("Existing SSH master has not closed; administrative recovery refused".into())}
+}
+
 pub async fn execute(target: Target, request: Request, control_dir: &Path) -> Result<Value, String> {
     execute_pinned(target,request,control_dir,None).await
 }
