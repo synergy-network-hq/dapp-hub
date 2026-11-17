@@ -99,3 +99,29 @@ test('binds only the unbound Genesis review with the same retained formation and
   assert.throws(()=>genesisBindingObservation({...result,...change},reviewed),/Genesis binding outcome is uncertain/);
  }
 });
+
+test('accepts optional scoped preflight while keeping request attribution separate',()=>{
+ const scoped={...genesis,schema:'nodenetwork-existing-identity-network-v1',membership_granted:false,stage_request_sha256:'d'.repeat(64)};
+ assert.deepEqual(identityPreflightObservation('identity_preflight',scoped),{
+  title:'Existing-network preflight',networkId:common.network_id,chainId:common.chain_id,genesisSha256:genesis.genesis_sha256,
+  existingNetworkScoped:true,stagingReceiptRecorded:true,identityRequestRecorded:false,
+ });
+ for(const change of [{schema:'future'},{membership_granted:true},{stage_request_sha256:'bad'},{request_sha256:'e'.repeat(64)},{private_key:'excluded'}])
+  assert.throws(()=>identityPreflightObservation('identity_preflight',{...scoped,...change}),/unsupported validator preparation/);
+});
+
+test('verifies the scoped canonical identity request and refuses contradictory provenance',async()=>{
+ const {verifyIdentityRequest}=await import('../src/identity-evidence.js');
+ const {createHash}=await import('node:crypto');
+ const base={...genesis,genesis_sha256:'b'.repeat(64),schema:'nodenetwork-existing-identity-network-v1',
+  address:binding.address,possession_verified:true,membership_granted:false};
+ // Independently encode the owner sorted ASCII JSON contract.
+ const canonical='{"operation":"identity_generate","parameters":{"genesis_sha256":"'+'b'.repeat(64)+'"},"version":1}';
+ const request=createHash('sha256').update(canonical).digest('hex');
+ assert.equal(request,'31f7fc6d1f59c72c450c45c0c8c1f3e307ea7b038d9459d14a3aaca37626892e');
+ await verifyIdentityRequest({...base,request_sha256:request},'generation');
+ await verifyIdentityRequest({...base,pending:true},'status');
+ await assert.rejects(verifyIdentityRequest({...base,request_sha256:'a'.repeat(64)},'generation'),/differs/);
+ await assert.rejects(verifyIdentityRequest(base,'generation'),/Unsupported/);
+ await assert.rejects(verifyIdentityRequest({...base,request_sha256:request,schema:'unsupported'},'generation'),/Unsupported/);
+});

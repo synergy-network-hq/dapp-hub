@@ -38,3 +38,18 @@ test('capabilities are independent and require a matching installed controller r
  assert.equal(installedControllerRead(targetControllerObservation({...installed,operations:[read,read]}),'identity_status').available,false);
  assert.throws(()=>targetControllerObservation({...installed,root:'/opt/synergy'}),/unsupported installation root/);
 });
+
+test('distinguishes scoped custody with and without a durable identity request',()=>{
+ const scoped={...identity,schema:'nodenetwork-existing-identity-network-v1'};
+ const inputOnly=custodyStatusObservation('identity_status',scoped);
+ assert.equal(inputOnly.existingNetworkScoped,true);
+ assert.equal(inputOnly.identityRequestRecorded,false);
+ assert.equal(inputOnly.stagingReceiptRecorded,false);
+ const attributed=custodyStatusObservation('identity_status',{...scoped,request_sha256:'b'.repeat(64),stage_request_sha256:'c'.repeat(64)});
+ assert.equal(attributed.identityRequestRecorded,true);
+ assert.equal(attributed.stagingReceiptRecorded,true);
+ for(const change of [{request_sha256:null},{stage_request_sha256:'bad'},{schema:'future'},{pending:false},{extra:'excluded'}])
+  assert.throws(()=>custodyStatusObservation('identity_status',{...scoped,...change}),/unsupported pending custody/);
+ // Interrupted intent is an error, never independently verified absence.
+ assert.throws(()=>custodyStatusObservation('identity_status',{pending:false,error:'reconciliation_required'}),/unsupported pending custody/);
+});
