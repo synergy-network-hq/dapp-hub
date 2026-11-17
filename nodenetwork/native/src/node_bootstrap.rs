@@ -12,8 +12,35 @@ fn authenticate_release(pin:&str)->Result<(),String>{
     Err("The selected release has no independent native approval. Self-declared manifests cannot authorize privileged installation.".into())
 }
 
-pub struct Prepared {members:Vec<Member>,pub release:String,pub manifest_sha256:String,pub public_key:String}
+pub struct Prepared {members:Vec<Member>,upload_deadline:Duration,pub release:String,pub manifest_sha256:String,pub public_key:String}
 struct Member {name:String,size:u64,directory:bool,digest:Option<String>,file:Option<fs::File>}
+// Only the authenticated public master stream gets a size-derived allowance.
+// Credential transports and normal controller calls retain their own deadlines.
+fn archive_upload_deadline(bytes:u64,authenticated_cap:u64)->Result<Duration,String>{
+    if !matches!(authenticated_cap,MAX_ARCHIVE|536870912|1073741824)||bytes<1024||bytes>authenticated_cap{
+        return Err("Master upload size exceeds its authenticated archive bound.".into());
+    }
+    let seconds=300u64.checked_add(bytes.div_ceil(512*1024)).filter(|n|*n<=45*60)
+        .ok_or("Master upload deadline exceeds its bound.")?;
+    Ok(Duration::from_secs(seconds))
+}
+fn member_archive_bytes(size:u64)->Result<u64,String>{
+    size.div_ceil(512).checked_mul(512).and_then(|n|n.checked_add(512))
+        .ok_or_else(||"Master archive size overflow.".into())
+}
+fn public_archive_ssh(command:tokio::process::Command)->Result<tokio::process::Command,String>{
+    let source=command.as_std();
+    if source.get_program()!=std::ffi::OsStr::new("/usr/bin/ssh"){
+        return Err("Public archive transport requires the pinned SSH command.".into());
+    }
+    // SSH uses its first option value. Prepending cannot become part of the
+    // remote command and preserves every original host-pin/identity argument.
+    let mut compressed=tokio::process::Command::new(source.get_program());
+    compressed.arg("-oCompression=yes").args(source.get_args());
+    for (key,value) in source.get_envs(){match value{Some(value)=>{compressed.env(key,value);},None=>{compressed.env_remove(key);}}}
+    if let Some(directory)=source.get_current_dir(){compressed.current_dir(directory);}
+    Ok(compressed)
+}
 fn safe_member(name:&str)->bool {
     !name.is_empty() && name.len()<=100 && name.is_ascii() && !name.contains('\\')
         && Path::new(name).components().all(|c| matches!(c,Component::Normal(_)))
@@ -64,7 +91,7 @@ fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,Stri
         else if metadata.is_file(){
             #[cfg(unix)] {use std::os::unix::fs::MetadataExt;if metadata.nlink()!=1{return Err("Hard-linked master member refused.".into());}}
             if name!="package.json"&&!files.contains_key(&name){return Err("Master contains an undeclared file.".into());}
-            let size=metadata.len();*total=total.checked_add(512+size.div_ceil(512)*512).ok_or("Master archive exceeds its limit.")?;
+            let size=metadata.len();*total=total.checked_add(member_archive_bytes(size)?).ok_or("Master archive exceeds its limit.")?;
             if *total>archive_limit{return Err("Master archive exceeds its authenticated limit.".into());}
             members.push(Member{digest:files.get(&name).cloned(),name,size,directory:false,file:None});
         } else{return Err("Master symlinks and special files are forbidden.".into());}
@@ -90,7 +117,9 @@ fn prepare_master(root:&Path,parameters:&Value,operator_public_key:String,requir
     if require_build_pin{authenticate_release(&pin)?;}
     let files:BTreeMap<String,String>=serde_json::from_value(manifest["files"].clone()).map_err(|_|"Invalid master file inventory.")?;
     if files.is_empty()||files.len()>4096||files.iter().any(|(name,pin)|!safe_member(name)||pin.len()!=64||!pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Invalid master inventory paths or digests.".into());}
-    let mut members=Vec::new();let mut total=1024;walk(root,root,&mut members,&files,&mut total,archive_limit(&manifest)?)?;
+    let authenticated_cap=archive_limit(&manifest)?;
+    let mut members=Vec::new();let mut total=1024;walk(root,root,&mut members,&files,&mut total,authenticated_cap)?;
+    let upload_deadline=archive_upload_deadline(total,authenticated_cap)?;
     if members.iter().filter(|m|!m.directory&&m.name!="package.json").count()!=files.len(){return Err("Master inventory is incomplete.".into());}
     members.sort_by_key(|member|if member.name=="package.json"{0}else{1});
     for member in &mut members {
@@ -101,7 +130,7 @@ fn prepare_master(root:&Path,parameters:&Value,operator_public_key:String,requir
         let actual=format!("{:x}",hash.finalize());let expected=if member.name=="package.json"{&pin}else{member.digest.as_ref().unwrap()};
         if &actual!=expected{return Err("Master file digest mismatch.".into());} file.rewind().map_err(|_|"Cannot rewind verified master file.")?;member.file=Some(file);member.digest=Some(actual);
     }
-    Ok(Prepared{members,release:manifest["release_id"].as_str().unwrap().into(),manifest_sha256:pin,public_key:operator_public_key})
+    Ok(Prepared{members,upload_deadline,release:manifest["release_id"].as_str().unwrap().into(),manifest_sha256:pin,public_key:operator_public_key})
 }
 fn tar_header(member:&Member)->[u8;512]{
     let mut out=[0u8;512];out[..member.name.len()].copy_from_slice(member.name.as_bytes());
@@ -138,12 +167,13 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
     let mut command=if target.kind=="local"{
         if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local bootstrap requires Linux x86_64.".into());}
         let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script]);if update.is_some(){c.args(["--stage-engineering-update",&prepared.release,&prepared.manifest_sha256]);}c
-    }else{node_controller::remote_command(&target,control_dir,&operator,&(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {}",shell_quote_static(&script))+&arguments),known_hosts)?};
+    }else{public_archive_ssh(node_controller::remote_command(&target,control_dir,&operator,&(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {}",shell_quote_static(&script))+&arguments),known_hosts)?)?};
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child=command.spawn().map_err(|_|"Cannot start restricted bootstrap transport.")?;
     let mut input=child.stdin.take().ok_or("Bootstrap input unavailable.")?;
     let output=child.stdout.take().ok_or("Bootstrap output unavailable.")?;
     let mut header=parameters;header["version"]=json!(1);header["operator_public_key"]=json!(prepared.public_key);
+    let upload_deadline=prepared.upload_deadline;
     let transfer=async move {
         if update.is_none(){input.write_all(format!("{}\n",header).as_bytes()).await.map_err(|_|"Cannot send bootstrap header.")?;}
         for member in &prepared.members{
@@ -158,7 +188,7 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
         input.write_all(&[0u8;1024]).await.map_err(|_|"Cannot finish master archive.")?;drop(input);Ok::<(),&str>(())
     };
     let mut upload=tokio::spawn(transfer);
-    let result=tokio::time::timeout(Duration::from_secs(300),bootstrap_transport_reply(output,&mut upload,&mut child)).await;
+    let result=tokio::time::timeout(upload_deadline,bootstrap_transport_reply(output,&mut upload,&mut child)).await;
     upload.abort();
     node_controller::close_connection_checked(&target,control_dir,&operator).await?;
     match result{Ok(out)=>out.map_err(String::from),Err(_)=>Err("Bootstrap timed out. Inspect target state before retrying; no automatic retry occurred.".into())}
@@ -183,6 +213,37 @@ async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn public_archive_upload_deadline_is_bounded_by_authenticated_size(){
+     assert_eq!(super::archive_upload_deadline(1024,MAX_ARCHIVE).unwrap().as_secs(),301);
+     assert_eq!(super::archive_upload_deadline(512*1024,MAX_ARCHIVE).unwrap().as_secs(),301);
+     assert_eq!(super::archive_upload_deadline(512*1024+1,MAX_ARCHIVE).unwrap().as_secs(),302);
+     assert_eq!(super::archive_upload_deadline(MAX_ARCHIVE,MAX_ARCHIVE).unwrap().as_secs(),812);
+     assert_eq!(super::archive_upload_deadline(536870912,536870912).unwrap().as_secs(),1324);
+     assert_eq!(super::archive_upload_deadline(1073741824,1073741824).unwrap().as_secs(),2348);
+     for (bytes,cap) in [(0,MAX_ARCHIVE),(1023,MAX_ARCHIVE),(MAX_ARCHIVE+1,MAX_ARCHIVE),
+        (536870913,536870912),(1073741825,1073741824),(u64::MAX,1073741824),(1024,u64::MAX)]{
+      assert!(super::archive_upload_deadline(bytes,cap).is_err());
+     }
+     assert_eq!(super::member_archive_bytes(0).unwrap(),512);
+     assert_eq!(super::member_archive_bytes(513).unwrap(),1536);
+     assert!(super::member_archive_bytes(u64::MAX).is_err());
+    }
+    #[test]fn public_archive_compression_preserves_every_pinned_ssh_argument(){
+     let mut original=tokio::process::Command::new("/usr/bin/ssh");
+     original.args(["-F","/dev/null","-oStrictHostKeyChecking=yes","-oForwardAgent=no",
+       "-oUserKnownHostsFile=/pinned/public-hosts","-oControlPath=/owned/socket","-oCompression=no",
+       "--","admin@verified-host","fixed bootstrap command"]);
+     original.env("PUBLIC_TEST","retained").env_remove("REMOVED_TEST").current_dir("/");
+     let before:Vec<_>=original.as_std().get_args().map(|arg|arg.to_owned()).collect();
+     let result=super::public_archive_ssh(original).unwrap();
+     let after:Vec<_>=result.as_std().get_args().map(|arg|arg.to_owned()).collect();
+     assert_eq!(after[0],"-oCompression=yes");assert_eq!(&after[1..],before);
+     assert_eq!(result.as_std().get_current_dir(),Some(std::path::Path::new("/")));
+     let env:Vec<_>=result.as_std().get_envs().collect();
+     assert!(env.contains(&(std::ffi::OsStr::new("PUBLIC_TEST"),Some(std::ffi::OsStr::new("retained")))));
+     assert!(env.contains(&(std::ffi::OsStr::new("REMOVED_TEST"),None)));
+     assert!(super::public_archive_ssh(tokio::process::Command::new("/bin/sh")).is_err());
+    }
     fn bootstrap_transport_child(script:&str)->tokio::process::Child{
      let mut command=tokio::process::Command::new("/usr/bin/python3");command.args(["-I","-B","-c",script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);command.spawn().unwrap()
     }
