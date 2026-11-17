@@ -40,7 +40,7 @@ export function matchesUnresolvedServiceDispatch(record, fingerprint) {
  return matchesUnresolvedDispatch(record, fingerprint) && ['register', 'start', 'restart', 'stop'].includes(record.operation);
 }
 
-export const custodyReceiptOperations = Object.freeze(['genesis_stage', 'genesis_bind', 'formation_prepare']);
+export const custodyReceiptOperations = Object.freeze(['genesis_stage', 'genesis_bind', 'formation_prepare', 'identity_generate']);
 
 export function matchesUnresolvedCustodyReceipt(record, fingerprint) {
  return matchesUnresolvedDispatch(record, fingerprint) && custodyReceiptOperations.includes(record.operation);

@@ -3,6 +3,7 @@ import {atlasAccountKey} from './atlas-account.js';
 import {blockHeight, comparableTransactionHash} from './transaction-observation.js';
 import {isProtectedWalletAddress} from './wallet-address.js';
 import {exactRpcAmount, maxU64, maxU128} from './rpc-unsigned.js';
+import {projectReceiptFeeBreakdown} from './receipt-fee-breakdown.js';
 
 function participant(value) {
   if (value === null) return null;
@@ -107,6 +108,7 @@ export function rpcReceiptObservation(value, selection, readiness) {
   return {status: value.status, blockHash: value.blockHash, height, index,
     failureReason: failure?.reason ?? null, feeMayBeEstimate: failure?.feeMayBeEstimate === true,
     gasUsed: exactRpcAmount(value.gasUsed, maxU64), feeNwei: exactRpcAmount(value.feeCharged, maxU128),
+    feeBreakdown: projectReceiptFeeBreakdown(value)?.feeBreakdown ?? null,
     chain: expectedChain, tip: readiness.chainStateAvailable ? readiness.height : null};
 }
 

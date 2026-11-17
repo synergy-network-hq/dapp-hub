@@ -180,15 +180,15 @@ fn inspect_records(base: &Path) -> Result<Vec<Record>, String> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum CustodyReceiptKind { GenesisStaging, GenesisBinding, Formation }
+pub(super) enum CustodyReceiptKind { GenesisStaging, GenesisBinding, Formation, Identity }
 
 impl CustodyReceiptKind {
     pub(super) fn operation(self) -> &'static str {
-        match self { Self::GenesisStaging => "genesis_stage", Self::GenesisBinding => "genesis_bind", Self::Formation => "formation_prepare" }
+        match self { Self::GenesisStaging => "genesis_stage", Self::GenesisBinding => "genesis_bind", Self::Formation => "formation_prepare", Self::Identity => "identity_generate" }
     }
 
     pub(super) fn label(self) -> &'static str {
-        match self { Self::GenesisStaging => "Genesis staging", Self::GenesisBinding => "Genesis binding", Self::Formation => "formation preparation" }
+        match self { Self::GenesisStaging => "Genesis staging", Self::GenesisBinding => "Genesis binding", Self::Formation => "formation preparation", Self::Identity => "identity preparation" }
     }
 }
 

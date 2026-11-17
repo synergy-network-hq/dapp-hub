@@ -21,6 +21,12 @@ const formationFindings = {
  absent:'The controller reported no pending formation custody.',
  unsupported:'The selected target could not provide supported formation preparation receipt evidence.',
 };
+const identityFindings = {
+ match:'The controller verified pending custody with the same Genesis input.',
+ different:'The controller verified pending custody with a different Genesis input.',
+ absent:'The controller reported no pending validator custody.',
+ unsupported:'The selected target could not provide supported pending custody evidence.',
+};
 
 const views = {
  genesis_stage:{label:'Genesis staging',action:'staging',findings:stagingFindings,
@@ -29,6 +35,8 @@ const views = {
   description:'Compare the retained binding receipt with the selected local dispatch. A match corroborates the Genesis input.'},
  formation_prepare:{label:'formation preparation',action:'formation',findings:formationFindings,
   description:'Compare retained formation preparation evidence with the selected local dispatch. A match corroborates the formation input.'},
+ identity_generate:{label:'identity preparation',action:'identity',findings:identityFindings,
+  description:'Compare the verified pending custody Genesis input with the selected identity preparation dispatch. Pending custody can also come from Genesis binding.'},
 };
 
 export function CustodyReceiptReview({target,record,fingerprint,targetScopeCurrent}) {

@@ -145,6 +145,16 @@ function RpcReceiptLookup({selection, endpoint, readRpc, native, canRead, submis
           reportedGasUsed: receipt.gasUsed === null ? 'Unavailable' : `${receipt.gasUsed} gas units`,
           reportedReceiptFee: receipt.feeNwei === null ? 'Unavailable' : `${amount(receipt.feeNwei)} SNRG (${receipt.feeNwei} nWei)`,
         }}/>
+        <section aria-label="RPC-reported network fee breakdown">
+          <h5>RPC-reported network fee breakdown</h5>
+          {receipt.feeBreakdown ? <Detail data={{
+            'Gas price': `${receipt.feeBreakdown.baseFeePerGasNwei} nWei per gas unit`,
+            'Gas fee': `${receipt.feeBreakdown.gasFeeNwei} nWei`,
+            'Amount-based protocol fee': `${receipt.feeBreakdown.amountProtocolFeeNwei} nWei`,
+            'Storage fee': `${receipt.feeBreakdown.storageFeeNwei} nWei`,
+            'Priority fee': `${receipt.feeBreakdown.priorityFeeNwei} nWei`,
+          }}/> : <p>Fee breakdown unavailable from this receipt.</p>}
+        </section>
         {receipt.status === '0x0' && receipt.feeNwei !== null && <p>{receipt.feeMayBeEstimate ?
           'The reported fee may be an estimate for this failure. A debit remains unverified.' :
           'The receipt reports a fee amount. A debit remains unverified.'}</p>}

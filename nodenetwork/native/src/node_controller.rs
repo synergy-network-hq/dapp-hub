@@ -793,6 +793,17 @@ pub(super) fn formation_receipt_status(reply: &Value, expected_request_digest: &
     if result["request_sha256"] == expected_request_digest { "match" } else { "different" }
 }
 
+pub(super) fn identity_receipt_status(reply: &Value, expected_request_digest: &str) -> &'static str {
+    if reply["version"]!=1 || !reply.as_object().is_some_and(|fields|fields.len()==3) {return "unsupported";}
+    let Ok(result)=custody_status_fields("identity_status",reply) else {return "unsupported";};
+    if result["pending"]==false {return "absent";}
+    // The owner verifies custody and its Genesis input, but this status does not
+    // identify the operation that created the pending custody.
+    let request=Request {version:1,operation:"identity_generate".into(),
+        parameters:json!({"genesis_sha256":result["genesis_sha256"]})};
+    if request.approval_id()==expected_request_digest {"match"} else {"different"}
+}
+
 pub(super) fn exact_genesis_mutation_reply(reply: &Value) -> bool {
     reply["version"] == 1 && reply.as_object().is_some_and(|fields| fields.len() == 3)
         && match reply["ok"].as_bool() {
@@ -1111,10 +1122,11 @@ pub(super) async fn execute_genesis_stage_locked(target:&Target,wire:&str,contro
 pub(super) async fn execute_receipt_raw_locked(target:&Target,request:&Request,control_dir:&Path,
     _serial:&tokio::sync::MutexGuard<'_, ()>) -> Result<Value,String> {
     // Only the native journal comparison consumes these unprojected, fixed reads.
-    if !matches!(request.operation.as_str(),"genesis_binding_preflight"|"formation_status"|"diagnostics") || request.validate()? {
+    if !matches!(request.operation.as_str(),"genesis_binding_preflight"|"formation_status"|"identity_status"|"diagnostics") || request.validate()? {
         return Err("Unsupported receipt review read.".into());
     }
-    exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None,request.operation=="diagnostics").await
+    let strict=matches!(request.operation.as_str(),"diagnostics"|"identity_status");
+    exchange(target,request.canonical().to_string().as_bytes(),180,control_dir,None,strict).await
 }
 
 async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known_hosts:Option<&Path>,strict_receipt:bool) -> Result<Value,String> {
@@ -1474,6 +1486,14 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         for operation in ["formation_prepare", "formation_export", "genesis_bind"] {
             let request = Request{version:1,operation:operation.into(),parameters:json!({})};
             assert!(request.validate().is_err());
+        }
+    }
+    #[test] fn reviewed_identity_receipt_refuses_duplicate_pending_or_genesis_fields() {
+        for raw in [
+            r#"{"version":1,"ok":true,"result":{"pending":true,"p\u0065nding":false}}"#,
+            r#"{"version":1,"ok":true,"result":{"genesis_sha256":"first","genesis_sha256":"second"}}"#,
+        ] {
+            assert!(decode_receipt_reply(raw.as_bytes()).is_err());
         }
     }
     #[test] fn custody_status_keeps_pending_identity_and_formation_contracts_distinct() {

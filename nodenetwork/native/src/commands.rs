@@ -29,6 +29,12 @@ pub async fn portal_nodenetwork_review_formation_receipt(window:tauri::WebviewWi
 }
 
 #[tauri::command]
+pub async fn portal_nodenetwork_review_identity_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
+ target:node_controller::Target,record_id:String)->Result<Value,String>{
+ read_custody_receipt(window,app,target,record_id,CustodyReceiptKind::Identity).await
+}
+
+#[tauri::command]
 pub async fn portal_nodenetwork_review_upgrade_receipt(window:tauri::WebviewWindow,app:tauri::AppHandle,
  target:node_controller::Target,record_id:String,release_id:String,manifest_sha256:String)->Result<Value,String>{
  let selection=node_controller::Request{version:1,operation:"upgrade".into(),
@@ -147,12 +153,14 @@ where Fut:Future<Output=Result<Value,String>> {
   CustodyReceiptKind::GenesisStaging=>("nodenetwork-genesis-stage-receipt-review-v1","genesis_binding_preflight"),
   CustodyReceiptKind::GenesisBinding=>("nodenetwork-genesis-binding-receipt-review-v1","genesis_binding_preflight"),
   CustodyReceiptKind::Formation=>("nodenetwork-formation-receipt-review-v1","formation_status"),
+  CustodyReceiptKind::Identity=>("nodenetwork-identity-receipt-review-v1","identity_status"),
  };
  let status=if controller.as_ref().is_ok_and(|reply|node_controller::supports_receipt_review(reply,read_operation)) {
   match (read(query(read_operation)).await,kind) {
    (Ok(reply),CustodyReceiptKind::GenesisStaging)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),"stage_request_sha256"),
    (Ok(reply),CustodyReceiptKind::GenesisBinding)=>node_controller::genesis_receipt_status(&reply,record.request_digest(),"request_sha256"),
    (Ok(reply),CustodyReceiptKind::Formation)=>node_controller::formation_receipt_status(&reply,record.request_digest()),
+   (Ok(reply),CustodyReceiptKind::Identity)=>node_controller::identity_receipt_status(&reply,record.request_digest()),
    (Err(_),_)=>"unsupported",
   }
  } else {"unsupported"};
@@ -1691,6 +1699,85 @@ mod tests {
   retained["result"]["enrollment_json"]=json!(enrollment);
   retained["result"]["enrollment_sha256"]=json!(format!("{:x}",Sha256::digest(enrollment.as_bytes())));
   retained
+ }
+
+ fn reviewed_identity_receipt_fixture()->(Target,PathBuf,Value,Request,Value) {
+  let (target,journal,mut controller)=reviewed_formation_receipt_fixture();
+  controller["result"]["operations"][0]["operation"]=json!("identity_status");
+  let request=Request{version:1,operation:"identity_generate".into(),parameters:json!({"genesis_sha256":"a".repeat(64)})};
+  let pending=json!({"version":1,"ok":true,"result":{"pending":true,"network_id":"fixture-network",
+   "chain_id":"18446744073709551615","genesis_sha256":"a".repeat(64),"address":"synv1".to_owned()+&"a".repeat(36),
+   "genesis_authority_verified":true,"possession_verified":true,"membership_granted":false}});
+  (target,journal,controller,request,pending)
+ }
+
+ #[test]
+ fn reviewed_identity_receipt_compares_only_verified_genesis_input_and_preserves_exact_journal() {
+  let (target,journal,controller,request,pending)=reviewed_identity_receipt_fixture();
+  // Independently emitted by pinned controller.py::request_digest.
+  assert_eq!(request.approval_id(),"f8749259ab9d8ff9aa8474f31f83305ca8efc250cc0905f5638701b12f3e3fd0");
+  request_journal::Dispatch::begin(&journal,&target.journal_identity(),"identity_generate",&request.canonical()).unwrap()
+   .finish(&Err("unknown outcome".into())).unwrap();
+  let history=request_journal::inspect(&journal).unwrap();
+  let id=history["records"][0]["id"].as_str().unwrap();
+  let path=journal.join("nodenetwork-requests-v1").join(format!("{id}.json"));
+  let original=std::fs::read(&path).unwrap();
+  let mut different=pending.clone();
+  different["result"]["genesis_sha256"]=json!("b".repeat(64));
+  let mut extra=pending.clone();
+  extra["detail"]=json!("private-identity-fixture");
+  let mut unverified=pending.clone();
+  unverified["result"]["possession_verified"]=json!(false);
+  let mut wrong_version=pending.clone();
+  wrong_version["version"]=json!(2);
+  let absent=json!({"version":1,"ok":true,"result":{"pending":false}});
+  let refused=json!({"version":1,"ok":false,"error":{"code":"reconciliation_required","message":"private-identity-fixture"}});
+  let mut no_read=controller.clone();
+  no_read["result"]["operations"][0]["kind"]=json!("mutation");
+  for (admission,result,status,count) in [(controller.clone(),pending,"match",2),(controller.clone(),different,"different",2),
+   (controller.clone(),absent,"absent",2),(controller.clone(),extra,"unsupported",2),(controller.clone(),unverified,"unsupported",2),
+   (controller.clone(),wrong_version,"unsupported",2),(controller,refused,"unsupported",2),(no_read,Value::Null,"unsupported",1)] {
+   let mut calls=Vec::new();
+   let result=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::Identity,|query| {
+    calls.push(query.canonical());
+    std::future::ready(Ok(match query.operation.as_str(){"target"=>admission.clone(),"identity_status"=>result.clone(),_=>panic!("unadmitted request")}))
+   })).unwrap();
+   assert_eq!(result,json!({"schema":"nodenetwork-identity-receipt-review-v1","status":status}));
+   let wire=["target","identity_status"].map(|operation|json!({"version":1,"operation":operation,"parameters":{}}));
+   assert_eq!(calls,&wire[..count]);
+   assert_eq!(std::fs::read(&path).unwrap(),original);
+   assert_eq!(request_journal::inspect(&journal).unwrap(),history);
+  }
+  assert!(request_journal::Dispatch::begin(&journal,&target.journal_identity(),"identity_generate",&request.canonical()).is_err());
+  std::fs::remove_dir_all(journal).unwrap();
+ }
+
+ #[test]
+ fn reviewed_identity_receipt_rejects_other_operations_and_retires_in_flight_journal_drift() {
+  for drift in ["target","identity_status"] {
+   let (target,journal,controller,request,pending)=reviewed_identity_receipt_fixture();
+   let other=journal.join("other");
+   request_journal::Dispatch::begin(&other,&target.journal_identity(),"genesis_bind",&request.canonical()).unwrap();
+   let other_history=request_journal::inspect(&other).unwrap();
+   let other_id=other_history["records"][0]["id"].as_str().unwrap();
+   let rejected=tauri::async_runtime::block_on(review_custody_receipt(&target,other_id,&other,CustodyReceiptKind::Identity,
+    |_| -> std::future::Ready<Result<Value,String>> {panic!("wrong operation must not reach transport")}));
+   assert!(rejected.is_err());
+   std::fs::remove_dir_all(other).unwrap();
+   let dispatch=request_journal::Dispatch::begin(&journal,&target.journal_identity(),"identity_generate",&request.canonical()).unwrap();
+   let history=request_journal::inspect(&journal).unwrap();
+   let id=history["records"][0]["id"].as_str().unwrap();
+   let mut live=Some(dispatch);
+   let mut calls=Vec::new();
+   let rejected=tauri::async_runtime::block_on(review_custody_receipt(&target,id,&journal,CustodyReceiptKind::Identity,|query| {
+    if query.operation==drift {live.take().unwrap().finish(&Err("record progressed".into())).unwrap();}
+    calls.push(query.operation.clone());
+    std::future::ready(Ok(if query.operation=="target" {controller.clone()} else {pending.clone()}))
+   }));
+   assert!(rejected.unwrap_err().contains("selected identity preparation dispatch changed"));
+   assert_eq!(calls,if drift=="target" {vec!["target"]} else {vec!["target","identity_status"]});
+   std::fs::remove_dir_all(journal).unwrap();
+  }
  }
 
  fn reviewed_formation_receipt_fixture()->(Target,PathBuf,Value) {

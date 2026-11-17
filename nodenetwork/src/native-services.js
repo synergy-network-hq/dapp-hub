@@ -9,6 +9,7 @@ const custodyReceiptPorts = {
  genesis_stage:{command:'portal_nodenetwork_review_genesis_stage_receipt',schema:'nodenetwork-genesis-stage-receipt-review-v1',label:'Genesis staging'},
  genesis_bind:{command:'portal_nodenetwork_review_genesis_binding_receipt',schema:'nodenetwork-genesis-binding-receipt-review-v1',label:'Genesis binding'},
  formation_prepare:{command:'portal_nodenetwork_review_formation_receipt',schema:'nodenetwork-formation-receipt-review-v1',label:'formation preparation'},
+ identity_generate:{command:'portal_nodenetwork_review_identity_receipt',schema:'nodenetwork-identity-receipt-review-v1',label:'identity preparation'},
 };
 export async function nodeNetworkReviewCustodyReceipt(target, recordId, operation) {
  if (!Object.hasOwn(custodyReceiptPorts, operation)) throw Error('Select a supported custody receipt review.');
