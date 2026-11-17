@@ -1,3 +1,7 @@
+# Exact bootstrap outcomes and uncertain journal preservation
+
+Bootstrap now reuses the native duplicate-rejecting receipt decoder and requires exact version/ok/result-or-error envelopes before accepting an outcome. Six malformed wire cases in one real-process regression remain uncertain through the actual scratch request journal and retain the second-mutation fence. All four bootstrap transport tests and all 121 host-independent native cases passed; two actual-host tests excluded. No host selected. The existing Portal bootstrap transport validator filter automatically includes the new case; a full paired rerun after this source change remains pending.
+
 # Bootstrap refusal transport correction
 
 Ported the bounded owner transport fix from bbd04724dc99e7b0d40c5f834d2ea1460f08460a without adopting its engine, target or deployment changes. Authenticated negative bootstrap replies now survive concurrent broken-pipe upload failure. Success still requires every upload-integrity check and transport exit success. Three actual local process cases and all 120 host-independent Node native cases passed; two actual-host cases remain excluded. No host selected or bootstrap dispatched. Portal paired validator now registers the new bootstrap_transport_ test filter; a fresh full paired matrix is pending.

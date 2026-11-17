@@ -199,12 +199,13 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
 async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload:&mut tokio::task::JoinHandle<Result<(),&'static str>>,child:&mut tokio::process::Child)->Result<Value,&'static str>{
  let mut bytes=Vec::new();output.take(1_000_001).read_to_end(&mut bytes).await.map_err(|_|"Cannot read bootstrap response.")?;
  if bytes.len()>1_000_000{return Err("Bootstrap response exceeds its limit.")}
- let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid bootstrap response.")?;
- if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported bootstrap response.")}
+ let reply=node_controller::decode_receipt_reply(&bytes).map_err(|_|"Invalid bootstrap response.")?;
+ if reply["version"]!=1||!reply["ok"].is_boolean()||!reply.as_object().is_some_and(|fields|fields.len()==3){return Err("Unsupported bootstrap response.")}
  if reply["ok"]==false{
-  if !reply["error"]["code"].is_string()||!reply["error"]["message"].is_string(){return Err("Unsupported bootstrap refusal.")}
+  if !reply["error"].as_object().is_some_and(|fields|fields.len()==2)||!reply["error"]["code"].is_string()||!reply["error"]["message"].is_string(){return Err("Unsupported bootstrap refusal.")}
   upload.abort();let _=upload.await;let _=child.wait().await;return Ok(reply)
  }
+ if !reply["result"].is_object(){return Err("Unsupported bootstrap response.")}
  upload.await.map_err(|_|"Master upload task did not finish.")??;
  let status=child.wait().await.map_err(|_|"Bootstrap did not finish.")?;
  if !status.success(){return Err("Bootstrap transport failed; verify SSH host identity, agent authentication and restricted sudo permissions.")}
@@ -247,6 +248,38 @@ async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload
       let result=super::bootstrap_transport_reply(output,&mut upload,&mut child).await;
       if exit==0{assert_eq!(result.unwrap()["result"]["complete"],true)}else{assert!(result.unwrap_err().starts_with("Bootstrap transport failed"));}
      }
+     });
+    }
+
+    #[test]
+    fn bootstrap_transport_ambiguous_envelopes_preserve_uncertain_dispatch() {
+     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+      let invalid = [
+       r#"{"version":1,"ok":true,"ok":false,"error":{"code":"bootstrap_refused","message":"fixture"}}"#,
+       r#"{"version":1,"ok":false,"error":{"code":"one","code":"two","message":"fixture"}}"#,
+       r#"{"version":1,"ok":false,"error":{"code":"bootstrap_refused","message":"fixture"},"result":{}}"#,
+       r#"{"version":1,"ok":true}"#,
+       r#"{"version":1,"ok":true,"result":null}"#,
+       r#"{"version":1,"ok":false,"error":{"code":"bootstrap_refused"}}"#,
+      ];
+      for (index,wire) in invalid.iter().enumerate() {
+       let script=format!("import sys\nsys.stdin.buffer.read()\nsys.stdout.write({})\n",serde_json::to_string(wire).unwrap());
+       let mut child=bootstrap_transport_child(&script);let input=child.stdin.take().unwrap();let output=child.stdout.take().unwrap();
+       let mut upload=tokio::spawn(async move {drop(input);Ok(())});
+       let outcome=super::bootstrap_transport_reply(output,&mut upload,&mut child).await.map_err(String::from);
+       assert!(outcome.is_err(),"{wire}");
+       let _=upload.await;let _=child.wait().await;
+       let base=std::env::temp_dir().canonicalize().unwrap().join(format!("synergy-bootstrap-envelope-{}-{}-{index}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+       let target=json!({"kind":"remote","host":"fixture.invalid","port":22,"root":"/opt/Synergy"});
+       let request=json!({"version":1,"operation":"bootstrap"});
+       let dispatch=crate::request_journal::Dispatch::begin(&base,&target,"bootstrap",&request).unwrap();
+       dispatch.finish(&outcome).unwrap();
+       let observed=crate::request_journal::inspect(&base).unwrap();
+       assert_eq!(observed["records"][0]["state"],"uncertain");
+       assert_eq!(observed["records"][0]["response_ok"],Value::Null);
+       assert!(crate::request_journal::Dispatch::begin(&base,&target,"bootstrap",&request).is_err());
+       std::fs::remove_dir_all(base).unwrap();
+      }
      });
     }
 

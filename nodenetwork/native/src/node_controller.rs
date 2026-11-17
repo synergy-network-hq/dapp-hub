@@ -883,7 +883,7 @@ impl<'de> Deserialize<'de> for UniqueReceiptObject {
     }
 }
 
-fn decode_receipt_reply(bytes: &[u8]) -> serde_json::Result<Value> {
+pub(super) fn decode_receipt_reply(bytes: &[u8]) -> serde_json::Result<Value> {
     serde_json::from_slice::<UniqueReceiptObject>(bytes).map(|fields| Value::Object(fields.0))
 }
 
