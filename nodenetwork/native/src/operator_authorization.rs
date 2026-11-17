@@ -11,7 +11,7 @@ const PROFILE:&str="nodenetwork-isolated-formation-authorization-v1";
 const BOOTSTRAP:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/bootstrap.py"));
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BoundTarget {kind:String,host:Option<String>,port:Option<u16>,root:String,host_key:Option<String>,machine_id_sha256:Option<String>}
+struct BoundTarget {kind:String,host:Option<String>,port:Option<u16>,root:String,host_key:Option<String>,machine_id_sha256:Option<String>,#[serde(default)]guest:Option<crate::managed_guest::GuestBinding>}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Grant{operation:String,request_sha256:String}
@@ -48,7 +48,7 @@ fn validate(raw:&str,target:&Target,expected:&str,now:u64)->Result<Document,Stri
  let d:Document=serde_json::from_str(raw).map_err(|_|"Unsupported exact authorization schema")?;
  if d.version!=1||d.profile!=PROFILE||d.sequence==0||d.sequence>=1u64<<53||d.expires_at<=now||d.expires_at>now.saturating_add(3600)
   ||d.target.kind!=target.kind||d.target.host.as_ref().map(|s|s.to_ascii_lowercase())!=target.host.as_ref().map(|s|s.to_ascii_lowercase())
-  ||d.target.port!=if target.kind=="remote"{Some(target.port.unwrap_or(22))}else{None}||d.target.root!=target.root {
+  ||d.target.port!=if target.kind=="remote"{Some(target.port.unwrap_or(22))}else{None}||d.target.root!=target.root||d.target.guest!=target.guest {
   return Err("Authorization target, scope or expiry differs".into());
  }
  if target.kind=="remote"{
@@ -173,7 +173,13 @@ pub(super) fn vpn_continuation(mut doc:Value,target:&Target,initial:&str,parent:
 
 #[cfg(test)]mod tests{
  use super::*;
- fn fixture()->(Target,Value){let t=Target{kind:"remote".into(),host:Some("127.0.0.1".into()),port:Some(22281),root:"/opt/synergy".into()};let d=json!({"version":1,"profile":PROFILE,"target":{"kind":t.kind,"host":t.host,"port":t.port,"root":t.root,"machine_id_sha256":null,"host_key":format!("[127.0.0.1]:22281 ssh-ed25519 {}",STANDARD.encode([b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[0u8;32]].concat()))},"release_id":"reviewed-master","manifest_sha256":"a".repeat(64),"network_id":"nodenetwork-formation-disposable-test","chain_id":99999,"node_name":"validator-test","sequence":1,"expires_at":1060,"artifacts":{},"requests":[{"operation":"stop","request_sha256":"c".repeat(64)}],"genesis_pins":null});(t,d)}
+ fn fixture()->(Target,Value){let t=Target{kind:"remote".into(),host:Some("127.0.0.1".into()),port:Some(22281),root:"/opt/synergy".into(),guest:None};let d=json!({"version":1,"profile":PROFILE,"target":{"kind":t.kind,"host":t.host,"port":t.port,"root":t.root,"machine_id_sha256":null,"host_key":format!("[127.0.0.1]:22281 ssh-ed25519 {}",STANDARD.encode([b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[0u8;32]].concat()))},"release_id":"reviewed-master","manifest_sha256":"a".repeat(64),"network_id":"nodenetwork-formation-disposable-test","chain_id":99999,"node_name":"validator-test","sequence":1,"expires_at":1060,"artifacts":{},"requests":[{"operation":"stop","request_sha256":"c".repeat(64)}],"genesis_pins":null});(t,d)}
+ #[test]fn guest_authorization_cannot_be_reused_for_host_or_another_creation(){
+  let(mut t,mut d)=fixture();let bytes=[b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[7u8;32]].concat();
+  let g=crate::managed_guest::GuestBinding{guest_id:"validator-guest".into(),create_request_sha256:"a".repeat(64),ssh_host_public_key:format!("ssh-ed25519 {}",STANDARD.encode(&bytes)),ssh_host_fingerprint:format!("SHA256:{}",STANDARD.encode(Sha256::digest(&bytes)).trim_end_matches('='))};
+  t.guest=Some(g.clone());d["target"]["guest"]=serde_json::to_value(g).unwrap();let raw=d.to_string();let pin=digest(raw.as_bytes());assert!(validate(&raw,&t,&pin,1000).is_ok());
+  let mut other=t.clone();other.guest=None;assert!(validate(&raw,&other,&pin,1000).is_err());other=t;other.guest.as_mut().unwrap().create_request_sha256="b".repeat(64);assert!(validate(&raw,&other,&pin,1000).is_err());
+ }
  #[test]fn initial_document_set_is_bounded_exact_and_debug_only(){let pins=(0..5).map(|i|format!("{i:064x}")).collect::<Vec<_>>();let five=pins.join(",");assert!(approved_initial(&pins[0],None,Some(&five),true));assert!(!approved_initial(&pins[0],None,Some(&five),false));assert!(!approved_initial(&"f".repeat(64),None,Some(&five),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{five},{}","f".repeat(64))),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{five},{}",pins[0])),true));assert!(!approved_initial(&pins[0],Some(&"e".repeat(64)),Some(&five),true));}
  #[test]fn exact_native_pin_target_expiry_and_request_validation_precede_input_access(){let(t,d)=fixture();let raw=d.to_string();assert!(validate(&raw,&t,&digest(raw.as_bytes()),1000).is_ok());assert!(validate(&raw,&t,&"0".repeat(64),1000).is_err());let other=Target{port:Some(22282),..t.clone()};assert!(validate(&raw,&other,&digest(raw.as_bytes()),1000).is_err());assert!(validate(&raw,&t,&digest(raw.as_bytes()),1060).is_err());for (key,value)in[("artifacts",json!({"../../private-key":"b".repeat(64)})),("requests",json!([{"operation":"shell","request_sha256":"c".repeat(64)}])),("sequence",json!(0))]{let mut bad=d.clone();bad[key]=value;let bytes=bad.to_string();assert!(validate(&bytes,&t,&digest(bytes.as_bytes()),1000).is_err());}}
 }

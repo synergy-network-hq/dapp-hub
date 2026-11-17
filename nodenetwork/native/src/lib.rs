@@ -20,3 +20,5 @@ pub mod transport_commands;
 pub mod guest_hosts;
 
 pub mod bare_rollback;
+
+pub mod managed_guest;

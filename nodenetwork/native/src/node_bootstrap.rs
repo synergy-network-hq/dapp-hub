@@ -110,6 +110,7 @@ pub(super) async fn execute_update(target:Target,operator:String,context:Value,p
 }
 async fn execute_transport(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>,update:Option<Value>)->Result<Value,String>{
     target.validate()?;validate_operator(&operator)?;
+    if target.guest.is_some()&&operator!="synergy"{return Err("Managed guest bootstrap uses its approved synergy account".into())}
     let _guard=node_controller::SERIAL.lock().await;
     if target.kind=="remote" {node_controller::close_connection(&target,control_dir,&operator).await;}
     if update.is_none(){authenticate_release(&prepared.manifest_sha256)?;}
@@ -198,7 +199,7 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
 
 pub(super) fn bare_rollback_scope(target:&Target,release:&str,pin:Option<&str>,debug:bool)->Result<String,String>{
     target.validate()?;
-    if !debug||target.kind!="remote"||target.host.as_deref()!=Some("127.0.0.1")||target.port!=Some(22280)||option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN").is_none(){return Err("Bare bootstrap rollback has no independent isolated native target approval".into())}
+    if !debug||target.guest.is_some()||target.kind!="remote"||target.host.as_deref()!=Some("127.0.0.1")||target.port!=Some(22280)||option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN").is_none(){return Err("Bare bootstrap rollback has no independent isolated native target approval".into())}
     let pin=pin.filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))).ok_or("No independently compiled old master approval")?;
     if release.is_empty()||release.len()>128||!release.bytes().all(|b|b.is_ascii_alphanumeric()||b"._-".contains(&b)){return Err("Invalid old release reference".into())}Ok(pin.into())
 }

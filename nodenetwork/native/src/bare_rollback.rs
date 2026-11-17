@@ -31,7 +31,7 @@ pub async fn portal_nodenetwork_bare_rollback(window:tauri::WebviewWindow,app:ta
 #[cfg(test)] mod tests{
  use super::*;
  #[test] fn rollback_scope_never_reuses_new_release_approval_or_other_targets(){
-  let mut t=Target{kind:"remote".into(),host:Some("127.0.0.1".into()),port:Some(22280),root:"/opt/synergy".into()};
+  let mut t=Target{kind:"remote".into(),host:Some("127.0.0.1".into()),port:Some(22280),root:"/opt/synergy".into(),guest:None};
   assert!(node_bootstrap::bare_rollback_scope(&t,"old",Some(&"a".repeat(64)),false).is_err());
   assert!(node_bootstrap::bare_rollback_scope(&t,"old",None,true).is_err());
   t.host=Some("other.example".into());assert!(node_bootstrap::bare_rollback_scope(&t,"old",Some(&"a".repeat(64)),true).is_err());

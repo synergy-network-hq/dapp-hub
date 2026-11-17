@@ -104,3 +104,9 @@ export async function rollbackBareNodeBootstrap(target,operator,releaseId){
  if(!isTauri())throw Error('Bare bootstrap cleanup requires native Portal.');
  return withNodeChange(()=>invoke('portal_nodenetwork_bare_rollback',{target,operator,releaseId}));
 }
+
+export async function nodeNetworkSelectGuest(target,guestId){
+ if(!isTauri())throw Error('Managed guest selection requires native Portal.');
+ if(target?.guest||!/^[a-z][a-z0-9-]{0,31}$/.test(guestId))throw Error('Select a physical host and a valid guest.');
+ return withNodeChange(()=>invoke('portal_nodenetwork_select_guest',{target,guestId}));
+}

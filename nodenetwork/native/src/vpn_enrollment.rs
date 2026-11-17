@@ -132,5 +132,5 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
 }
 #[cfg(test)]mod tests{
  use super::*;
- #[test]fn context_is_exact_and_rejects_missing_formation(){let t=Target{kind:"remote".into(),host:Some("guest.example".into()),port:Some(22),root:"/opt/synergy".into()};let mut s=json!({"formation_sha256":"a".repeat(64),"selection":{"manifest_sha256":"b".repeat(64),"network_id":"isolated-network","chain_id":999998}});let b=binding(&t,&s).unwrap();assert_eq!(b["target_sha256"],hash(t.journal_identity().to_string().as_bytes()));s["formation_sha256"]=Value::Null;assert!(binding(&t,&s).is_err());}
+ #[test]fn context_is_exact_and_rejects_missing_formation(){let t=Target{kind:"remote".into(),host:Some("guest.example".into()),port:Some(22),root:"/opt/synergy".into(),guest:None};let mut s=json!({"formation_sha256":"a".repeat(64),"selection":{"manifest_sha256":"b".repeat(64),"network_id":"isolated-network","chain_id":999998}});let b=binding(&t,&s).unwrap();assert_eq!(b["target_sha256"],hash(t.journal_identity().to_string().as_bytes()));s["formation_sha256"]=Value::Null;assert!(binding(&t,&s).is_err());}
 }

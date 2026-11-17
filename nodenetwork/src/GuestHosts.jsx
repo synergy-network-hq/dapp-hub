@@ -3,7 +3,7 @@ import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk'
 
 // invokeGuest must be the host SDK's serialized native operation wrapper. No
 // browser fallback, generic command executor, or direct SSH is supported here.
-export function GuestHosts({target,disabled,invokeGuest,onMutation=()=>{}}){
+export function GuestHosts({target,disabled,invokeGuest,onSelectGuest,onMutation=()=>{}}){
  const [guestId,setGuestId]=useState(''),[observed,setObserved]=useState(null),[pending,setPending]=useState(''),[error,setError]=useState(''),[uncertain,setUncertain]=useState('');
  const generation=useRef(0),locked=useRef(false),mounted=useRef(true);
  const key=JSON.stringify(target);
@@ -16,6 +16,7 @@ export function GuestHosts({target,disabled,invokeGuest,onMutation=()=>{}}){
   locked.current=true;const epoch=generation.current;setPending(operation);setError('');
   const mutation=['create','stop','remove'].includes(operation);
   try{
+   if(operation==='select'){await onSelectGuest(target,guestId);return;}
    const result=await invokeGuest(target,operation,guestId);
    if(result===null)return;
    if(mutation)onMutation();
@@ -32,11 +33,12 @@ export function GuestHosts({target,disabled,invokeGuest,onMutation=()=>{}}){
  const exists=observed?.schema==='nodenetwork-guest-status-v1'&&observed.exists===true;
  return <Card title="Managed isolated Linux guest">
   <p>Select the physical host above, then enter its independently approved guest identifier. The master verifies the exact contained OS image, tools, firmware and resource quota. No image download or validator installation is performed.</p>
-  <label>Approved guest identifier <input value={guestId} maxLength={32} disabled={disabled||!!pending} onChange={event=>setGuestId(event.target.value)} autoComplete="off" spellCheck={false}/></label>
+  <label>Approved guest identifier <input autoCapitalize="none" autoCorrect="off" spellCheck={false} value={guestId} maxLength={32} disabled={disabled||!!pending} onChange={event=>setGuestId(event.target.value)} autoComplete="off" spellCheck={false}/></label>
   <div className="button-row">
    <button type="button" disabled={!available} onClick={()=>perform('status')}>Read guest status</button>
    <button type="button" disabled={!available||exists} onClick={()=>perform('preflight')}>Verify approved guest inputs</button>
    <button type="button" disabled={!available||uncertain||observed?.schema!=='nodenetwork-guest-preflight-v1'} onClick={()=>perform('create')}>Review and create guest</button>
+   <button type="button" disabled={!available||uncertain||!onSelectGuest||observed?.phase!=='created'||observed?.service_state!=='active'||!observed?.ssh_identity_verified} onClick={()=>perform('select')}>Review host-relative guest connection</button>
    <button type="button" disabled={!available||uncertain||!exists} onClick={()=>perform('stop')}>Review and stop guest</button>
    <button type="button" disabled={!available||uncertain||!exists||observed.pid!==0||!['inactive','failed'].includes(observed.service_state)} onClick={()=>perform('remove')}>Review and remove guest disk</button>
   </div>

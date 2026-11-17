@@ -77,6 +77,6 @@ export function NodeNetworkApp(){
   </div>}
   {tab&&tab!=='Network'&&!target&&<Card title="Host selection deferred"><p>Save a local or remote target, then inspect it before using its controller. Public network observations do not select or authenticate a host.</p><button onClick={()=>{setOperationsTab('Validator setup');setSection('operations');}}>Choose validator target</button></Card>}
   {tab==='Management'&&<RequestHistory permitted={permitted}/>}
-  {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true}/>}
+  {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} onSelectTarget={value=>{const selected=nodeNetworkTarget(value);localStorage.setItem('portal-native-v1:nodeNetworkTarget',JSON.stringify(selected));setTarget(selected);setKind(selected.kind);setHost(selected.host||'');setPort(String(selected.port||22));}}/>}
  </NodeNetworkPanelFrame>;
 }

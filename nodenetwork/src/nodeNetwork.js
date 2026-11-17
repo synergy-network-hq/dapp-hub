@@ -1,5 +1,6 @@
 export function nodeNetworkTarget(value) {
  if(value?.root!==undefined&&value.root!=='/opt/synergy')throw Error('Saved validator root is unsupported; recover the original configuration before selecting a target.');
+ if(value?.kind==='local'&&value.guest!=null)throw Error('Managed guest requires its physical host.');
  if(value?.kind==='local')return {kind:'local',root:'/opt/synergy'};
  if(value?.kind!=='remote' || typeof value.host!=='string')throw new Error('Choose this machine or a remote host.');
  const host=value.host.trim().toLowerCase();
@@ -12,7 +13,9 @@ export function nodeNetworkTarget(value) {
  if(typeof rawPort==='string'&&rawPort!==''&&!/^[0-9]{1,5}$/.test(rawPort))throw Error('SSH port must contain decimal digits only.');
  const port=rawPort==null||rawPort===''?22:Number(rawPort);
  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Enter an SSH port between 1 and 65535.');
- return {kind:'remote',host,...(port!==22?{port}:{}),root:'/opt/synergy'};
+ const target={kind:'remote',host,...(port!==22?{port}:{}),root:'/opt/synergy'};
+ if(value.guest!=null){const g=value.guest;if(!g||Object.keys(g).sort().join(',')!=='create_request_sha256,guest_id,ssh_host_fingerprint,ssh_host_public_key'||!/^[a-z][a-z0-9-]{0,31}$/.test(g.guest_id)||!/^[a-f0-9]{64}$/.test(g.create_request_sha256)||!/^ssh-ed25519 [A-Za-z0-9+/]{68}$/.test(g.ssh_host_public_key)||!/^SHA256:[A-Za-z0-9+/]{43}$/.test(g.ssh_host_fingerprint))throw Error('Saved managed guest identity is malformed; no direct endpoint is inferred.');target.guest={...g};}
+ return target;
 }
 
 export async function readNodeNetwork(request, profile, signal) {

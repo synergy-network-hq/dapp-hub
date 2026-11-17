@@ -13,7 +13,7 @@ pub(super) static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Target { pub kind: String, pub host: Option<String>, pub port: Option<u16>, pub root: String }
+pub struct Target { pub kind: String, pub host: Option<String>, pub port: Option<u16>, pub root: String, #[serde(default)] pub guest: Option<crate::managed_guest::GuestBinding> }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +31,7 @@ fn host_name(s: &str) -> bool {
 impl Target {
     pub fn validate(&self) -> Result<(), String> {
         if self.root != ROOT { return Err("Validator root must be /opt/synergy.".into()); }
+        if let Some(guest)=&self.guest {if self.kind!="remote"{return Err("Managed guests require an authenticated physical host".into())}guest.validate()?;}
         match self.kind.as_str() {
             "local" if self.host.is_none() && self.port.is_none() => Ok(()),
             "remote" if self.host.as_deref().is_some_and(host_name) && self.port.is_none_or(|p| p>0) => Ok(()),
@@ -38,11 +39,13 @@ impl Target {
         }
     }
     pub fn label(&self) -> String {
+        if let Some(g)=&self.guest{return format!("Managed guest {} via {} · SSH port {}",g.guest_id,self.host.as_deref().unwrap_or("Unavailable"),self.port.unwrap_or(22))}
         if self.kind == "local" { "Local · this machine".into() }
         else { format!("Remote · {} · SSH port {}", self.host.as_deref().unwrap_or("Unavailable"), self.port.unwrap_or(22)) }
     }
     pub fn journal_identity(&self) -> Value {
-        json!({"kind":self.kind,"host":self.host.as_ref().map(|h|h.to_ascii_lowercase()),"port":if self.kind=="remote" {Some(self.port.unwrap_or(22))} else {None},"root":self.root})
+        let mut value=json!({"kind":self.kind,"host":self.host.as_ref().map(|h|h.to_ascii_lowercase()),"port":if self.kind=="remote" {Some(self.port.unwrap_or(22))} else {None},"root":self.root});
+        if let Some(guest)=&self.guest{value["guest"]=serde_json::to_value(guest).expect("public guest binding serialization");}value
     }
 }
 impl Request {
@@ -154,8 +157,10 @@ pub(super) fn control_directory(home:&Path)->Result<std::path::PathBuf,String>{
     Ok(directory)
 }
 
-fn control_socket(target:&Target,directory:&Path,account:&str)->std::path::PathBuf {
-    directory.join(&format!("{:x}",Sha256::digest(format!("{account}@{}:{}",target.host.as_deref().unwrap_or(""),target.port.unwrap_or(22)).as_bytes()))[..24])
+pub(super) fn control_socket(target:&Target,directory:&Path,account:&str)->std::path::PathBuf {
+    let mut identity=format!("{account}@{}:{}",target.host.as_deref().unwrap_or(""),target.port.unwrap_or(22));
+    if let Some(g)=&target.guest{identity.push_str(&serde_json::to_string(g).expect("public guest binding serialization"));}
+    directory.join(&format!("{:x}",Sha256::digest(identity.as_bytes()))[..24])
 }
 fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,String>{
     let expected=format!("{}\n",pin.trim());
@@ -173,6 +178,7 @@ fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,S
 }
 pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>)->Result<tokio::process::Command,String>{
     target.validate()?;
+    if target.guest.is_some(){return crate::managed_guest::remote_command(target,directory,account,remote)}
     #[cfg(unix)] protect_control_directory(directory)?;
     let socket=control_socket(target,directory,account);
     if socket.as_os_str().len()>95 {return Err("Portal SSH control path is too long on this platform.".into());}
@@ -271,7 +277,7 @@ pub(super) async fn execute_pinned(target: Target, request: Request, control_dir
         assert!(control_directory(&Path::new("/Users").join("x".repeat(80))).is_err());
     }
     #[test] fn bootstrap_and_controller_never_share_the_same_ssh_master() {
-        let target=Target{kind:"remote".into(),host:Some("host.example".into()),port:None,root:ROOT.into()};
+        let target=Target{kind:"remote".into(),host:Some("host.example".into()),port:None,root:ROOT.into(),guest:None};
         let path=Path::new("/tmp/short");
         assert_ne!(control_socket(&target,path,"operator"),control_socket(&target,path,"synergy-nodenetwork"));
     }
@@ -299,7 +305,7 @@ pub(super) async fn execute_pinned(target: Target, request: Request, control_dir
     }
     #[test] fn renderer_cannot_select_commands_paths_or_unbounded_parameters() {
         for host in ["-oProxyCommand=bad","host;reboot","user@host","host/path","host:22","bad..host"] {
-            assert!(Target{kind:"remote".into(),host:Some(host.into()),port:None,root:ROOT.into()}.validate().is_err());
+            assert!(Target{kind:"remote".into(),host:Some(host.into()),port:None,root:ROOT.into(),guest:None}.validate().is_err());
         }
         let mut request=Request{version:1,operation:"start".into(),parameters:json!({"root":"/etc"})};
         assert!(request.validate().is_err());
@@ -333,7 +339,7 @@ pub(super) async fn execute_pinned(target: Target, request: Request, control_dir
         let _cleanup=Cleanup{root:root.clone(),socket,host:host.clone()};
         tauri::async_runtime::block_on(async {
             let request=||Request{version:1,operation:"target".into(),parameters:json!({})};
-            let wrong=Target{kind:target.kind.clone(),host:target.host.clone(),port:target.port,root:target.root.clone()};
+            let wrong=Target{kind:target.kind.clone(),host:target.host.clone(),port:target.port,root:target.root.clone(),guest:target.guest.clone()};
             assert!(execute_pinned(wrong,request(),&connection,Some(&bad_pin)).await.is_err(),"wrong host pin must fail before receiving target state");
             let result=execute_pinned(target,request(),&connection,Some(&pin)).await.unwrap();
             assert_eq!(result["ok"],true);

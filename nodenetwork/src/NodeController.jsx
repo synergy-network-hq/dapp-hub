@@ -1,7 +1,7 @@
 import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
-import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap} from './native-services.js';
+import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap,nodeNetworkSelectGuest} from './native-services.js';
 import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
@@ -12,7 +12,7 @@ const MUTATIONS=new Set(['network_formation_prepare','network_formation_sign','a
 const PREFLIGHTS=new Set(['install_preflight','upgrade_preflight','uninstall_preflight']);
 const LABELS={update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
 
-export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
+export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onSelectTarget}){
  const [operator,setOperator]=useState('');
  const [state,setState]=useState(null),[pending,setPending]=useState(null),[error,setError]=useState(''),[results,setResults]=useState({}),[latest,setLatest]=useState(null),[review,setReview]=useState(null),[confirmation,setConfirmation]=useState('');
  const [networkReview,setNetworkReview]=useState(null);
@@ -187,7 +187,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <p>Bound public enrollment can be used by the independent transport registry signer. No private key is exported. Signed membership does not prove the required 50,000 SNRG stake, runtime admission or participation.</p>
    </Card>
    <Card title="4. Connect VPN, commission and verify runtime">
-  <GuestHosts target={target} disabled={!permitted||!state||!!pending} invokeGuest={nodeNetworkGuest} onMutation={()=>setState(null)}/>
+  {!target.guest&&<GuestHosts onSelectGuest={async(host,id)=>{const selected=await nodeNetworkSelectGuest(host,id);if(selected&&onSelectTarget)onSelectTarget(selected);return selected;}} target={target} disabled={!permitted||!state||!!pending} invokeGuest={nodeNetworkGuest} onMutation={()=>setState(null)}/>}
+   {target.guest&&<Card title="Managed guest target"><Detail data={{physicalHost:target.host,guest:target.guest.guest_id,creationRequest:target.guest.create_request_sha256}}/><p>SSH is routed through the authenticated hosting machine. Guest administration uses its approved synergy account.</p><button type="button" disabled={!!pending} onClick={()=>{const physical={...target};delete physical.guest;onSelectTarget?.(physical);}}>Return to hosting machine</button></Card>}
      <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
     <p>{vpn?.connected&&vpn?.server_bound?'VPN connected and server binding observed':vpn?'VPN enrollment or connection pending':'VPN status not verified'}</p>
     {['register','vpn_status','commission','start','health'].map(action)}
