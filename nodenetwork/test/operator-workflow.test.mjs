@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,NODE_ROLES,nodeRoleCatalog,vpnView,workflowGate} from '../src/operator-workflow.js';
+import {updateStageView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,NODE_ROLES,nodeRoleCatalog,vpnView,workflowGate} from '../src/operator-workflow.js';
 import {emptyProvisioningDraft} from '../src/provisioning-draft.js';
 import {installParameters,nodeNetworkTarget} from '../src/nodeNetwork.js';
 
@@ -122,4 +122,10 @@ test('engineering authorization readback is exact, bounded and does not confer m
  assert.deepEqual(authorizationView({schema:'nodenetwork-engineering-authorization-status-v1',authorization:{...receipt,secret:'must not render'}}),expected);
  assert.deepEqual(authorizationView({schema:'nodenetwork-engineering-authorization-v1',...receipt,applied:true,grants_recreated:false,membership_granted:true}),expected);
  for(const changed of [{sequence:0},{sequence:1.5},{expires_at:-1},{sha256:'not-a-pin'},{applied:false},{grants_recreated:true}])assert.throws(()=>authorizationView({schema:'nodenetwork-engineering-authorization-v1',...receipt,applied:true,grants_recreated:false,...changed}));
+});
+
+test('update staging preserves exact native release and never implies an upgrade',()=>{
+ const receipt={schema:'nodenetwork-update-stage-v1',stagedRelease:'reviewed-release',manifestSha256:'a'.repeat(64),initial_sha256:'b'.repeat(64),parent_sha256:'c'.repeat(64),controllerAdopted:true,validatorUpgraded:false};
+ assert.deepEqual(updateStageView(receipt),{release_id:'reviewed-release',manifest_sha256:'a'.repeat(64),controllerAdopted:true,validatorUpgraded:false});
+ for(const [key,value]of [['schema','other'],['manifestSha256','bad'],['initial_sha256',null],['parent_sha256',null],['controllerAdopted',false],['validatorUpgraded',true],['stagedRelease','../../escape']])assert.throws(()=>updateStageView({...receipt,[key]:value}));
 });

@@ -5,6 +5,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SYNERGY_NODE_ENGINE_ROOT");
     println!("cargo:rerun-if-changed={}",source.display());
     println!("cargo:rustc-env=SYNERGY_NODE_ENGINE_ROOT={}",engine);
+    println!("cargo:rerun-if-changed={}",std::path::Path::new(&engine).join("vpn_authorization.py").display());
+    println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256");
+    if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256"){
+        assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"VPN engineering authority is forbidden in production");
+        assert!(pin.len()==64&&pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),"Invalid VPN provider policy pin");
+        println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256={pin}");
+    }
     println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_MANIFEST_SHA256");
     if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_MANIFEST_SHA256"){
         assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Isolated qualification pin is forbidden in production builds");

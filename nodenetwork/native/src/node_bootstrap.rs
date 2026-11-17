@@ -54,13 +54,23 @@ fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,Stri
     } Ok(())
 }
 pub fn prepare(root:&Path,key:&Path,parameters:&Value)->Result<Prepared,String>{
+    prepare_master(root,parameters,public_key(key)?,true)
+}
+pub(super) fn prepare_update(root:&Path,selection:&Value)->Result<Prepared,String>{
+    if !cfg!(debug_assertions){return Err("Engineering update adoption is disabled in production".into())}
+    let manifest:Value=serde_json::from_slice(&read_bounded(&root.join("package.json"),1_000_000)?).map_err(|_|"Invalid update manifest")?;
+    let mut parameters=selection.clone();parameters["release_id"]=manifest["release_id"].clone();
+    parameters["manifest_sha256"]=json!(format!("{:x}",Sha256::digest(read_bounded(&root.join("package.json"),1_000_000)?)));
+    prepare_master(root,&parameters,String::new(),false)
+}
+fn prepare_master(root:&Path,parameters:&Value,operator_public_key:String,require_build_pin:bool)->Result<Prepared,String>{
     Request{version:1,operation:"install_preflight".into(),parameters:parameters.clone()}.validate()?;
     if root.file_name().and_then(|s|s.to_str())!=Some("synergy")||root.ancestors().any(|p|!fs::symlink_metadata(p).is_ok_and(|m|m.is_dir())){return Err("Choose the direct lowercase synergy master directory.".into());}
     let raw=read_bounded(&root.join("package.json"),1_000_000)?;
     let pin=format!("{:x}",Sha256::digest(&raw));
     let manifest:Value=serde_json::from_slice(&raw).map_err(|_|"Invalid master manifest.")?;
     if parameters["manifest_sha256"]!=pin||parameters["release_id"]!=manifest["release_id"]||manifest["format"]!="synergy-universal-linux-v1"||manifest["architecture"]!="x86_64"{return Err("Selected package does not match the reviewed release and manifest pin.".into());}
-    authenticate_release(&pin)?;
+    if require_build_pin{authenticate_release(&pin)?;}
     let files:BTreeMap<String,String>=serde_json::from_value(manifest["files"].clone()).map_err(|_|"Invalid master file inventory.")?;
     if files.is_empty()||files.len()>4096||files.iter().any(|(name,pin)|!safe_member(name)||pin.len()!=64||!pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Invalid master inventory paths or digests.".into());}
     let mut members=Vec::new();let mut total=1024;walk(root,root,&mut members,&files,&mut total)?;
@@ -74,7 +84,7 @@ pub fn prepare(root:&Path,key:&Path,parameters:&Value)->Result<Prepared,String>{
         let actual=format!("{:x}",hash.finalize());let expected=if member.name=="package.json"{&pin}else{member.digest.as_ref().unwrap()};
         if &actual!=expected{return Err("Master file digest mismatch.".into());} file.rewind().map_err(|_|"Cannot rewind verified master file.")?;member.file=Some(file);member.digest=Some(actual);
     }
-    Ok(Prepared{members,release:manifest["release_id"].as_str().unwrap().into(),manifest_sha256:pin,public_key:public_key(key)?})
+    Ok(Prepared{members,release:manifest["release_id"].as_str().unwrap().into(),manifest_sha256:pin,public_key:operator_public_key})
 }
 fn tar_header(member:&Member)->[u8;512]{
     let mut out=[0u8;512];out[..member.name.len()].copy_from_slice(member.name.as_bytes());
@@ -92,22 +102,30 @@ pub async fn execute(target:Target,operator:String,parameters:Value,prepared:Pre
     execute_pinned(target,operator,parameters,prepared,control_dir,None).await
 }
 async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
+    execute_transport(target,operator,parameters,prepared,control_dir,known_hosts,None).await
+}
+pub(super) async fn execute_update(target:Target,operator:String,context:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
+    if !cfg!(debug_assertions)||context["release_id"]!=prepared.release||context["manifest_sha256"]!=prepared.manifest_sha256{return Err("Update does not match the exact native review".into())}
+    execute_transport(target,operator,json!({}),prepared,control_dir,known_hosts,Some(context)).await
+}
+async fn execute_transport(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>,update:Option<Value>)->Result<Value,String>{
     target.validate()?;validate_operator(&operator)?;
     let _guard=node_controller::SERIAL.lock().await;
     if target.kind=="remote" {node_controller::close_connection(&target,control_dir,&operator).await;}
-    authenticate_release(&prepared.manifest_sha256)?;
-    let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP);
+    if update.is_none(){authenticate_release(&prepared.manifest_sha256)?;}
+    let script=if let Some(context)=&update{format!("NATIVE_AUTHENTICATED_UPDATE_CONTEXT=__import__('json').loads({})\n{}",serde_json::to_string(&context.to_string()).map_err(|_|"Cannot encode reviewed update")?,BOOTSTRAP)}else{format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP)};
+    let arguments=if update.is_some(){format!(" --stage-engineering-update {} {}",prepared.release,prepared.manifest_sha256)}else{String::new()};
     let mut command=if target.kind=="local"{
         if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local bootstrap requires Linux x86_64.".into());}
-        let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script]);c
-    }else{node_controller::remote_command(&target,control_dir,&operator,&format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {}",shell_quote_static(&script)),known_hosts)?};
+        let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script]);if update.is_some(){c.args(["--stage-engineering-update",&prepared.release,&prepared.manifest_sha256]);}c
+    }else{node_controller::remote_command(&target,control_dir,&operator,&(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {}",shell_quote_static(&script))+&arguments),known_hosts)?};
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child=command.spawn().map_err(|_|"Cannot start restricted bootstrap transport.")?;
     let mut input=child.stdin.take().ok_or("Bootstrap input unavailable.")?;
     let output=child.stdout.take().ok_or("Bootstrap output unavailable.")?;
     let mut header=parameters;header["version"]=json!(1);header["operator_public_key"]=json!(prepared.public_key);
     let transfer=async move {
-        input.write_all(format!("{}\n",header).as_bytes()).await.map_err(|_|"Cannot send bootstrap header.")?;
+        if update.is_none(){input.write_all(format!("{}\n",header).as_bytes()).await.map_err(|_|"Cannot send bootstrap header.")?;}
         for member in &prepared.members{
             input.write_all(&tar_header(member)).await.map_err(|_|"Cannot send master archive header.")?;
             if member.directory{continue;}
@@ -162,4 +180,18 @@ async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:
         for name in ["root;reboot","-oProxyCommand=bad","root@host",""]{assert!(validate_operator(name).is_err());}assert!(validate_operator("node-admin").is_ok());
         let header=tar_header(&Member{name:"package.json".into(),size:12,directory:false,digest:None,file:None});assert_eq!(&header[257..263],b"ustar\0");assert_eq!(header[156],b'0');
     }
+}
+
+#[cfg(test)]mod update_tests{
+ use super::*;
+ #[test]fn native_update_inventory_derives_digest_and_rejects_payload_substitution(){
+  let base=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-update-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+  struct Cleanup(std::path::PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}let _cleanup=Cleanup(base.clone());
+  let root=base.join("synergy");fs::create_dir_all(root.join("tools")).unwrap();fs::write(root.join("tools/example.py"),b"verified").unwrap();
+  let manifest=json!({"format":"synergy-universal-linux-v1","architecture":"x86_64","release_id":"new-reviewed-release","files":{"tools/example.py":format!("{:x}",Sha256::digest(b"verified"))}});
+  let bytes=serde_json::to_vec(&manifest).unwrap();fs::write(root.join("package.json"),&bytes).unwrap();
+  let selection=json!({"release_id":"old","manifest_sha256":"a".repeat(64),"network_id":"nodenetwork-formation-disposable-test","chain_id":99999,"node_name":"validator-test"});
+  let prepared=prepare_update(&root,&selection).unwrap();assert_eq!(prepared.release,"new-reviewed-release");assert_eq!(prepared.manifest_sha256,format!("{:x}",Sha256::digest(bytes)));
+  assert!(prepared.public_key.is_empty());fs::write(root.join("tools/example.py"),b"tampered").unwrap();assert!(prepare_update(&root,&selection).is_err());
+ }
 }

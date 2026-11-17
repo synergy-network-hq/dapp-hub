@@ -1,14 +1,15 @@
+import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
-import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis} from './native-services.js';
+import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn} from './native-services.js';
 import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
 import {installParameters} from './nodeNetwork.js';
-import {authorizationView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,vpnView,workflowGate} from './operator-workflow.js';
+import {updateStageView,authorizationView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,vpnView,workflowGate} from './operator-workflow.js';
 
 const MUTATIONS=new Set(['network_formation_prepare','network_formation_sign','authorization_stage','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
 const PREFLIGHTS=new Set(['install_preflight','upgrade_preflight','uninstall_preflight']);
-const LABELS={network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
+const LABELS={update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
@@ -74,6 +75,24 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    const record={operation,parameters,response,receivedAt:Date.now()};
    setResults(previous=>({...previous,[operation]:record}));setLatest(record);
   }catch(failure){if(active.current)setError(`${String(failure?.message||failure)}${MUTATIONS.has(operation)?' Inspect the target to reconcile its state before repeating this operation.':''}`);}
+  finally{locked.current=false;if(active.current)setPending(null);}
+ }
+ async function nativeVpn(operation){
+  if(!permitted||locked.current)return;
+  locked.current=true;setPending(`vpn_${operation}`);setError('');
+  try{const value=await nodeNetworkVpn(target,operation);if(!active.current||value===null)return;
+   if(operation==='retire'){if(value.retired!==true||value.absence_verified!==true)throw Error('Provider retirement was not verified.');setLatest({operation:'vpn_retire',parameters:{},response:value,receivedAt:Date.now()});}
+   else if(operation==='revoke'){if(value.setup_key_absent!==true)throw Error('Provider did not verify setup-key absence.');setLatest({operation:'vpn_revoke',parameters:{},response:{setup_key_absent:true},receivedAt:Date.now()});}
+   else{const response=vpnView(value);setResults(old=>({...old,vpn_status:{operation:'vpn_status',response,receivedAt:Date.now()}}));setLatest({operation:`vpn_${operation}`,parameters:{},response,receivedAt:Date.now()});}
+   setState(null);
+  }catch(failure){if(active.current)setError(`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
+  finally{locked.current=false;if(active.current)setPending(null);}
+ }
+ async function stageUpdate(){
+  if(!permitted||!state||locked.current)return;
+  locked.current=true;setPending('update_stage');setError('');setReview(null);
+  try{const value=await stageNodeNetworkUpdate(target);if(!active.current||value===null)return;const response=updateStageView(value);setForm(current=>({...current,release_id:response.release_id,manifest_sha256:response.manifest_sha256}));setState(null);setLatest({operation:'update_stage',parameters:{},response,receivedAt:Date.now()});}
+  catch(failure){if(active.current)setError(`${String(failure?.message||failure)} Read authorization status to reconcile before repeating.`);}
   finally{locked.current=false;if(active.current)setPending(null);}
  }
  async function exportPublic(kind){
@@ -158,16 +177,21 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <p>Bound public enrollment can be used by the independent transport registry signer. No private key is exported. Signed membership does not prove the required 50,000 SNRG stake, runtime admission or participation.</p>
    </Card>
    <Card title="4. Connect VPN, commission and verify runtime">
+    <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
     <p>{vpn?.connected&&vpn?.server_bound?'VPN connected and server binding observed':vpn?'VPN enrollment or connection pending':'VPN status not verified'}</p>
-    {['register','vpn_status','vpn_enroll','commission','start','health'].map(action)}
+    {['register','vpn_status','commission','start','health'].map(action)}
+    {['enroll','reconcile','revoke','retire'].map(op=><button key={op} type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn(op)}>{op==='enroll'?'Authorize provider and enroll VPN once':op==='reconcile'?'Reconcile and verify original VPN enrollment':op==='retire'?'Retire exact VPN peer for removal':'Cancel exact provider setup key'}</button>)}
     <p>{results.commission?.response?.commissioned===true?'Commissioning confirmed by the target.':'Validator commissioning not verified.'} A start response does not establish running, admitted, participating, synchronized or healthy status. Verify runtime evidence independently.</p>
    </Card>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
-   {['authorization_status','health','vpn_status','vpn_enroll','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
+   {['authorization_status','health','vpn_status','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
    <p>Use health to verify the result after a start or restart. Recovery remains a separately qualified operation. This workspace does not offer arbitrary shell or checkpoint access.</p>
   </Card>}
   {tab==='Updates'&&<Card title="Controlled master update">
+   <p>Stop the validator through Management, then inspect the authenticated target. Native review selects the new master folder and verifies its entire inventory. Only an explicitly confirmed isolated engineering target can adopt new software; production approval remains separate.</p>
+   <button type="button" disabled={!permitted||!!pending||!state} onClick={stageUpdate}>{LABELS.update_stage}</button>
+   {action('authorization_status')}
    {field('release_id','Approved release ID')}{field('manifest_sha256','Approved manifest SHA-256')}
    <p>The controller verifies the master staged on the target. Review the exact release before applying it. Check target state before starting or retrying an update.</p>
    {action('upgrade_preflight')}{action('upgrade')}

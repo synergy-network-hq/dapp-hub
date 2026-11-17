@@ -24,7 +24,7 @@ pub struct Prepared {wire:Zeroizing<Vec<u8>>,pub summary:Value,pub host_key:Opti
 fn digest(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
 fn pin(s:&str)->bool{s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))}
 fn limit(name:&str)->Option<usize>{match name{
- "formation-context.json"=>Some(4096),"vpn-enrollment.json"=>Some(16384),
+ "formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
  "commissioning/config/node.json"=>Some(1024*1024),"commissioning/config/start-authorized.json"=>Some(65536),
  "commissioning/network/genesis.json"=>Some(4*1024*1024),"commissioning/network/authority.json"|
  "commissioning/network/network-manifest.json"|"commissioning/network/transport-registry.json"=>Some(1024*1024),
@@ -61,7 +61,7 @@ fn validate(raw:&str,target:&Target,expected:&str,now:u64)->Result<Document,Stri
  Request{version:1,operation:"install_preflight".into(),parameters:json!({"release_id":d.release_id,"manifest_sha256":d.manifest_sha256,"network_id":d.network_id,"chain_id":d.chain_id,"node_name":d.node_name})}.validate()?;
  if d.artifacts.len()>10||d.artifacts.iter().any(|(n,p)|limit(n).is_none()||!pin(p))||d.requests.is_empty()||d.requests.len()>16{return Err("Authorization inputs or requests exceed exact fixed scope".into());}
  let mut requests=std::collections::BTreeSet::new();
- for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
+ for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
  if d.genesis_pins.as_ref().is_some_and(|p|p.len()!=3||!["genesis.json","authority.json","authority-root.pub"].iter().all(|n|p.get(*n).is_some_and(|s|pin(s)))){return Err("Exact independently approved Genesis pins required".into());}
  Ok(d)
 }
@@ -146,6 +146,30 @@ pub(super) fn continuation(doc:Value,target:&Target,initial:&str,parent:&str,for
  let wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{}})).map_err(|_|"Cannot encode continuation")?);
  Ok(Prepared{wire,document:text,host_key:d.target.host_key,sha256:hash.clone(),continuation:Some((initial.into(),parent.into(),formation.into())),summary:json!({"sha256":hash,"sequence":d.sequence,"expires_at":d.expires_at})})
 }
+
+/// Only the native provider workflow may attach an exact private enrollment or
+/// independently verified public binding. Generic continuations stay input-free.
+pub(super) struct NativeVpnArtifact<'a>{pub name:&'a str,pub bytes:&'a [u8],pub ca:Option<&'a [u8]>,pub provider:Option<&'a [u8]>}
+pub(super) fn vpn_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,artifact:NativeVpnArtifact<'_>)->Result<Prepared,String>{
+ let NativeVpnArtifact{name,bytes,ca,provider}=artifact;
+ if !matches!(name,"vpn-enrollment.json"|"vpn-server-binding.json"|"vpn-retirement.json")||bytes.is_empty()||bytes.len()>16384{return Err("Invalid native VPN continuation input".into())}
+ let operation=if name=="vpn-enrollment.json"{"vpn_enroll"}else if name=="vpn-server-binding.json"{"vpn_bind"}else{"vpn_retire"};
+ if doc["requests"][0]["operation"]!=operation{return Err("VPN artifact and exact request differ".into())}
+ let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ doc["artifacts"]=json!({name:digest(bytes)});
+ if ca.is_some()!=provider.is_some(){return Err("Exact provider approval must accompany its CA".into())}
+ if let Some(provider)=provider{if provider.is_empty()||provider.len()>16384{return Err("Invalid provider approval bound".into())}doc["artifacts"]["vpn-provider.json"]=json!(digest(provider));}
+ if let Some(ca)=ca{if name!="vpn-enrollment.json"||ca.is_empty()||ca.len()>128*1024{return Err("CA may accompany only the exact private native enrollment".into())}doc["artifacts"]["vpn-ca.pem"]=json!(digest(ca));}
+ let text=doc.to_string();let hash=digest(text.as_bytes());
+ validate(&text,target,&hash,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ let encoded=Zeroizing::new(STANDARD.encode(bytes));
+ #[derive(Serialize)]struct PrivateWire<'a>{authorization:&'a str,artifacts:BTreeMap<&'a str,&'a str>}
+ let ca_encoded=ca.map(|b|STANDARD.encode(b));let mut artifacts=BTreeMap::from([(name,encoded.as_str())]);if let Some(ca)=ca_encoded.as_deref(){artifacts.insert("vpn-ca.pem",ca);}
+ let provider_encoded=provider.map(|b|STANDARD.encode(b));if let Some(provider)=provider_encoded.as_deref(){artifacts.insert("vpn-provider.json",provider);}
+ prepared.wire=Zeroizing::new(serde_json::to_vec(&PrivateWire{authorization:&text,artifacts}).map_err(|_|"Cannot encode native VPN authorization")?);
+ prepared.document=text;prepared.sha256=hash.clone();prepared.summary=json!({"sha256":hash,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
+}
+
 
 #[cfg(test)]mod tests{
  use super::*;

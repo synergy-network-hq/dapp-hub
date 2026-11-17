@@ -134,3 +134,9 @@ export function authorizationView(value){
   throw Error('The target did not confirm its exact engineering authorization receipt.');
  return {approved:true,sha256:receipt.sha256,sequence:receipt.sequence,expires_at:receipt.expires_at};
 }
+
+export function updateStageView(value){
+ const pin=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
+ if(value?.schema!=='nodenetwork-update-stage-v1'||typeof value.stagedRelease!=='string'||!/^[A-Za-z0-9._-]{1,128}$/.test(value.stagedRelease)||!pin(value.manifestSha256)||!pin(value.initial_sha256)||!pin(value.parent_sha256)||value.controllerAdopted!==true||value.validatorUpgraded!==false)throw Error('The target did not confirm exact native-reviewed update staging.');
+ return {release_id:value.stagedRelease,manifest_sha256:value.manifestSha256,controllerAdopted:true,validatorUpgraded:false};
+}

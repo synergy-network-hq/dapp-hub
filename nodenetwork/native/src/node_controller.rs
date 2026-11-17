@@ -50,8 +50,8 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export" => false,
-            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign" => true,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export" => false,
+            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
@@ -63,12 +63,24 @@ impl Request {
             "genesis_stage" => &["artifacts"],
             "network_formation_prepare" => &["formation_sha256","recipe_json","registrations_json"],
             "network_formation_sign" => &["review_sha256"],
+            "network_transport_prepare" => &["formation_sha256","genesis_review_sha256","target_provider_report_sha256","valid_from_unix","expires_at_unix","members"],
+            "network_transport_sign" => &["review_sha256"],
             _ => &[],
         };
         if p.len() != expected.len() || expected.iter().any(|k| !p.contains_key(*k)) {
             return Err("Unexpected controller parameters; paths, secrets and shell commands are forbidden.".into());
         }
         if self.operation=="network_formation_prepare" && (!p["recipe_json"].as_str().is_some_and(|s|!s.is_empty()&&s.len()<=1024*1024)||!p["registrations_json"].as_array().is_some_and(|a|a.len()==5&&a.iter().all(|v|v.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=128*1024)))){return Err("Bounded public recipe and five registrations required".into())}
+        if self.operation=="network_transport_prepare"{
+            let members=p["members"].as_array().filter(|a|a.len()==5).ok_or("Five public transport members required")?;
+            let from=p["valid_from_unix"].as_u64().ok_or("Invalid transport validity")?;let until=p["expires_at_unix"].as_u64().ok_or("Invalid transport expiration")?;
+            if until<=from||until-from>7*86400{return Err("Transport validity must fit the engineering seven-day bound".into())}
+            for member in members{
+                let m=member.as_object().filter(|m|m.len()==4).ok_or("Invalid transport member fields")?;
+                for (field,limit)in[("enrollment_json",128*1024),("configuration_json",64*1024),("dial_address",128),("transport_key_id",128)]{if !m.get(field).and_then(Value::as_str).is_some_and(|s|!s.is_empty()&&s.len()<=limit){return Err("Missing or oversized public transport member".into())}}
+                m["dial_address"].as_str().unwrap().parse::<std::net::SocketAddr>().map_err(|_|"Transport endpoint must be a literal socket address")?;
+            }
+        }
         if self.operation=="genesis_stage" { crate::formation::stage_artifacts(&p["artifacts"])?; }
         if expected.contains(&"release_id") {
             let release = p["release_id"].as_str().ok_or("Missing release ID.")?;
@@ -91,6 +103,8 @@ impl Request {
             ("genesis_sha256", "Review the exact authenticated Genesis before binding custody."),
             ("review_sha256", "Review the exact unsigned Genesis before signing."),
             ("formation_sha256", "Review the exact approved network formation before preparing custody."),
+            ("genesis_review_sha256", "Review the exact signed Genesis before transport issuance."),
+            ("target_provider_report_sha256", "Use the independently authenticated installed APQE provider."),
         ] {
             if expected.contains(&field) && !p[field].as_str().is_some_and(|pin|
                 pin.len()==64 && pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) {
@@ -133,6 +147,20 @@ pub(super) fn control_directory(home:&Path)->Result<std::path::PathBuf,String>{
 fn control_socket(target:&Target,directory:&Path,account:&str)->std::path::PathBuf {
     directory.join(&format!("{:x}",Sha256::digest(format!("{account}@{}:{}",target.host.as_deref().unwrap_or(""),target.port.unwrap_or(22)).as_bytes()))[..24])
 }
+fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,String>{
+    let expected=format!("{}\n",pin.trim());
+    let path=directory.join(format!("isolated-qualification-{:x}.known-hosts",Sha256::digest(expected.as_bytes())));
+    if path.exists()||path.is_symlink(){
+        let metadata=std::fs::symlink_metadata(&path).map_err(|_|"Cannot inspect isolated host pin.")?;
+        if !metadata.is_file()||metadata.len()>2048||std::fs::read(&path).map_err(|_|"Cannot inspect isolated host pin.")?!=expected.as_bytes(){return Err("Isolated host pin differs from the independently compiled test authority.".into());}
+    }else{
+        use std::io::Write;
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        options.open(&path).map_err(|_|"Cannot create isolated host pin.")?.write_all(expected.as_bytes()).map_err(|_|"Cannot record isolated host pin.")?;
+    }
+    Ok(path)
+}
 pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>)->Result<tokio::process::Command,String>{
     target.validate()?;
     #[cfg(unix)] protect_control_directory(directory)?;
@@ -140,18 +168,7 @@ pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:
     if socket.as_os_str().len()>95 {return Err("Portal SSH control path is too long on this platform.".into());}
     let qualification_pin=if known_hosts.is_none()&&cfg!(debug_assertions)&&target.host.as_deref()==Some("127.0.0.1")&&target.port==Some(22280){
         if let Some(pin)=option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"){
-            let path=directory.join("isolated-qualification-known-hosts");
-            let expected=format!("{}\n",pin.trim());
-            if path.exists()||path.is_symlink(){
-                let metadata=std::fs::symlink_metadata(&path).map_err(|_|"Cannot inspect isolated host pin.")?;
-                if !metadata.is_file()||metadata.len()>2048||std::fs::read(&path).map_err(|_|"Cannot inspect isolated host pin.")?!=expected.as_bytes(){return Err("Isolated host pin differs from the independently compiled test authority.".into());}
-            }else{
-                use std::io::Write;
-                let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
-                #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
-                options.open(&path).map_err(|_|"Cannot create isolated host pin.")?.write_all(expected.as_bytes()).map_err(|_|"Cannot record isolated host pin.")?;
-            }
-            Some(path)
+            Some(qualification_host_pin(directory,pin)?)
         }else{None}
     }else{None};
     let known_hosts=known_hosts.or(qualification_pin.as_deref());
@@ -178,8 +195,8 @@ pub async fn execute(target: Target, request: Request, control_dir: &Path) -> Re
 pub(super) async fn execute_pinned(target: Target, request: Request, control_dir: &Path, known_hosts: Option<&Path>) -> Result<Value, String> {
     target.validate()?; request.validate()?;
     let mut wire=request.canonical().to_string().into_bytes();
-    let input_limit=if request.operation=="genesis_stage" {12*1024*1024} else if request.operation=="network_formation_prepare" {2*1024*1024} else {REQUEST_LIMIT};
-    let output_limit=if request.operation=="network_formation_export" {2*1024*1024} else {LIMIT};
+    let input_limit=if request.operation=="genesis_stage" {12*1024*1024} else if matches!(request.operation.as_str(),"network_formation_prepare"|"network_transport_prepare") {2*1024*1024} else {REQUEST_LIMIT};
+    let output_limit=if request.operation=="network_transport_export" {4*1024*1024+16384} else if request.operation=="network_formation_export" {2*1024*1024} else {LIMIT};
     if wire.len()>=input_limit { return Err("Controller request exceeds the operation's safe wire limit.".into()); }
     wire.push(b'\n');
     let _serial=SERIAL.lock().await;
@@ -214,6 +231,19 @@ pub(super) async fn execute_pinned(target: Target, request: Request, control_dir
 #[cfg(test)] mod tests {
     use super::*;
 
+    #[test] fn isolated_host_pins_are_scoped_to_the_compiled_identity_and_reject_tampering(){
+        let root=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-host-pin-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        struct Cleanup(std::path::PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}let _cleanup=Cleanup(root.clone());
+        std::fs::create_dir(&root).unwrap();
+        let retired=root.join("isolated-qualification-known-hosts");std::fs::write(&retired,b"retired guest pin\n").unwrap();
+        let first=qualification_host_pin(&root,"[127.0.0.1]:22280 ssh-ed25519 first").unwrap();
+        let second=qualification_host_pin(&root,"[127.0.0.1]:22280 ssh-ed25519 second").unwrap();
+        assert_ne!(first,second);assert_eq!(qualification_host_pin(&root,"[127.0.0.1]:22280 ssh-ed25519 second\n").unwrap(),second);
+        assert_eq!(std::fs::read(retired).unwrap(),b"retired guest pin\n");
+        std::fs::write(&second,b"altered pin\n").unwrap();
+        assert!(qualification_host_pin(&root,"[127.0.0.1]:22280 ssh-ed25519 second").is_err());
+        #[cfg(unix)]{std::fs::remove_file(&second).unwrap();std::os::unix::fs::symlink(&first,&second).unwrap();assert!(qualification_host_pin(&root,"[127.0.0.1]:22280 ssh-ed25519 second").is_err());}
+    }
     #[test] fn ssh_socket_budget_uses_short_operator_namespace(){
         let path=control_directory(Path::new("/Users/jhutzler")).unwrap();
         assert_eq!(path,Path::new("/Users/jhutzler/.synergy-portal/ssh"));

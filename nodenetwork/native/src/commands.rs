@@ -1,7 +1,7 @@
-async fn controller(app:&tauri::AppHandle,target:crate::node_controller::Target,request:crate::node_controller::Request,control:&std::path::Path)->Result<serde_json::Value,String>{
+pub(crate) async fn controller(app:&tauri::AppHandle,target:crate::node_controller::Target,request:crate::node_controller::Request,control:&std::path::Path)->Result<serde_json::Value,String>{
  use tauri::Manager;crate::authorization_lifecycle::execute(&app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?,target,request,control).await
 }
-async fn exact_continuation(app:&tauri::AppHandle,target:&crate::node_controller::Target,request:&crate::node_controller::Request,control:&std::path::Path,pins:Option<&serde_json::Value>)->Result<(),String>{
+pub(crate) async fn exact_continuation(app:&tauri::AppHandle,target:&crate::node_controller::Target,request:&crate::node_controller::Request,control:&std::path::Path,pins:Option<&serde_json::Value>)->Result<(),String>{
  use tauri::Manager;crate::authorization_lifecycle::grant(&app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?,target,request,control,pins).await
 }
 use serde_json::Value;
@@ -33,7 +33,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;
  target.validate()?;
- if matches!(request.operation.as_str(),"genesis_stage"|"genesis_stage_preflight"|"network_formation_prepare"|"network_formation_export"){
+ if matches!(request.operation.as_str(),"genesis_stage"|"genesis_stage_preflight"|"network_formation_prepare"|"network_formation_export"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"network_transport_prepare"|"network_transport_sign"|"network_transport_export"){
   return Err("Use the native signed Genesis folder review.".into());
  }
  let mutation=request.validate()?;
@@ -69,6 +69,13 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
    if let Some(operations)=result["result"]["operations"].as_array_mut(){for row in operations{if row["kind"]=="mutation"&&row["blocker"]=="Operation has not passed host qualification"{row["engineeringContinuation"]=serde_json::json!(true);}}}
   }
   if operation=="authorization_status" {
+   let update=&result["result"]["update"];
+   if !update.is_null(){
+    let request=serde_json::json!({"version":1,"operation":"update_stage","parameters":{"release_id":update["selection"]["release_id"],"manifest_sha256":update["selection"]["manifest_sha256"]}});
+    let digest=format!("{:x}",Sha256::digest(request.to_string().as_bytes()));
+    if update["request_sha256"]!=digest{return Err("Update adoption receipt has no exact dispatch identity".into())}
+    request_journal::reconcile_verified(&app.path().app_local_data_dir().map_err(|_|"Portal journal unavailable")?,&target_identity,"update_stage",&digest)?;
+   }
    let record=&result["result"]["authorization"];
    if result["result"]["schema"]!="nodenetwork-engineering-authorization-status-v1"{return Err("Unsupported authorization status".into())}
    if !record.is_null(){
@@ -161,7 +168,7 @@ async fn export_public(window:tauri::WebviewWindow,app:tauri::AppHandle,target:n
   Ok(Some(summary))
  }).await.map_err(|_|"Public export did not finish.")?
 }
-fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> { if window.label() == "main" { Ok(()) } else { Err("Use the main Portal window for native services.".into()) } }
+pub(crate) fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> { if window.label() == "main" { Ok(()) } else { Err("Use the main Portal window for native services.".into()) } }
 
 #[tauri::command]
 pub async fn portal_nodenetwork_stage_signed_genesis(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,expected_address:String)->Result<Option<Value>,String>{
@@ -270,4 +277,51 @@ pub async fn portal_nodenetwork_export_network_genesis(window:tauri::WebviewWind
   for(name,bytes)in files{let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);#[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}let mut file=options.open(path.join(name)).map_err(|_|"Public export interrupted; inspect destination")?;file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|_|"Public export interrupted; inspect destination")?;}
   Ok(Some(summary))
  }).await.map_err(|_|"Public export interrupted")?
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_stage_update(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target)->Result<Option<Value>,String>{
+ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+ main_only(&window)?;target.validate()?;
+ if !cfg!(debug_assertions){return Err("Engineering release adoption is disabled in production".into())}
+ let base=app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?;
+ let control=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+ let(operator,mut context,pin)=crate::authorization_lifecycle::update_context(&base,&target,&control).await?;
+ let view=window.clone();let selection=context["selection"].clone();
+ let prepared=tauri::async_runtime::spawn_blocking(move||{
+  let Some(folder)=view.dialog().file().set_parent(&view).set_title("Select the exact NEW engineering synergy master").blocking_pick_folder() else{return Ok(None)};
+  node_bootstrap::prepare_update(&folder.into_path().map_err(|_|"Choose a local master folder")?,&selection).map(Some)
+ }).await.map_err(|_|"Update inventory review interrupted")??;
+ let Some(prepared)=prepared else{return Ok(None)};
+ if context["selection"]["release_id"]==prepared.release||context["selection"]["manifest_sha256"]==prepared.manifest_sha256{return Err("Choose a distinct new release; reconcile an already staged update instead of replaying".into())}
+ context["release_id"]=serde_json::json!(prepared.release);context["manifest_sha256"]=serde_json::json!(prepared.manifest_sha256);
+ let message=format!("ISOLATED DEBUG ENGINEERING RELEASE ADOPTION ONLY\nTarget: {}\nRoot: /opt/synergy\nCurrent exact release: {}\nNEW release: {}\nNEW manifest SHA-256: {}\nInitial native approval: {}\nCurrent authorization: {}\nFormation: {}\n\nThe complete local package inventory was hashed by native code. This confirmation approves these exact new software bytes for this existing authenticated engineering target/network. It is not production publisher approval. Stop the validator first. This stages software and the matching controller, but does not upgrade, restart, change custody or grant membership. A separate reviewed upgrade and one-use host grant remain mandatory. Never replay an uncertain result.",target.label(),context["selection"],prepared.release,prepared.manifest_sha256,context["initial_sha256"],context["parent_sha256"],context["formation_sha256"]);
+ let confirmed=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Review exact engineering update").buttons(MessageDialogButtons::OkCancelCustom("Approve and stage exact release once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Update confirmation interrupted")?;
+ if !confirmed{return Ok(None)}
+ let request=serde_json::json!({"version":1,"operation":"update_stage","parameters":{"release_id":prepared.release,"manifest_sha256":prepared.manifest_sha256}});
+ let dispatch=request_journal::Dispatch::begin(&base,&target.journal_identity(),"update_stage",&request)?;
+ let result=node_bootstrap::execute_update(target,operator,context.clone(),prepared,&control,pin.as_deref()).await;
+ dispatch.finish(&result).map_err(|_|"Update outcome uncertain; read authorization status before any further operation")?;
+ let result=result?;
+ if result["ok"]==true&&(result["result"]["schema"]!="nodenetwork-update-stage-v1"||result["result"]["stagedRelease"]!=context["release_id"]||result["result"]["manifestSha256"]!=context["manifest_sha256"]||result["result"]["initial_sha256"]!=context["initial_sha256"]||result["result"]["parent_sha256"]!=context["parent_sha256"]||result["result"]["controllerAdopted"]!=true||result["result"]["validatorUpgraded"]!=false){return Err("Update response does not confirm the exact reviewed release; reconcile without replay".into())}
+ Ok(Some(result))
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_vpn(window:tauri::WebviewWindow,app:tauri::AppHandle,target:crate::node_controller::Target,operation:String)->Result<Option<Value>,String>{
+ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};main_only(&window)?;target.validate()?;
+ if !cfg!(debug_assertions)||!matches!(operation.as_str(),"enroll"|"reconcile"|"revoke"|"retire"){return Err("This native build has no approved VPN workflow".into())}
+ let target_label=target.label();let action=operation.clone();let select=window.clone();
+ let picked=tauri::async_runtime::spawn_blocking(move||{
+  let Some(folder)=select.dialog().file().set_parent(&select).set_title("Choose independently approved VPN provider folder").blocking_pick_folder()else{return Ok(None)};
+  let folder=folder.into_path().map_err(|_|"Select a local provider folder")?;
+  let Some(credential)=select.dialog().file().set_parent(&select).set_title("Choose private provider credential (never sent to renderer/validator)").blocking_pick_file()else{return Ok(None)};
+  let credential=credential.into_path().map_err(|_|"Select a private credential file")?;
+  let ok=select.dialog().message(format!("Isolated engineering VPN {action}\nTarget: {target_label}\nThis uses only the independently compiled HTTPS provider/account/CA and exact current target/master/network/formation. A provider setup key can be consumed even if the reply is lost. No automatic retry or production approval. Revoke cancels only the exact setup key. Retire deletes the independently attributed provider peer and records verified absence for normal removal; first stop the validator.")).parent(&select).title("Authorize native VPN workflow once").buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show();
+  Ok::<_,String>(if ok{Some((folder,credential))}else{None})
+ }).await.map_err(|_|"Native VPN selection did not finish")??;
+ let Some((folder,credential))=picked else{return Ok(None)};
+ let base=app.path().app_local_data_dir().map_err(|_|"Native app state unavailable")?;
+ let control=crate::node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+ crate::vpn_enrollment::execute(&base,target,&control,&folder,&credential,&operation).await.map(Some)
 }

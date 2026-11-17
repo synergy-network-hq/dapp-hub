@@ -4,9 +4,9 @@ export async function nodeNetworkRequests(){
  const value=await invoke('portal_nodenetwork_requests');
  const pin=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
  const states=new Set(['dispatch_intent','uncertain','response_received','verified_target_outcome']);
- const operations=new Set(['authorization_stage','network_formation_prepare','network_formation_sign','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
+ const operations=new Set(['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
  const time=value=>Number.isSafeInteger(value)&&value>=0&&value<=8640000000000000;
- if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','network_formation_prepare','network_formation_sign','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
+ if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
  return value;
 }
 // First-party native extension only; remote community HTML has no Tauri bridge.
@@ -57,4 +57,34 @@ export async function prepareNodeNetworkGenesis(target,formationSha256){
 export async function exportNodeNetworkGenesis(target,reviewSha256){
  if(!isTauri())throw Error('Signed Genesis export requires the native Portal app.');
  return invoke('portal_nodenetwork_export_network_genesis',{target,reviewSha256});
+}
+
+export async function stageNodeNetworkUpdate(target){
+ if(!isTauri())throw Error('Authenticated update staging requires native Portal.');
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_stage_update',{target}));
+ if(reply===null)return null;
+ if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid update staging response.');
+ if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Update staging refused.'}`);
+ return reply.result;
+}
+
+export async function nodeNetworkVpn(target,operation){
+ if(!isTauri())throw Error('VPN provider authorization requires the native Portal app.');
+ if(!['enroll','reconcile','revoke','retire'].includes(operation))throw Error('Unsupported VPN action.');
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_vpn',{target,operation}));
+ if(reply===null)return null;
+ if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid native VPN response.');
+ if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Native VPN operation refused.'}`);
+ return reply.result;
+}
+
+export async function nodeNetworkTransport(target,operation,reviewSha256=null){
+ if(!isTauri())throw Error('Transport registry formation requires native Portal.');
+ if(!['status','prepare','sign','export'].includes(operation))throw Error('Unsupported transport operation.');
+ const call=()=>invoke('portal_nodenetwork_transport',{target,operation,reviewSha256});
+ const reply=await(operation==='status'?call():withNodeChange(call));
+ if(reply===null)return null;
+ if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid transport response.');
+ if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Transport operation refused.'}`);
+ return reply.result;
 }
