@@ -94,12 +94,12 @@ fn load(path: &Path) -> Result<Vec<Record>, String> {
         file.take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|_| failure())?;
         if bytes.len() as u64 > MAX_BYTES { return Err(failure()); }
         let record: Record = serde_json::from_slice(&bytes).map_err(|_| failure())?;
-        let operation = matches!(record.operation.as_str(), "authorization_stage" | "update_stage" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall");
+        let operation = matches!(record.operation.as_str(), "authorization_stage" | "update_stage" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "guest_create" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall");
         let state = match record.state.as_str() {
             "dispatch_intent" => record.observed_at_ms.is_none() && record.response_ok.is_none(),
             "uncertain" => record.observed_at_ms.is_some() && record.response_ok.is_none(),
             "response_received" => record.observed_at_ms.is_some() && record.response_ok.is_some(),
-            "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "formation_prepare"|"genesis_stage"|"genesis_bind"),
+            "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "guest_create" | "formation_prepare"|"genesis_stage"|"genesis_bind"),
             _ => false,
         };
         if record.version != 1 || name != format!("{}.json", record.id) || !pin(&record.id) || !pin(&record.target_digest) || !pin(&record.request_digest) || !operation || !state { return Err(failure()); }
@@ -130,7 +130,7 @@ impl Dispatch {
     /// Caller must validate the typed target/request and obtain native consent first.
     pub fn begin(base: &Path, target: &Value, operation: &str, request: &Value) -> Result<Self, String> {
         let _serial = SERIAL.lock().map_err(|_| failure())?;
-        if !matches!(operation, "authorization_stage" | "update_stage" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
+        if !matches!(operation, "authorization_stage" | "update_stage" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "guest_create" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;
@@ -166,7 +166,7 @@ impl Dispatch {
 /// No retries, clearing, or inferred failure. A target status can reconcile
 /// only the matching original custody preparation, Genesis staging or Genesis bind.
 pub(crate) fn reconcile_verified(base:&Path,target:&Value,operation:&str,request_digest:&str)->Result<bool,String>{
-    if !matches!(operation,"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(request_digest){return Err(failure());}
+    if !matches!(operation,"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "guest_create" | "formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(request_digest){return Err(failure());}
     let _serial=SERIAL.lock().map_err(|_|failure())?;
     let Some(directory)=directory(base,false)? else{return Ok(false);};
     let _writer=WriterLock::acquire(&directory)?;

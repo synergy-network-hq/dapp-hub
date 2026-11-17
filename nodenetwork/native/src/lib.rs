@@ -16,3 +16,5 @@ mod vpn_enrollment;
 
 mod transport_formation;
 pub mod transport_commands;
+
+pub mod guest_hosts;

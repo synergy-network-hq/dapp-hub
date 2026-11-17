@@ -1,6 +1,7 @@
+import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
-import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn} from './native-services.js';
+import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest} from './native-services.js';
 import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
@@ -177,7 +178,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <p>Bound public enrollment can be used by the independent transport registry signer. No private key is exported. Signed membership does not prove the required 50,000 SNRG stake, runtime admission or participation.</p>
    </Card>
    <Card title="4. Connect VPN, commission and verify runtime">
-    <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
+  <GuestHosts target={target} disabled={!permitted||!state||!!pending} invokeGuest={nodeNetworkGuest} onMutation={()=>setState(null)}/>
+     <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
     <p>{vpn?.connected&&vpn?.server_bound?'VPN connected and server binding observed':vpn?'VPN enrollment or connection pending':'VPN status not verified'}</p>
     {['register','vpn_status','commission','start','health'].map(action)}
     {['enroll','reconcile','revoke','retire'].map(op=><button key={op} type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn(op)}>{op==='enroll'?'Authorize provider and enroll VPN once':op==='reconcile'?'Reconcile and verify original VPN enrollment':op==='retire'?'Retire exact VPN peer for removal':'Cancel exact provider setup key'}</button>)}

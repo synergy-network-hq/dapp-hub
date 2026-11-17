@@ -4,9 +4,9 @@ export async function nodeNetworkRequests(){
  const value=await invoke('portal_nodenetwork_requests');
  const pin=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
  const states=new Set(['dispatch_intent','uncertain','response_received','verified_target_outcome']);
- const operations=new Set(['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
+ const operations=new Set(['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','guest_create','guest_stop','guest_remove','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
  const time=value=>Number.isSafeInteger(value)&&value>=0&&value<=8640000000000000;
- if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
+ if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','guest_create','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
  return value;
 }
 // First-party native extension only; remote community HTML has no Tauri bridge.
@@ -87,4 +87,15 @@ export async function nodeNetworkTransport(target,operation,reviewSha256=null){
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid transport response.');
  if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Transport operation refused.'}`);
  return reply.result;
+}
+
+export async function nodeNetworkGuest(target,operation,guestId){
+ if(!isTauri())throw Error('Managed guests require the native Portal app.');
+ if(!['status','preflight','create','stop','remove'].includes(operation)||typeof guestId!=='string'||!/^[a-z][a-z0-9-]{0,31}$/.test(guestId))throw Error('Unsupported guest operation or ID.');
+ const call=()=>invoke('portal_nodenetwork_guest',{target,operation,guestId});
+ const reply=await(['status','preflight'].includes(operation)?call():withNodeChange(call));
+ if(reply===null)return null;
+ const preflight=operation==='preflight';
+ if(reply?.schema!==(preflight?'nodenetwork-guest-preflight-v1':'nodenetwork-guest-status-v1')||(preflight?reply.selection?.guest_id:reply.guest_id)!==guestId)throw Error('Invalid native guest response for the selected guest.');
+ return reply;
 }

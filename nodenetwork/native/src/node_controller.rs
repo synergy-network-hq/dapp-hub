@@ -50,8 +50,8 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export" => false,
-            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign" => true,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_preflight" => false,
+            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_remove" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
@@ -65,10 +65,20 @@ impl Request {
             "network_formation_sign" => &["review_sha256"],
             "network_transport_prepare" => &["formation_sha256","genesis_review_sha256","target_provider_report_sha256","valid_from_unix","expires_at_unix","members"],
             "network_transport_sign" => &["review_sha256"],
+            "guest_status"|"guest_preflight"|"guest_stop"|"guest_remove" => &["guest_id"],
+            "guest_create" => &["guest_id","image_sha256","cpu_count","memory_mib","disk_gib"],
             _ => &[],
         };
         if p.len() != expected.len() || expected.iter().any(|k| !p.contains_key(*k)) {
             return Err("Unexpected controller parameters; paths, secrets and shell commands are forbidden.".into());
+        }
+        if self.operation.starts_with("guest_") {
+            let id=p["guest_id"].as_str().ok_or("Guest ID required")?;
+            if id.is_empty()||id.len()>32||!id.as_bytes()[0].is_ascii_lowercase()||!id.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'){return Err("Invalid guest ID".into())}
+            if self.operation=="guest_create" {
+                if !p["image_sha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Pinned guest image required".into())}
+                for (key,lo,hi)in[("cpu_count",1,32),("memory_mib",1024,65536),("disk_gib",8,512)]{if !p[key].as_u64().is_some_and(|n|(lo..=hi).contains(&n)){return Err("Guest resources outside approved bounds".into())}}
+            }
         }
         if self.operation=="network_formation_prepare" && (!p["recipe_json"].as_str().is_some_and(|s|!s.is_empty()&&s.len()<=1024*1024)||!p["registrations_json"].as_array().is_some_and(|a|a.len()==5&&a.iter().all(|v|v.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=128*1024)))){return Err("Bounded public recipe and five registrations required".into())}
         if self.operation=="network_transport_prepare"{
@@ -255,6 +265,18 @@ pub(super) async fn execute_pinned(target: Target, request: Request, control_dir
         let target=Target{kind:"remote".into(),host:Some("host.example".into()),port:None,root:ROOT.into()};
         let path=Path::new("/tmp/short");
         assert_ne!(control_socket(&target,path,"operator"),control_socket(&target,path,"synergy-nodenetwork"));
+    }
+    #[test] fn guest_requests_require_exact_pinned_resources_and_no_host_paths() {
+        let mut r=Request{version:1,operation:"guest_create".into(),parameters:json!({"guest_id":"validator-a","image_sha256":"a".repeat(64),"cpu_count":2,"memory_mib":2048,"disk_gib":16})};
+        assert_eq!(r.validate(),Ok(true));
+        for (key,bad)in[("guest_id",json!("../guest")),("image_sha256",json!("A".repeat(64))),("cpu_count",json!(0)),("memory_mib",json!(65537)),("disk_gib",json!(513))] {
+            let old=r.parameters[key].clone();r.parameters[key]=bad;assert!(r.validate().is_err());r.parameters[key]=old;
+        }
+        r.parameters["image_path"]=json!("/tmp/untrusted");assert!(r.validate().is_err());
+        for operation in ["guest_status","guest_preflight","guest_stop","guest_remove"] {
+            r.operation=operation.into();r.parameters=json!({"guest_id":"validator-a"});assert_eq!(r.validate(),Ok(matches!(operation,"guest_stop"|"guest_remove")));
+            r.parameters["ssh_host"]=json!("localhost");assert!(r.validate().is_err());
+        }
     }
     #[test] fn vpn_enrollment_never_accepts_credentials_from_the_renderer() {
         let mut request=Request{version:1,operation:"vpn_enroll".into(),parameters:json!({})};
