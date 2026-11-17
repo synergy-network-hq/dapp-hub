@@ -164,6 +164,13 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn original_rollback_authorization_globals_preserve_bounded_exact_utf8_without_argument_embedding(){
+     use std::io::Write;
+     let raw=format!("{{\"public\":\"{}雪\"}}","x".repeat(64000));let sha=format!("{:x}",Sha256::digest(raw.as_bytes()));let prefix=super::bare_authorization_globals(&sha);
+     assert!(!prefix.contains(&raw));assert!(prefix.len()<512);
+     let script=prefix+"assert len(NATIVE_AUTHENTICATED_BARE_AUTHORIZATION_JSON.encode('utf-8')) <= 65536\nassert __import__('hashlib').sha256(NATIVE_AUTHENTICATED_BARE_AUTHORIZATION_JSON.encode('utf-8')).hexdigest() == NATIVE_AUTHENTICATED_BARE_AUTHORIZATION_SHA256\n";
+     let mut child=std::process::Command::new("/usr/bin/python3").args(["-I","-B","-c",&script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();child.stdin.take().unwrap().write_all(raw.as_bytes()).unwrap();assert!(child.wait().unwrap().success());
+    }
     #[test]fn guest_archive_cap_is_only_extended_for_exact_declared_master_resources(){
      let mut m=serde_json::json!({"files":{}});assert_eq!(super::archive_limit(&m).unwrap(),super::MAX_ARCHIVE);
      // Exact four-field shape emitted by canonical build_package.py, including its resource file map.
@@ -236,20 +243,30 @@ pub(super) fn bare_rollback_scope(target:&Target,release:&str,pin:Option<&str>,d
     let pin=pin.filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))).ok_or("No independently compiled old master approval")?;
     if release.is_empty()||release.len()>128||!release.bytes().all(|b|b.is_ascii_alphanumeric()||b"._-".contains(&b)){return Err("Invalid old release reference".into())}Ok(pin.into())
 }
-pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&str,review:Option<&str>,control:&Path)->Result<Value,String>{
+fn bare_authorization_globals(sha:&str)->String{
+ // Keep the bounded original public document off command arguments; only this
+ // exact native-verified digest is injected into the executable script.
+ format!("NATIVE_AUTHENTICATED_BARE_AUTHORIZATION_SHA256=\"{sha}\"\nNATIVE_AUTHENTICATED_BARE_AUTHORIZATION_JSON=__import__('sys').stdin.buffer.read(65537).decode('utf-8')\n")
+}
+pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&str,review:Option<&str>,authorization:Option<&str>,control:&Path)->Result<Value,String>{
     let pin=bare_rollback_scope(&target,release,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_BARE_ROLLBACK_MANIFEST_SHA256"),cfg!(debug_assertions))?;
     validate_operator(operator)?;
     if review.is_some_and(|s|s.len()!=64||!s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Invalid exact rollback review".into())}
     let _guard=node_controller::SERIAL.lock().await;
     node_controller::close_connection_checked(&target,control,"synergy-nodenetwork").await?;
     node_controller::close_connection_checked(&target,control,operator).await?;
-    let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{pin}\"\n{BOOTSTRAP}");
+    let authorization_globals=if let Some(raw)=authorization{
+     let sha=crate::bare_rollback::verified_original(raw,&target,release,&pin)?;
+     bare_authorization_globals(&sha)
+    }else{String::new()};
+    let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{pin}\"\n{authorization_globals}{BOOTSTRAP}");
     let flag=if review.is_some(){"--bare-rollback-apply"}else{"--bare-rollback-preflight"};
     let remote=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {} {} {}{}",shell_quote_static(&script),flag,release,pin,review.map(|s|format!(" {s}")).unwrap_or_default());
     let mut command=node_controller::remote_command(&target,control,operator,&remote,None)?;
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    command.stdin(if authorization.is_some(){Stdio::piped()}else{Stdio::null()}).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let result=async{
         let mut child=command.spawn().map_err(|_|"Cannot open approved rollback admin transport")?;
+        if let Some(raw)=authorization{let mut input=child.stdin.take().ok_or("Original authorization input unavailable")?;input.write_all(raw.as_bytes()).await.map_err(|_|"Original authorization transport interrupted")?;drop(input);}
         let output=child.stdout.take().ok_or("Rollback output unavailable")?;
         let mut bytes=Vec::new();output.take(65537).read_to_end(&mut bytes).await.map_err(|_|"Cannot read rollback response")?;
         if bytes.len()>65536{return Err("Rollback response exceeds bound".into())}

@@ -140,7 +140,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     {master&&<button type="button" disabled={!!pending} onClick={()=>setForm({...form,release_id:master.release,manifest_sha256:master.manifestSha256})}>Copy inspected release reference into draft</button>}
     <label>Existing administrative account<input value={operator} maxLength={32} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={!!pending} onChange={event=>setOperator(event.target.value)}/></label>
     <button type="button" disabled={!permitted||!!pending||!!state||!operator||(target.kind==='local'&&!localSupported)} onClick={()=>perform('bootstrap')}>{LABELS.bootstrap}</button>
-    <p>For an independently approved isolated engineering target only: review removal of a completed bare bootstrap before retrying setup with a corrected master. Any installed software, authorization, custody or runtime state makes this operation refuse.</p>
+    <p>For an independently approved isolated engineering target only: review removal of a completed bare bootstrap before retrying setup with a corrected master. A separately compiled original authorization may be removed only while its initial formation grants remain entirely unused. Installed software, custody, VPN, consumed grants, continuations or runtime state make this operation refuse.</p>
     <button type="button" disabled={!permitted||!!pending||!operator||!form.release_id} onClick={rollbackBare}>Review exact bare bootstrap removal</button>
    </Card>
    <Card title="3. Review exact engineering formation authorization">

@@ -35,6 +35,11 @@ fn initial(base:&Path,target:&Target)->Result<(Initial,Value),String>{
  let record:Initial=serde_json::from_slice(&raw).map_err(|_|"Invalid initial native authorization receipt")?;
  let document=authorization::verify_initial(&record.document,target)?;crate::node_bootstrap::validate_operator(&record.operator)?;Ok((record,document))
 }
+pub(super) fn bare_initial(base:&Path,target:&Target)->Result<Option<String>,String>{
+ let path=base.join("nodenetwork-engineering-v1").join(name(target));
+ if !path.exists()&&!path.is_symlink(){return Ok(None)}
+ initial(base,target).map(|(record,_)|Some(record.document))
+}
 fn host_pin(control:&Path,doc:&Value)->Result<Option<PathBuf>,String>{
  if doc["target"]["kind"]=="local"{return Ok(None)}
  node_controller::protect_control_directory(control)?;
