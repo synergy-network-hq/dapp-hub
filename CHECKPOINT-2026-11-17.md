@@ -1,3 +1,7 @@
+# Native and desktop identity verification follow-up
+
+Portal focused identity-generation and Genesis-stage-journal suites passed all 26 cases. Native cargo test -p nodenetwork-native --lib identity passed all 12 matching cases, including scoped canonical request binding, legacy input-only status, duplicate/contradictory provenance refusal, redacted command output and unchanged journal fencing. Corrected an old custody-status fixture to assert strict refusal of an extra envelope field before testing the canonical envelope; the reconciliation error fixture now includes required version 1. No production parser relaxation. Full paired matrix and selected-host/runtime acceptance remain pending.
+
 # Identity provenance regression follow-up
 
 Ran node --test nodenetwork/tests/identity-preflight.test.mjs nodenetwork/tests/custody-status.test.mjs: all 12 cases passed. New coverage distinguishes scoped input-only custody from durable request attribution; independently reproduces the owner canonical identity_generate SHA-256; rejects contradictory or malformed provenance, future schemas and interrupted-intent replies presented as absence. Native command/journal tests, desktop component tests and full paired validation remain pending. No host selected.

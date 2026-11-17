@@ -1539,6 +1539,8 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
             "genesis_sha256":"a".repeat(64),"genesis_authority_verified":true,"address":"synv1".to_string()+&"a".repeat(36),
             "possession_verified":true,"membership_granted":false
         }});
+        assert!(custody_status_reply("identity_status", &reply).is_err());
+        reply.as_object_mut().unwrap().remove("internal");
         let identity = custody_status_reply("identity_status", &reply).unwrap();
         assert!(identity.get("internal").is_none());
         assert!(custody_status_reply("formation_status", &reply).is_err());
@@ -1551,6 +1553,7 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
             "schema":"nodenetwork-formation-v1","formation_sha256":"a".repeat(64),"formation_id":"b".repeat(64),
             "request_sha256":"3d1a736fbc86a3e25a10764739cb3b53e31e4d070c3dfe546b648e73c8b7979d","address":"synv1".to_string()+&"a".repeat(36),
             "possession_verified":true,"membership_granted":false});
+        reply["internal"] = json!("unreviewed fixture");
         assert!(custody_status_reply("formation_status", &reply).is_err());
         reply.as_object_mut().unwrap().remove("internal");
         assert!(custody_status_reply("formation_status", &reply).is_ok());
@@ -1563,7 +1566,7 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         reply["result"] = json!({"pending":false});
         assert!(custody_status_reply("identity_status", &reply).is_ok());
         assert!(custody_status_reply("formation_status", &reply).is_ok());
-        assert!(custody_status_reply("identity_status", &json!({"ok":false,"error":{"code":"reconciliation_required","message":"private fixture"}}))
+        assert!(custody_status_reply("identity_status", &json!({"version":1,"ok":false,"error":{"code":"reconciliation_required","message":"private fixture"}}))
             .unwrap_err().contains("Preserve it"));
     }
     #[test] fn preparation_reads_are_independent_empty_parameter_operations() {
