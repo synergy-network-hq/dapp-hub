@@ -1,3 +1,7 @@
+# Scoped bootstrap result panel
+
+Added an allowlisted staging/enrollment summary in the existing Validator setup design. It checks exact acknowledgement semantics, refuses stale target scope before dispatch and binds publication to the unchanged target/permission/draft/operator context after native work. Draft changes retire the panel; a late reply directs users to original target/history without claiming cancellation. Nine setup component cases, desktop TypeScript and NodeNetwork build passed. No host selected, no real native mutation executed. Full paired rerun remains pending after this source change.
+
 # Reviewed master bootstrap acknowledgement binding
 
 Positive bootstrap acknowledgement is now checked against the reviewed release/manifest and the pinned owner staging-only response before journal settlement. It cannot claim software installation, activation or community enrollment. Exact managed host records and operator-authorization-required remain required. Five bootstrap tests and all 122 host-independent native tests passed, two actual-host tests excluded. No host selected. New source follows the earlier 250-check full paired baseline; a full rerun remains pending.

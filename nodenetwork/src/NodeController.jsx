@@ -1,3 +1,4 @@
+import {bootstrapObservation} from './bootstrap-observation.js';
 import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap,nodeNetworkStageGenesis} from "./native-services.js";
 import {Card,Detail,ErrorMessage,useResource,Resource,Table} from "@synergy-network/portal-native/dapp-sdk";
@@ -91,6 +92,11 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const installScope=JSON.stringify([key,permitted,form.release_id,form.manifest_sha256,form.network_id,form.chain_id,form.node_name]);
  const installContext=useRef({scope:installScope});
  if(installContext.current.scope!==installScope)installContext.current={scope:installScope};
+ const bootstrapScope=JSON.stringify([installScope,operator]);
+ const bootstrapContext=useRef({scope:bootstrapScope});
+ if(bootstrapContext.current.scope!==bootstrapScope)bootstrapContext.current={scope:bootstrapScope};
+ const currentTargetScope=useRef(targetScopeCurrent);currentTargetScope.current=targetScopeCurrent;
+ const bootstrapResult=permitted&&result?.operation==='bootstrap'&&result.bootstrapContext===bootstrapContext.current&&targetScopeCurrent()?result:null;
  const upgradeScope=JSON.stringify([targetScope,form.release_id,form.manifest_sha256]);
  const upgradeContext=useRef({scope:upgradeScope});
  if(upgradeContext.current.scope!==upgradeScope)upgradeContext.current={scope:upgradeScope};
@@ -246,9 +252,17 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  }
  async function bootstrap(){
   if(!permitted||busy||removalResult)return;
+  if(!targetScopeCurrent()){setError('The target, recovery state or permission changed. Review the selected controller again.');return;}
+  const reviewedBootstrap=bootstrapContext.current;
   setBusy(true);setError('');setResult(null);
   setPreflightAttempt(null);setFormationReview(null);setLifecycleReceipt(null);
-  try{const submitted=installParameters(form);const response=await nodeNetworkBootstrap(target,operator,submitted);if(response&&alive.current){setResult({operation:'bootstrap',submitted,result:response,receivedAt:Date.now()});capabilities.reload();}}
+  try{const submitted=installParameters(form);const response=await nodeNetworkBootstrap(target,operator,submitted);
+   if(!alive.current)return;
+   if(reviewedBootstrap!==bootstrapContext.current||!currentTargetScope.current()){
+    setError('The bootstrap view changed while native work was pending. Inspect the original target and request history before another change.');return;
+   }
+   if(response){setResult({operation:'bootstrap',submitted,result:bootstrapObservation(response,submitted),bootstrapContext:reviewedBootstrap,receivedAt:Date.now()});capabilities.reload();}
+  }
   catch(failure){if(alive.current)setError(String(failure?.message||failure));}
   finally{if(alive.current)setBusy(false);}
  }
@@ -301,6 +315,14 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <label>Existing administrative SSH account<input aria-label="Existing administrative SSH account" value={operator} onChange={event=>setOperator(event.target.value)} autoComplete="off"/></label>
     <button disabled={!permitted||busy||!!removalResult||!operator||(target.kind==='local'&&!localSupported)} onClick={bootstrap}>Bootstrap clean target from approved master</button>
     <p>Bootstrap uses native package and public-key pickers, verified SSH host identity and agent authentication. Its embedded canonical engine requires an empty /opt/Synergy and confirms the exact target and privilege scope before transmission.</p>
+    {bootstrapResult&&<section aria-label="Reported target bootstrap">
+     <h3>Target enrollment reported</h3>
+     <ControllerReceipt receivedAt={bootstrapResult.receivedAt}/>
+     <Detail data={bootstrapResult.result}/>
+     <p>The approved software package is staged and the restricted controller account is enrolled. Operator authorization is still required.</p>
+     <p>Software installation, validator custody, community enrollment and activation require their separate reviews and steps.</p>
+     <p>Inspect the selected target and run installation preflight before continuing.</p>
+    </section>}
     <p>The R5 baseline is shown for comparison. Its digest alone does not approve this target, network or installation.</p>
     <div className="native-controller-action">
      <button disabled={busy||!canInstall} onClick={()=>run('install')}>Install approved node</button>
@@ -398,6 +420,6 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    inventoryAction={inventoryReview}
    preflightAction={statusAction('uninstall_preflight','Review uninstall scope')}/>}
   {busy&&<p role="status">Waiting for the target controller. Do not repeat the operation.</p>}
-  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&!['install','upgrade','uninstall','vpn_enroll','genesis_bind','genesis_stage'].includes(result.operation)&&!resultIsPreparation&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
+  <ErrorMessage error={error}/>{result&&!typedStatus[result.operation]&&!['bootstrap','install','upgrade','uninstall','vpn_enroll','genesis_bind','genesis_stage'].includes(result.operation)&&!resultIsPreparation&&<Card title={`Controller result · ${result.operation}`}><p>Response received {new Date(result.receivedAt).toISOString()}. This response is not a durable job record or proof of consensus readiness.</p><Detail data={{submittedOperation:result.operation,submittedPublicParameters:result.submitted}}/><p>These are the inputs submitted by this Portal view, not the current draft, a signed plan or authenticated target-state evidence. Native package/key selection remains part of the separate native review.</p><Detail data={result.result}/></Card>}
  </div>;
 }
