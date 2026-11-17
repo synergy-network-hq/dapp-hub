@@ -138,7 +138,9 @@ pub(super) async fn remember_export(base:&Path,target:&Target,export:&Value,cont
 }
 /// Reload the approved source and run its current APQE-verifying export again.
 /// Stored public JSON alone is never accepted as an authority or a fresh proof.
-pub(super) async fn engineering_stage(base:&Path,target:&Target,expected_address:&str,control:&Path)->Result<Option<(Value,Value)>,String>{
+pub(super) struct SignedSource{pub target:Target,pub export:Value,pub receipt:Value}
+pub(super) fn original_document(base:&Path,target:&Target)->Result<Value,String>{initial(base,target).map(|(_,doc)|doc)}
+pub(super) async fn signed_source(base:&Path,target:&Target,control:&Path)->Result<Option<SignedSource>,String>{
  if !cfg!(debug_assertions)||!folder(base)?.join(name(target)).exists(){return Ok(None)}
  let(_,doc)=initial(base,target)?;
  let mut selected=None;let mut count=0;
@@ -153,10 +155,15 @@ pub(super) async fn engineering_stage(base:&Path,target:&Target,expected_address
  let(record,source_doc)=initial(base,&source)?;
  if saved["initial_sha256"]!=hash(record.document.as_bytes())||source_doc["network_id"]!=doc["network_id"]||source_doc["chain_id"]!=doc["chain_id"]{return Err("Public export source changes the approved network or initial host identity".into())}
  let fresh=execute(base,source.clone(),Request{version:1,operation:"network_formation_export".into(),parameters:json!({})},control).await?;
- let status=execute(base,source,Request{version:1,operation:"network_formation_status".into(),parameters:json!({})},control).await?;
+ let status=execute(base,source.clone(),Request{version:1,operation:"network_formation_status".into(),parameters:json!({})},control).await?;
  if fresh["ok"]!=true||status["ok"]!=true||fresh["result"]!=saved["export"]{return Err("Original APQE-verifying source no longer confirms the exact signed public export".into())}
  matching_export(&status["result"],&fresh["result"],&source_doc)?;
  if status["result"]["review_sha256"]!=saved["receipt"]["review_sha256"]{return Err("Original signed review changed".into())}
+ Ok(Some(SignedSource{target:source,export:fresh["result"].clone(),receipt:status["result"].clone()}))
+}
+pub(super) async fn engineering_stage(base:&Path,target:&Target,expected_address:&str,control:&Path)->Result<Option<(Value,Value)>,String>{
+ let Some(source)=signed_source(base,target,control).await? else{return Ok(None)};
+ let(_,doc)=initial(base,target)?;let fresh=json!({"result":source.export});let status=json!({"result":source.receipt});
  let prepared=execute(base,target.clone(),Request{version:1,operation:"formation_status".into(),parameters:json!({})},control).await?;
  if prepared["ok"]!=true||prepared["result"]["address"]!=expected_address||prepared["result"]["pending"]!=true||prepared["result"]["possession_verified"]!=true||prepared["result"]["formation_sha256"]!=doc["artifacts"]["formation-context.json"]||!status["result"]["validator_addresses"].as_array().is_some_and(|a|a.iter().any(|v|v==expected_address)){return Err("Target prepared custody is not a member of the exact signed formation".into())}
  let export=&fresh["result"];let policy=json!({"schema":"nodenetwork-genesis-stage-policy-v1","address":expected_address,"genesis_sha256":export["genesis_sha256"],"authority_sha256":export["authority_sha256"],"authority_root_sha256":export["authority_root_sha256"]});
@@ -233,6 +240,37 @@ pub(super) async fn readiness_grant(base:&Path,target:&Target,control:&Path,byte
   std::fs::remove_file(&intent).map_err(|_|"Readiness applied; local reconciliation interrupted")?;Ok(result)
  }.await;
  dispatch.finish(&result)?;result.map(|_|())
+}
+
+fn transport_intent(base:&Path,target:&Target)->Result<PathBuf,String>{Ok(folder(base)?.join(format!("transport-continuation-{}.json",hash(target.journal_identity().to_string().as_bytes()))))}
+pub(super) async fn reconcile_transport(base:&Path,target:&Target,control:&Path)->Result<Option<Value>,String>{
+ let intent=transport_intent(base,target)?;if !intent.exists()&&!intent.is_symlink(){return Ok(None)}
+ let old:Value=serde_json::from_slice(&read(&intent,64*1024)?).map_err(|_|"Invalid original transport staging receipt")?;
+ let(record,_)=initial(base,target)?;let reply=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
+ if reply["ok"]!=true||reply["result"]["initial_sha256"]!=hash(record.document.as_bytes())||reply["result"]["authorization"]["sha256"]!=old["authorization_sha256"]||reply["result"]["commissioning_file_sha256"]!=old["summary"]["artifact_sha256"]{return Err("Transport staging uncertain; original exact target receipt does not confirm it; do not restage".into())}
+ let current=crate::transport_staging::candidate(base,target,control).await?;
+ if current.summary!=old["summary"]{return Err("Original signed coordinator or exact bound target changed before reconciliation".into())}
+ crate::request_journal::reconcile_verified(base,&target.journal_identity(),"authorization_stage",old["dispatch_sha256"].as_str().ok_or("Missing original transport dispatch")?)?;
+ std::fs::remove_file(intent).map_err(|_|"Transport staging confirmed; local receipt cleanup interrupted")?;Ok(Some(old["summary"].clone()))
+}
+pub(super) async fn transport_grant(base:&Path,target:&Target,control:&Path,candidate:&crate::transport_staging::Candidate)->Result<(),String>{
+ if !cfg!(debug_assertions){return Err("Fresh transport input adoption is engineering only".into())}
+ let request=Request{version:1,operation:"commission".into(),parameters:json!({})};let(record,doc)=initial(base,target)?;
+ let reply=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
+ if reply["ok"]!=true||reply["result"]["initial_sha256"]!=hash(record.document.as_bytes()){return Err("Transport target lacks original authorization".into())}
+ let status=&reply["result"];let intent=transport_intent(base,target)?;if intent.exists()||intent.is_symlink(){return Err("Reconcile original transport staging before another operation".into())}
+ let next=continuation_document(&doc,status,&request,Some(&status["genesis_pins"]),SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ let prepared=authorization::transport_continuation(next,target,&hash(record.document.as_bytes()),status["authorization"]["sha256"].as_str().ok_or("No authorization parent")?,status["formation_sha256"].as_str().ok_or("No formation")?,candidate)?;
+ let expected=prepared.sha256.clone();let dispatch_request=json!({"operation":"commission","artifact_sha256":candidate.summary["artifact_sha256"]});
+ let dispatch=crate::request_journal::Dispatch::begin(base,&target.journal_identity(),"authorization_stage",&dispatch_request)?;
+ let result=async{
+  save(&intent,&json!({"authorization_sha256":expected,"summary":candidate.summary,"dispatch_sha256":hash(dispatch_request.to_string().as_bytes())}))?;
+  let applied=authorization::execute(target.clone(),record.operator,prepared,control).await?;
+  if applied["ok"]!=true||applied["result"]["sha256"]!=expected||applied["result"]["applied"]!=true{return Err("Transport input staging uncertain; reconcile exact receipt without replay".into())}
+  let checked=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
+  if checked["ok"]!=true||checked["result"]["commissioning_file_sha256"]!=candidate.summary["artifact_sha256"]{return Err("Transport input staging readback differs; preserve original intent".into())}
+  std::fs::remove_file(intent).map_err(|_|"Transport staging complete; local reconciliation interrupted")?;Ok(applied)
+ }.await;dispatch.finish(&result)?;result.map(|_|())
 }
 
 #[cfg(test)]mod tests{

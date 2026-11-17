@@ -15,6 +15,7 @@ mod authorization_lifecycle;
 mod vpn_enrollment;
 
 mod transport_formation;
+mod transport_staging;
 pub mod transport_commands;
 
 pub mod guest_hosts;

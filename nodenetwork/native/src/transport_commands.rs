@@ -6,9 +6,21 @@ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
 #[tauri::command]
 pub async fn portal_nodenetwork_transport(window:tauri::WebviewWindow,app:tauri::AppHandle,target:Target,operation:String,review_sha256:Option<String>)->Result<Option<Value>,String>{
  commands::main_only(&window)?;target.validate()?;
- if !matches!(operation.as_str(),"status"|"prepare"|"sign"|"export"){return Err("Unsupported native transport formation operation".into())}
+ if !matches!(operation.as_str(),"status"|"prepare"|"sign"|"export"|"stage"){return Err("Unsupported native transport formation operation".into())}
  let control=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
  let base=app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?;
+ if operation=="stage"{
+  if !cfg!(debug_assertions){return Err("Fresh commissioning draft staging is isolated engineering only".into())}
+  if let Some(previous)=crate::authorization_lifecycle::reconcile_transport(&base,&target,&control).await?{return Ok(Some(previous))}
+  let candidate=crate::transport_staging::candidate(&base,&target,&control).await?;
+  let message=format!("ISOLATED ENGINEERING ONLY\nTarget: {}\nVerified signed coordinator transport: {}\nEight exact public input digests: {}\n\nStage only this target's signed-formation commissioning drafts. Existing custody, Genesis and carrier identity are preserved. Readiness remains false; no validator is commissioned or started. An uncertain result must be reconciled using this same action; it is never automatically repeated.",target.label(),candidate.summary["review_sha256"],candidate.summary["artifact_sha256"]);
+  let consent=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Review exact public commissioning inputs").buttons(MessageDialogButtons::OkCancelCustom("Stage exact public inputs once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Public transport input confirmation interrupted")?;
+  if !consent{return Ok(None)}
+  let current=crate::transport_staging::candidate(&base,&target,&control).await?;
+  if current.summary!=candidate.summary||current.files!=candidate.files{return Err("Verified source or target inputs changed during native confirmation".into())}
+  crate::authorization_lifecycle::transport_grant(&base,&target,&control,&current).await?;
+  return Ok(Some(current.summary))
+ }
  let reply=commands::controller(&app,target.clone(),Request{version:1,operation:"network_transport_status".into(),parameters:json!({})},&control).await?;
  if reply["ok"]!=true{return Err("Target refused transport status; inspect its signed formation and release first".into())}
  let current=transport::review(&reply["result"])?;

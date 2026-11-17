@@ -194,6 +194,21 @@ pub(super) fn readiness_continuation(mut doc:Value,target:&Target,initial:&str,p
  prepared.document=text;prepared.sha256=hash.clone();prepared.summary=json!({"sha256":hash,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
 }
 
+pub(super) fn transport_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,candidate:&crate::transport_staging::Candidate)->Result<Prepared,String>{
+ let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
+ if candidate.files.len()!=crate::transport_formation::ARTIFACTS.len()||doc["requests"]!=json!([{"operation":"commission","request_sha256":request.approval_id()}]){return Err("Public transport inputs require one exact commissioning grant".into())}
+ let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ let mut pins=serde_json::Map::new();let mut artifacts=serde_json::Map::new();let mut total=0usize;
+ for name in crate::transport_formation::ARTIFACTS{
+  let bytes=candidate.files.get(name).ok_or("Incomplete fixed transport input inventory")?;
+  total=total.checked_add(bytes.len()).ok_or("Public inputs exceed bound")?;if bytes.is_empty()||total>4*1024*1024{return Err("Public inputs exceed bound".into())}
+  pins.insert(format!("commissioning/{name}"),json!(digest(bytes)));artifacts.insert(format!("commissioning/{name}"),json!(STANDARD.encode(bytes)));
+ }
+ doc["artifacts"]=Value::Object(pins);let text=doc.to_string();let sha=digest(text.as_bytes());validate(&text,target,&sha,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ prepared.wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":artifacts})).map_err(|_|"Cannot encode exact public transport inputs")?);
+ prepared.document=text;prepared.sha256=sha.clone();prepared.summary=json!({"sha256":sha,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
+}
+
 #[cfg(test)]mod tests{
  use super::*;
  fn fixture()->(Target,Value){let t=Target{kind:"remote".into(),host:Some("127.0.0.1".into()),port:Some(22281),root:"/opt/synergy".into(),guest:None};let d=json!({"version":1,"profile":PROFILE,"target":{"kind":t.kind,"host":t.host,"port":t.port,"root":t.root,"machine_id_sha256":null,"host_key":format!("[127.0.0.1]:22281 ssh-ed25519 {}",STANDARD.encode([b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[0u8;32]].concat()))},"release_id":"reviewed-master","manifest_sha256":"a".repeat(64),"network_id":"nodenetwork-formation-disposable-test","chain_id":99999,"node_name":"validator-test","sequence":1,"expires_at":1060,"artifacts":{},"requests":[{"operation":"stop","request_sha256":"c".repeat(64)}],"genesis_pins":null});(t,d)}
