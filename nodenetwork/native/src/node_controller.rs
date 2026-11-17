@@ -162,6 +162,38 @@ pub(super) fn control_socket(target:&Target,directory:&Path,account:&str)->std::
     if let Some(g)=&target.guest{identity.push_str(&serde_json::to_string(g).expect("public guest binding serialization"));}
     directory.join(&format!("{:x}",Sha256::digest(identity.as_bytes()))[..24])
 }
+fn approved_host_line(target:&Target,set:Option<&str>,single:Option<&str>,debug:bool,required:bool)->Result<Option<String>,String>{
+    use base64::Engine as _;
+    if !debug{return if required{Err("Bootstrap host has no approved native trust profile".into())}else{Ok(None)}}
+    let endpoint=if target.port.unwrap_or(22)==22{target.host.as_deref().unwrap_or("").trim_matches(['[',']']).to_ascii_lowercase()}else{format!("[{}]:{}",target.host.as_deref().unwrap_or("").trim_matches(['[',']']).to_ascii_lowercase(),target.port.unwrap_or(22))};
+    let mut lines=std::collections::BTreeMap::new();
+    if let Some(raw)=set{
+        if raw.is_empty()||raw.len()>4096{return Err("Invalid bounded compiled host pin set".into())}
+        for line in raw.split(['\n','\x1e']){
+            let fields=line.split_whitespace().collect::<Vec<_>>();
+            if fields.len()!=3||fields.join(" ")!=line||fields[0].contains([',','*','?','|','!'])||fields[0]!=fields[0].to_ascii_lowercase()||fields[1]!="ssh-ed25519"{return Err("Host pin set requires exact unambiguous endpoint and key lines".into())}
+            let (host,port)=if let Some((host,port))=fields[0].strip_prefix('[').and_then(|v|v.rsplit_once("]:")){(host,port.parse::<u16>().ok().filter(|p|*p!=0&&*p!=22&&p.to_string()==port).ok_or("Invalid canonical pinned port")?)}else{(fields[0],22)};
+            let name=if host.contains(':'){format!("[{host}]")}else{host.into()};
+            Target{kind:"remote".into(),host:Some(name),port:Some(port),root:ROOT.into(),guest:None}.validate()?;
+            let bytes=base64::engine::general_purpose::STANDARD.decode(fields[2]).map_err(|_|"Invalid pinned SSH wire key")?;
+            if bytes.len()!=51||!bytes.starts_with(b"\0\0\0\x0bssh-ed25519\0\0\0\x20")||base64::engine::general_purpose::STANDARD.encode(&bytes)!=fields[2]||lines.insert(fields[0].to_string(),line.to_string()).is_some(){return Err("Malformed or duplicate compiled SSH endpoint authority".into())}
+        }
+        if lines.is_empty()||lines.len()>5{return Err("At most five independently pinned physical endpoints required".into())}
+    }
+    if let Some(line)=single{
+        let fields=line.split_whitespace().collect::<Vec<_>>();
+        if fields.len()!=3||fields[0]!="[127.0.0.1]:22280"{return Err("Invalid legacy isolated host pin".into())}
+        if let Some(existing)=lines.get(fields[0]){if existing!=line{return Err("Conflicting independently compiled host pins".into())}}
+        else if set.is_none(){lines.insert(fields[0].into(),line.into());}else{return Err("Legacy host pin must belong to the bounded set".into())}
+    }
+    if let Some(line)=lines.get(&endpoint){return Ok(Some(line.clone()))}
+    if required||set.is_some(){return Err("Selected endpoint has no independently compiled bootstrap host pin".into())}Ok(None)
+}
+pub(super) fn bootstrap_host_pin(target:&Target,directory:&Path)->Result<std::path::PathBuf,String>{
+    #[cfg(unix)]protect_control_directory(directory)?;
+    let line=approved_host_line(target,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"),cfg!(debug_assertions),true)?.ok_or("Missing bootstrap host pin")?;
+    qualification_host_pin(directory,&line)
+}
 fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,String>{
     let expected=format!("{}\n",pin.trim());
     let path=directory.join(format!("isolated-qualification-{:x}.known-hosts",Sha256::digest(expected.as_bytes())));
@@ -182,11 +214,7 @@ pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:
     #[cfg(unix)] protect_control_directory(directory)?;
     let socket=control_socket(target,directory,account);
     if socket.as_os_str().len()>95 {return Err("Portal SSH control path is too long on this platform.".into());}
-    let qualification_pin=if known_hosts.is_none()&&cfg!(debug_assertions)&&target.host.as_deref()==Some("127.0.0.1")&&target.port==Some(22280){
-        if let Some(pin)=option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"){
-            Some(qualification_host_pin(directory,pin)?)
-        }else{None}
-    }else{None};
+    let qualification_pin=if known_hosts.is_none(){approved_host_line(target,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"),cfg!(debug_assertions),false)?.map(|line|qualification_host_pin(directory,&line)).transpose()?}else{None};
     let known_hosts=known_hosts.or(qualification_pin.as_deref());
     let mut c=tokio::process::Command::new("/usr/bin/ssh");
     c.args(["-F","/dev/null","-T","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oUpdateHostKeys=no",
@@ -256,6 +284,23 @@ pub(super) async fn execute_pinned(target: Target, request: Request, control_dir
 #[cfg(test)] mod tests {
     use super::*;
 
+    fn host_line(endpoint:&str,key:u8)->String{use base64::Engine as _;format!("{endpoint} ssh-ed25519 {}",base64::engine::general_purpose::STANDARD.encode([b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[key;32]].concat()))}
+    fn host_target(host:&str,port:u16)->Target{Target{kind:"remote".into(),host:Some(host.into()),port:Some(port),root:ROOT.into(),guest:None}}
+    #[test]fn fleet_host_authority_matches_exact_endpoint_and_never_ambient_bootstraps(){
+        let a=host_line("host-a.example",1);let b=host_line("[host-b.example]:5619",2);let set=format!("{a}\n{b}");
+        assert_eq!(approved_host_line(&host_target("HOST-A.EXAMPLE",22),Some(&set),None,true,true).unwrap(),Some(a));
+        assert_eq!(approved_host_line(&host_target("host-b.example",5619),Some(&set),None,true,true).unwrap(),Some(b));
+        for t in [host_target("host-b.example",22),host_target("host-a.example.evil",22)]{assert!(approved_host_line(&t,Some(&set),None,true,false).is_err());}
+        assert!(approved_host_line(&host_target("host-a.example",22),None,None,true,true).is_err());
+        assert!(approved_host_line(&host_target("host-a.example",22),Some(&set),None,false,true).is_err());
+        let legacy=host_line("[127.0.0.1]:22280",9);assert_eq!(approved_host_line(&host_target("127.0.0.1",22280),None,Some(&legacy),true,true).unwrap(),Some(legacy));
+    }
+    #[test]fn fleet_host_authority_rejects_ambiguity_noncanonical_keys_and_more_than_five(){
+        let t=host_target("host.example",22);let line=host_line("host.example",1);
+        for raw in [format!("{line}\n{line}"),format!("{line}\n{}",host_line("host.example",2)),host_line("*.example",1),host_line("host.example,alias",1),"host.example ssh-ed25519 invalid".into(),format!("{line} trailing"),(0..6).map(|i|host_line(&format!("host-{i}.example"),i)).collect::<Vec<_>>().join("\n")]{assert!(approved_host_line(&t,Some(&raw),None,true,true).is_err());}
+        assert!(approved_host_line(&t,Some(&line),Some(&host_line("[127.0.0.1]:22280",1)),true,true).is_err());
+        let legacy=host_line("[127.0.0.1]:22280",1);assert!(approved_host_line(&host_target("127.0.0.1",22280),Some(&legacy),Some(&host_line("[127.0.0.1]:22280",2)),true,true).is_err());
+    }
     #[test] fn isolated_host_pins_are_scoped_to_the_compiled_identity_and_reject_tampering(){
         let root=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-host-pin-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         struct Cleanup(std::path::PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}let _cleanup=Cleanup(root.clone());

@@ -45,4 +45,14 @@ fn main() {
         assert!(fields.len()==3&&fields[0]=="[127.0.0.1]:22280"&&fields[1]=="ssh-ed25519"&&fields[2].bytes().all(|b|b.is_ascii_alphanumeric()||b"+/=".contains(&b)),"Only the exact authenticated disposable localhost host pin is allowed");
         println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN={}",fields.join(" "));
     }
+    println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS");
+    if let Ok(pins)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS"){
+        assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Engineering host pin set forbidden in production");
+        let lines:Vec<_>=pins.lines().collect();let mut endpoints=std::collections::BTreeSet::new();
+        assert!(!lines.is_empty()&&lines.len()<=5&&pins.len()<=4096&&!pins.ends_with('\n')&&!pins.contains('\r'),"At most five bounded exact host pins required");
+        for line in lines{let f:Vec<_>=line.split_whitespace().collect();assert!(f.len()==3&&f.join(" ")==line&&f[0]==f[0].to_ascii_lowercase()&&!f[0].contains([',','*','?','|','!'])&&endpoints.insert(f[0])&&f[1]=="ssh-ed25519"&&f[2].len()==68&&f[2].bytes().all(|b|b.is_ascii_alphanumeric()||b"+/".contains(&b)),"Invalid or ambiguous exact SSH host pin");}
+        if let Ok(single)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"){assert!(pins.lines().any(|line|line==single),"Legacy single host pin must belong to configured fleet set");}
+        println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS={}",pins.replace('\n',"\x1e"));
+    }
+
 }

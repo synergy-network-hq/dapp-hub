@@ -118,7 +118,7 @@ pub fn script_pin()->String{format!("{:x}",Sha256::digest(BOOTSTRAP.as_bytes()))
 pub async fn execute(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path)->Result<Value,String>{
     execute_pinned(target,operator,parameters,prepared,control_dir,None).await
 }
-async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
+pub(super) async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
     execute_transport(target,operator,parameters,prepared,control_dir,known_hosts,None).await
 }
 pub(super) async fn execute_update(target:Target,operator:String,context:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
@@ -131,6 +131,8 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
     let _guard=node_controller::SERIAL.lock().await;
     if target.kind=="remote" {node_controller::close_connection_checked(&target,control_dir,"synergy-nodenetwork").await?;node_controller::close_connection_checked(&target,control_dir,&operator).await?;}
     if update.is_none(){authenticate_release(&prepared.manifest_sha256)?;}
+    let bootstrap_pin=if update.is_none()&&target.kind=="remote"&&target.guest.is_none()&&known_hosts.is_none(){Some(node_controller::bootstrap_host_pin(&target,control_dir)?)}else{None};
+    let known_hosts=known_hosts.or(bootstrap_pin.as_deref());
     let script=if let Some(context)=&update{format!("NATIVE_AUTHENTICATED_UPDATE_CONTEXT=__import__('json').loads({})\n{}",serde_json::to_string(&context.to_string()).map_err(|_|"Cannot encode reviewed update")?,BOOTSTRAP)}else{format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP)};
     let arguments=if update.is_some(){format!(" --stage-engineering-update {} {}",prepared.release,prepared.manifest_sha256)}else{String::new()};
     let mut command=if target.kind=="local"{
