@@ -70,18 +70,27 @@ test('requires the exact still-unresolved service operation for the selected con
 });
 
 test('admits only the exact unresolved custody dispatch for receipt inspection', () => {
- for (const operation of ['genesis_stage','genesis_bind','formation_prepare']) {
+ for (const operation of ['genesis_stage','genesis_bind','formation_prepare','identity_generate']) {
   const selected = {...unknown, operation};
   assert.equal(matchesUnresolvedCustodyReceipt(selected, targetB), true);
   assert.equal(matchesUnresolvedCustodyReceipt({...selected, state:'uncertain', observed_at_ms:1001}, targetB), true);
-  assert.equal(matchesUnresolvedCustodyReceipt(selected, targetA), false);
-  for (const record of [null, {...selected, operation:'identity_generate'}, {...selected, state:'response_received', response_ok:true}]) {
+  for (const fingerprint of [targetA, targetB.slice(0,12), '', null, undefined]) {
+   assert.equal(matchesUnresolvedCustodyReceipt(selected, fingerprint), false);
+  }
+  for (const record of [null, {...selected, operation:'vpn_enroll'}, {...selected, operation:`${operation} `},
+   {...selected, state:'response_received', response_ok:true}, {...selected, state:'response_received', response_ok:false},
+   {...selected, state:'unsupported'}]) {
    assert.equal(matchesUnresolvedCustodyReceipt(record, targetB), false);
   }
   assert.equal(retainsUnresolvedDispatch([selected], selected, targetB), true);
+  assert.equal(retainsUnresolvedDispatch([selected], selected, targetA), false);
+  assert.equal(retainsUnresolvedDispatch([], selected, targetB), false);
   const otherOperation = operation === 'genesis_stage' ? 'genesis_bind' : 'genesis_stage';
-  assert.equal(retainsUnresolvedDispatch([{...selected, operation:otherOperation}], selected, targetB), false);
-  assert.equal(retainsUnresolvedDispatch([{...selected, request_digest:targetA}], selected, targetB), false);
+  for (const changed of [{...selected, operation:otherOperation}, {...selected, request_digest:targetA},
+   {...selected, target_digest:targetA}, {...selected, id:accepted.id}, {...selected, recorded_at_ms:1001},
+   {...selected, state:'uncertain', observed_at_ms:1001}, {...selected, state:'response_received', response_ok:true}]) {
+   assert.equal(retainsUnresolvedDispatch([changed], selected, targetB), false);
+  }
  }
 });
 
