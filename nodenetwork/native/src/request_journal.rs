@@ -125,6 +125,23 @@ fn write(path: &Path, record: &Record, new: bool) -> Result<(), String> {
     fs::File::open(path).and_then(|d| d.sync_all()).map_err(|_| failure())
 }
 
+fn scoped_digest(base:&Path,target:&Value)->Result<String,String>{
+    let incarnation=crate::authorization_lifecycle::incarnation(base,target)?;
+    Ok(digest(&incarnation.map(|pin|json!({"target":target,"initial_sha256":pin})).unwrap_or_else(||target.clone())))
+}
+/// A terminal response is used only with a subsequently successful clean bootstrap.
+/// Unknown/partial/newer operations never count as removal or bootstrap evidence.
+pub(super) fn with_latest_success<T>(base:&Path,target:&Value,operation:&str,apply:impl FnOnce(Value)->Result<T,String>)->Result<T,String>{
+    let _serial=SERIAL.lock().map_err(|_|failure())?;
+    let path=directory(base,false)?.ok_or_else(failure)?;
+    let _writer=WriterLock::acquire(&path)?;
+    let scope=scoped_digest(base,target)?;
+    let records=load(&path)?;
+    let record=records.iter().find(|r|r.target_digest==scope).ok_or_else(failure)?;
+    if record.operation!=operation||record.state!="response_received"||record.response_ok!=Some(true){return Err("The latest native operation is not the required successful terminal outcome; reconcile without resetting history".into())}
+    apply(json!({"id":record.id,"request_sha256":record.request_digest}))
+}
+
 pub struct Dispatch { directory: PathBuf, record: Record }
 impl Dispatch {
     /// Caller must validate the typed target/request and obtain native consent first.
@@ -134,7 +151,7 @@ impl Dispatch {
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;
-        let target_digest = digest(target);
+        let target_digest = scoped_digest(base,target)?;
         if records.iter().any(|r| r.target_digest == target_digest && matches!(r.state.as_str(),"dispatch_intent"|"uncertain")) {
             return Err("An earlier local dispatch for this target has an uncertain outcome. Reconcile the target through a qualified procedure before another mutation; Portal will not replay or clear it automatically.".into());
         }
@@ -170,7 +187,7 @@ pub(crate) fn reconcile_verified(base:&Path,target:&Value,operation:&str,request
     let _serial=SERIAL.lock().map_err(|_|failure())?;
     let Some(directory)=directory(base,false)? else{return Ok(false);};
     let _writer=WriterLock::acquire(&directory)?;
-    let target_digest=digest(target);
+    let target_digest=scoped_digest(base,target)?;
     let Some(mut record)=load(&directory)?.into_iter().find(|r|r.target_digest==target_digest&&r.operation==operation&&r.request_digest==request_digest&&matches!(r.state.as_str(),"dispatch_intent"|"uncertain"))else{return Ok(false);};
     record.state="verified_target_outcome".into();
     record.observed_at_ms=Some(now()?);
@@ -189,4 +206,32 @@ pub fn inspect(base: &Path) -> Result<Value, String> {
     let records = match directory(base, false)? { Some(path) => load(&path)?, None => Vec::new() };
     Ok(json!({"schema":"nodenetwork-local-requests-v1", "records":records, "limit":MAX_RECORDS,
         "remoteJobRecovery":false, "automaticReplay":false}))
+}
+
+#[cfg(test)]mod reinstallation_tests{
+ use super::*;
+ struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+ fn scratch()->Cleanup{let p=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-incarnation-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));fs::create_dir(&p).unwrap();Cleanup(p)}
+ #[test]fn terminal_uninstall_requires_latest_success_and_never_clears_uncertainty(){
+  let c=scratch();let t=json!({"host":"example","root":"/opt/synergy"});
+  assert!(with_latest_success(&c.0,&t,"uninstall",Ok).is_err());
+  let d=Dispatch::begin(&c.0,&t,"uninstall",&json!({})).unwrap();d.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
+  assert!(with_latest_success(&c.0,&t,"uninstall",Ok).is_ok());
+  std::thread::sleep(std::time::Duration::from_millis(2));
+  let d=Dispatch::begin(&c.0,&t,"bootstrap",&json!({"new":1})).unwrap();d.finish(&Err("interrupted".into())).unwrap();
+  assert!(with_latest_success(&c.0,&t,"uninstall",Ok).is_err());assert!(with_latest_success(&c.0,&t,"bootstrap",Ok).is_err());
+  assert!(Dispatch::begin(&c.0,&t,"install",&json!({})).is_err());assert_eq!(inspect(&c.0).unwrap()["records"].as_array().unwrap().len(),2);
+ }
+ #[test]fn incarnation_changes_journal_scope_without_deleting_old_history(){
+  let c=scratch();let t=json!({"host":"example","root":"/opt/synergy"});
+  let d=Dispatch::begin(&c.0,&t,"uninstall",&json!({})).unwrap();d.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
+  let old=scoped_digest(&c.0,&t).unwrap();let directory=c.0.join("nodenetwork-engineering-v1");fs::create_dir(&directory).unwrap();
+  #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;fs::set_permissions(&directory,fs::Permissions::from_mode(0o700)).unwrap();}
+  let pin="a".repeat(64);let path=directory.join(format!("incarnation-{}.json",digest(&t)));
+  fs::write(&path,json!({"initial_sha256":pin,"target_sha256":digest(&t)}).to_string()).unwrap();
+  #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();}
+  assert_ne!(scoped_digest(&c.0,&t).unwrap(),old);assert!(with_latest_success(&c.0,&t,"uninstall",Ok).is_err());
+  let d=Dispatch::begin(&c.0,&t,"install",&json!({})).unwrap();d.finish(&Ok(json!({"version":1,"ok":true}))).unwrap();assert_eq!(inspect(&c.0).unwrap()["records"].as_array().unwrap().len(),2);
+  fs::write(path.with_extension("pending"),b"partial").unwrap();assert!(Dispatch::begin(&c.0,&t,"register",&json!({})).is_err());assert_eq!(inspect(&c.0).unwrap()["records"].as_array().unwrap().len(),2);
+ }
 }

@@ -88,6 +88,23 @@ except Exception:
  }).await.map_err(|_|"Provider operation timed out; preserve intent and reconcile, never reissue")?;
  result.map_err(String::from)
 }
+fn state_directory(base:&Path,target:&Target)->Result<std::path::PathBuf,String>{
+ let physical=hash(target.journal_identity().to_string().as_bytes());
+ let name=if let Some(pin)=lifecycle::incarnation(base,&target.journal_identity())?{format!("{physical}-{pin}")}else{physical};
+ Ok(base.join("nodenetwork-vpn-v1").join(name))
+}
+/// Local immutable provider receipts are never inferred from target booleans.
+/// The provider wrote retired.json only after exact peer GET404 and list absence.
+pub(super) fn require_terminal(base:&Path,target:&Target,doc:&Value)->Result<(),String>{
+ let directory=state_directory(base,target)?;
+ if !directory.exists()&&!directory.is_symlink(){return Ok(())}
+ for path in directory.ancestors(){if !path.symlink_metadata().is_ok_and(|m|m.is_dir()){return Err("Unsafe original provider state ancestry".into())}}
+ let load=|name:&str|->Result<Value,String>{serde_json::from_slice(&read(&directory.join(name),32768,true)?).map_err(|_|"Invalid original provider terminal receipt".into())};
+ let intent=load("intent.json")?;let bound=load("bound.json")?;let retired=load("retired.json")?;let deletion=load("retire-intent.json")?;
+ let expected=json!({"target_sha256":hash(target.journal_identity().to_string().as_bytes()),"manifest_sha256":doc["manifest_sha256"],"formation_sha256":doc["artifacts"]["formation-context.json"],"network_id":doc["network_id"],"chain_id":doc["chain_id"]});
+ if intent["binding"]!=expected||bound["binding"]!=expected||deletion["binding"]!=expected||retired["format"]!="synergy-vpn-retirement-v1"||retired["retired"]!=true||retired["absence_verified"]!=true||retired["account_id"]!=intent["account_id"]||retired["peer_name"]!=intent["name"]||retired["peer_id"]!=bound["peer_id"]||retired["peer_name"]!=bound["name"]||retired["hostname"]!=bound["hostname"]||retired["ip"]!=bound["ip"]||deletion["peer_id"]!=bound["peer_id"]||retired["enrollment_sha256"]!=deletion["enrollment_sha256"]||retired["binding_sha256"]!=deletion["binding_sha256"]{return Err("Original provider peer is not exactly retired; reconcile without issuing new access".into())}
+ Ok(())
+}
 pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Path,credential_path:&Path,operation:&str)->Result<Value,String>{
  let _serial=SERIAL.lock().await;
  if !matches!(operation,"enroll"|"reconcile"|"revoke"|"retire"){return Err("Unsupported native VPN workflow".into())}
@@ -98,7 +115,7 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
  if status["ok"]!=true{return Err("VPN target authorization is unavailable".into())}
  let context=binding(&target,&status["result"],&doc,&hash(original.as_bytes()))?;
  let app=base.join("nodenetwork-vpn-v1");if !app.exists(){#[cfg(unix)]{use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().mode(0o700).create(&app).map_err(|_|"Cannot protect native VPN state")?;}}
- let directory=app.join(hash(target.journal_identity().to_string().as_bytes()));
+ let directory=state_directory(base,&target)?;
  let mut result=lifecycle::execute(base,target.clone(),Request{version:1,operation:"vpn_status".into(),parameters:json!({})},control).await?;
  if result["ok"]!=true{return Err("Read native VPN status before dispatch".into())}
  if operation=="retire"{
@@ -145,7 +162,7 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
 }
 #[cfg(test)]mod tests{
  use super::*;
- fn fixture()->(Target,Value,Value,String){
+ pub(super) fn fixture()->(Target,Value,Value,String){
   let t=Target{kind:"remote".into(),host:Some("guest.example".into()),port:Some(22),root:"/opt/synergy".into(),guest:None};
   let doc=json!({"target":t.journal_identity(),"release_id":"original","manifest_sha256":"a".repeat(64),"network_id":"isolated-network","chain_id":999998,"node_name":"validator-test","artifacts":{"formation-context.json":"b".repeat(64)}});
   let selection=json!({"release_id":doc["release_id"],"manifest_sha256":doc["manifest_sha256"],"network_id":doc["network_id"],"chain_id":doc["chain_id"],"node_name":doc["node_name"]});let pin=hash(doc.to_string().as_bytes());
@@ -173,5 +190,24 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
  #[test]fn only_exact_cleanup_actions_can_use_expired_approval_mode(){
   assert_eq!(cleanup_action("revoke").unwrap(),Some("revoke"));assert_eq!(cleanup_action("retire").unwrap(),Some("retire"));
   for op in ["prepare","reconcile"]{assert_eq!(cleanup_action(op).unwrap(),None)}for op in ["enroll","delete","","Revoke"]{assert!(cleanup_action(op).is_err())}
+ }
+}
+
+#[cfg(test)]mod reinstallation_tests{
+ use super::*;
+ fn write(path:&Path,value:&Value){std::fs::write(path,value.to_string()).unwrap();#[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o600)).unwrap();}}
+ #[test]fn original_provider_must_be_exactly_retired_and_new_incarnation_has_separate_state(){
+  let base=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-vpn-retired-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+  struct Cleanup(std::path::PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}let _cleanup=Cleanup(base.clone());std::fs::create_dir(&base).unwrap();
+  let(t,doc,status,pin)=super::tests::fixture();let binding=super::binding(&t,&status,&doc,&pin).unwrap();
+  assert!(require_terminal(&base,&t,&doc).is_ok());let directory=state_directory(&base,&t).unwrap();std::fs::create_dir_all(&directory).unwrap();assert!(require_terminal(&base,&t,&doc).is_err());
+  let intent=json!({"binding":binding,"account_id":"account","name":"exact"});let bound=json!({"binding":binding,"peer_id":"peer","name":"exact","hostname":"host","ip":"100.64.0.2"});
+  let deletion=json!({"binding":binding,"peer_id":"peer","enrollment_sha256":"a".repeat(64),"binding_sha256":"b".repeat(64)});
+  let retired=json!({"format":"synergy-vpn-retirement-v1","retired":true,"absence_verified":true,"account_id":"account","peer_id":"peer","peer_name":"exact","hostname":"host","ip":"100.64.0.2","enrollment_sha256":"a".repeat(64),"binding_sha256":"b".repeat(64)});
+  for(n,v)in[("intent.json",&intent),("bound.json",&bound),("retire-intent.json",&deletion),("retired.json",&retired)]{write(&directory.join(n),v)}assert!(require_terminal(&base,&t,&doc).is_ok());
+  for key in["retired","absence_verified","peer_id","peer_name","account_id","ip","enrollment_sha256","binding_sha256"]{let mut wrong=retired.clone();wrong[key]=Value::Null;write(&directory.join("retired.json"),&wrong);assert!(require_terminal(&base,&t,&doc).is_err(),"{key}");}write(&directory.join("retired.json"),&retired);
+  let mut foreign=doc.clone();foreign["manifest_sha256"]=json!("f".repeat(64));assert!(require_terminal(&base,&t,&foreign).is_err());
+  let app=base.join("nodenetwork-engineering-v1");std::fs::create_dir(&app).unwrap();#[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&app,std::fs::Permissions::from_mode(0o700)).unwrap();}
+  write(&app.join(format!("incarnation-{}.json",hash(t.journal_identity().to_string().as_bytes()))),&json!({"initial_sha256":"f".repeat(64),"target_sha256":hash(t.journal_identity().to_string().as_bytes())}));assert_ne!(state_directory(&base,&t).unwrap(),directory);assert!(directory.join("retired.json").exists());
  }
 }

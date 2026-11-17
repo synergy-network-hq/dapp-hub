@@ -26,17 +26,74 @@ fn save(path:&Path,value:&Value)->Result<(),String>{
  o.open(path).and_then(|mut f|{f.write_all(&bytes)?;f.sync_all()}).map_err(|_|"Public receipt write interrupted; reconcile without replay".to_string())
 }
 fn name(target:&Target)->String{format!("initial-{}.json",hash(target.journal_identity().to_string().as_bytes()))}
-pub(super) fn remember(base:&Path,target:&Target,operator:&str,p:&authorization::Prepared)->Result<(),String>{
- authorization::verify_initial(&p.document,target)?;crate::node_bootstrap::validate_operator(operator)?;
- save(&folder(base)?.join(name(target)),&json!({"document":p.document,"operator":operator}))
+pub(super) fn verify_removal(target:&Target,reply:Value)->Result<Value,String>{
+ if reply["ok"]==true&&(reply["version"]!=1||reply["result"]["removed_root"]!=target.root||reply["result"]["logical_removal_verified"]!=true||reply["result"]["backup_created"]!=false||reply["result"]["remaining_host_managed_records"]!=json!([])){return Err("Removal is partial or unverified; preserve the old incarnation and reconcile".into())}Ok(reply)
+}
+fn pointer(base:&Path,target:&Value)->PathBuf{base.join("nodenetwork-engineering-v1").join(format!("incarnation-{}.json",hash(target.to_string().as_bytes())))}
+pub(super) fn incarnation(base:&Path,target:&Value)->Result<Option<String>,String>{
+ let path=pointer(base,target);let pending=path.with_extension("pending");
+ if path.parent().is_some_and(|p|p.exists()||p.is_symlink()){for p in path.parent().unwrap().ancestors(){if !p.symlink_metadata().is_ok_and(|m|m.is_dir()){return Err("Unsafe installation incarnation ancestry".into())}}}
+ if pending.exists()||pending.is_symlink(){return Err("Installation incarnation transition interrupted; preserve it for reconciliation".into())}
+ if !path.exists()&&!path.is_symlink(){return Ok(None)}
+ let value:Value=serde_json::from_slice(&read(&path,4096)?).map_err(|_|"Malformed installation incarnation")?;
+ let pin=value["initial_sha256"].as_str().filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))).ok_or("Invalid installation incarnation")?;
+ if value.as_object().is_none_or(|o|o.len()!=2)||value["target_sha256"]!=hash(target.to_string().as_bytes()){return Err("Installation incarnation target differs".into())}
+ Ok(Some(pin.into()))
+}
+fn initial_path(base:&Path,target:&Target)->Result<PathBuf,String>{
+ let directory=folder(base)?;Ok(if let Some(pin)=incarnation(base,&target.journal_identity())?{directory.join(format!("initial-{}-{pin}.json",hash(target.journal_identity().to_string().as_bytes())))}else{directory.join(name(target))})
 }
 fn initial(base:&Path,target:&Target)->Result<(Initial,Value),String>{
- let raw=read(&folder(base)?.join(name(target)),100*1024)?;
+ let raw=read(&initial_path(base,target)?,100*1024)?;
  let record:Initial=serde_json::from_slice(&raw).map_err(|_|"Invalid initial native authorization receipt")?;
- let document=authorization::verify_initial(&record.document,target)?;crate::node_bootstrap::validate_operator(&record.operator)?;Ok((record,document))
+ let document=authorization::verify_initial(&record.document,target)?;crate::node_bootstrap::validate_operator(&record.operator)?;
+ if incarnation(base,&target.journal_identity())?.is_some_and(|pin|pin!=hash(record.document.as_bytes())){return Err("Installation incarnation document differs".into())}Ok((record,document))
+}
+pub(super) fn reinstallation_host_pin(base:&Path,target:&Target,control:&Path)->Result<Option<PathBuf>,String>{
+ if !initial_path(base,target)?.exists(){return Ok(None)}let(_,doc)=initial(base,target)?;host_pin(control,&doc)
+}
+fn reinstallation_ticket(base:&Path,target:&Target,old:&str)->Result<PathBuf,String>{Ok(folder(base)?.join(format!("reinstallation-{}-{old}.json",hash(target.journal_identity().to_string().as_bytes()))))}
+fn same_host(old:&Value,new:&Value)->bool{old["target"]==new["target"]}
+/// Called only after native bootstrap confirmation, before dispatch. The master
+/// bootstrap independently rejects an existing root, services or foreign state.
+pub(super) fn prepare_reinstallation(base:&Path,target:&Target,operator:&str,selection:&Value,request:&Value)->Result<(),String>{
+ if !initial_path(base,target)?.exists(){return Ok(())}
+ let(record,doc)=initial(base,target)?;
+ if !cfg!(debug_assertions)||record.operator!=operator{return Err("Reinstallation must retain its independently approved administrative identity".into())}
+ crate::vpn_enrollment::require_terminal(base,target,&doc)?;
+ for prefix in ["continuation","vpn-continuation","guest-continuation","readiness-continuation","transport-continuation"]{
+  let path=folder(base)?.join(format!("{prefix}-{}.json",hash(target.journal_identity().to_string().as_bytes())));
+  if path.exists()||path.is_symlink(){return Err("Prior authorization mutation is uncertain; reconcile before reinstallation".into())}
+ }
+ crate::request_journal::with_latest_success(base,&target.journal_identity(),"uninstall",|terminal|save(&reinstallation_ticket(base,target,&hash(record.document.as_bytes()))?,&json!({"old_initial_sha256":hash(record.document.as_bytes()),"selection":selection,"removal":terminal,"bootstrap_request_sha256":hash(request.to_string().as_bytes())})))
+}
+fn replacement_allowed(old:&Value,new:&Value,ticket:&Value,boot:&Value,old_sha:&str)->Result<(),String>{
+ if !same_host(old,new)||new["sequence"]!=1||!new["artifacts"]["formation-context.json"].as_str().is_some_and(|p|p.len()==64)||old["artifacts"]["formation-context.json"]==new["artifacts"]["formation-context.json"]{return Err("New installation requires a distinct approved formation, sequence1 and identical host identity".into())}
+ if ticket.as_object().is_none_or(|o|o.len()!=4)||ticket["old_initial_sha256"]!=old_sha||ticket["bootstrap_request_sha256"]!=boot["request_sha256"]||!ticket["removal"]["id"].is_string()||["release_id","manifest_sha256","network_id","chain_id","node_name"].iter().any(|k|ticket["selection"][k]!=new[k]){return Err("New approval does not match the successful clean bootstrap".into())}Ok(())
+}
+pub(super) fn remember(base:&Path,target:&Target,operator:&str,p:&authorization::Prepared)->Result<(),String>{
+ let new=authorization::verify_initial(&p.document,target)?;crate::node_bootstrap::validate_operator(operator)?;
+ let path=initial_path(base,target)?;let value=json!({"document":p.document,"operator":operator});
+ if !path.exists()&&!path.is_symlink(){return save(&path,&value)}
+ let(record,old)=initial(base,target)?;
+ if record.document==p.document&&record.operator==operator{
+  let prior=reinstallation_ticket(base,target,&hash(record.document.as_bytes()))?;
+  if prior.exists()||prior.is_symlink(){return Err("A removed installation must use a distinct newly approved initial authorization, never its consumed origin".into())}return Ok(())
+ }
+ if !cfg!(debug_assertions)||record.operator!=operator{return Err("New installation administrative identity differs".into())}
+ let ticket:Value=serde_json::from_slice(&read(&reinstallation_ticket(base,target,&hash(record.document.as_bytes()))?,4096)?).map_err(|_|"Invalid reinstallation receipt")?;
+ crate::request_journal::with_latest_success(base,&target.journal_identity(),"bootstrap",|boot|{
+ replacement_allowed(&old,&new,&ticket,&boot,&hash(record.document.as_bytes()))?;
+ crate::vpn_enrollment::require_terminal(base,target,&old)?;
+ let pin=hash(p.document.as_bytes());let directory=folder(base)?;
+ save(&directory.join(format!("initial-{}-{pin}.json",hash(target.journal_identity().to_string().as_bytes()))),&value)?;
+ let destination=pointer(base,&target.journal_identity());let pending=destination.with_extension("pending");
+ save(&pending,&json!({"initial_sha256":pin,"target_sha256":hash(target.journal_identity().to_string().as_bytes())}))?;
+ std::fs::rename(&pending,&destination).and_then(|_|std::fs::File::open(directory)?.sync_all()).map_err(|_|"Installation incarnation publication interrupted; reconcile without replay".to_string())
+ })
 }
 pub(super) fn bare_initial(base:&Path,target:&Target)->Result<Option<String>,String>{
- let path=base.join("nodenetwork-engineering-v1").join(name(target));
+ let path=initial_path(base,target)?;
  if !path.exists()&&!path.is_symlink(){return Ok(None)}
  initial(base,target).map(|(record,_)|Some(record.document))
 }
@@ -52,7 +109,7 @@ fn save_text(path:&Path,text:&str)->Result<(),String>{
  let mut o=std::fs::OpenOptions::new();o.create_new(true).write(true);#[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;o.mode(0o600);}o.open(path).and_then(|mut f|{f.write_all(text.as_bytes())?;f.sync_all()}).map_err(|_|"Cannot protect approved host identity".to_string())
 }
 pub(super) async fn execute(base:&Path,target:Target,request:Request,control:&Path)->Result<Value,String>{
- let path=folder(base)?.join(name(&target));
+ let path=initial_path(base,&target)?;
  if !path.exists()&&!path.is_symlink(){return node_controller::execute(target,request,control).await}
  let(_,doc)=initial(base,&target)?;let pin=host_pin(control,&doc)?;node_controller::execute_pinned(target,request,control,pin.as_deref()).await
 }
@@ -73,7 +130,7 @@ fn continuation_document(doc:&Value,status:&Value,request:&Request,pins:Option<&
 }
 pub(super) async fn grant(base:&Path,target:&Target,request:&Request,control:&Path,pins:Option<&Value>)->Result<(),String>{
  if !cfg!(debug_assertions){return Ok(())} // Normal production still requires its pre-existing independent grant.
- let path=folder(base)?.join(name(target));if !path.exists(){return Ok(())}
+ let path=initial_path(base,target)?;if !path.exists(){return Ok(())}
  let(record,doc)=initial(base,target)?;
  let reply=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
  let status=&reply["result"];if reply["ok"]!=true||status["schema"]!="nodenetwork-engineering-authorization-status-v1"||status["initial_sha256"]!=hash(record.document.as_bytes()){return Err("Target has not reconciled this independently approved initial authorization".into())}
@@ -123,7 +180,7 @@ fn matching_export(receipt:&Value,export:&Value,doc:&Value)->Result<(),String>{
  crate::network_formation::export(export,receipt["review_sha256"].as_str().ok_or("No signed review")?)?;Ok(())
 }
 pub(super) async fn remember_export(base:&Path,target:&Target,export:&Value,control:&Path)->Result<(),String>{
- if !cfg!(debug_assertions)||!folder(base)?.join(name(target)).exists(){return Ok(())}
+ if !cfg!(debug_assertions)||!initial_path(base,target)?.exists(){return Ok(())}
  let(record,doc)=initial(base,target)?;
  let reply=execute(base,target.clone(),Request{version:1,operation:"network_formation_status".into(),parameters:json!({})},control).await?;
  if reply["ok"]!=true{return Err("Source did not reverify signed formation custody and artifacts".into())}
@@ -141,7 +198,7 @@ pub(super) async fn remember_export(base:&Path,target:&Target,export:&Value,cont
 pub(super) struct SignedSource{pub target:Target,pub export:Value,pub receipt:Value}
 pub(super) fn original_document(base:&Path,target:&Target)->Result<Value,String>{initial(base,target).map(|(_,doc)|doc)}
 pub(super) async fn signed_source(base:&Path,target:&Target,control:&Path)->Result<Option<SignedSource>,String>{
- if !cfg!(debug_assertions)||!folder(base)?.join(name(target)).exists(){return Ok(None)}
+ if !cfg!(debug_assertions)||!initial_path(base,target)?.exists(){return Ok(None)}
  let(_,doc)=initial(base,target)?;
  let mut selected=None;let mut count=0;
  for entry in std::fs::read_dir(folder(base)?).map_err(|_|"Cannot inspect public formation receipts")?{
@@ -171,7 +228,7 @@ pub(super) async fn engineering_stage(base:&Path,target:&Target,expected_address
 }
 
 pub(super) async fn eligible(base:&Path,target:&Target,control:&Path)->Result<bool,String>{
- if !cfg!(debug_assertions)||!folder(base)?.join(name(target)).exists(){return Ok(false)}
+ if !cfg!(debug_assertions)||!initial_path(base,target)?.exists(){return Ok(false)}
  let(record,doc)=initial(base,target)?;
  let reply=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
  if reply["ok"]!=true||reply["result"]["initial_sha256"]!=hash(record.document.as_bytes()){return Ok(false)}
@@ -305,5 +362,25 @@ pub(super) async fn update_context(base:&Path,target:&Target,control:&Path)->Res
   assert_eq!(document["release_id"],"new");assert_eq!(document["manifest_sha256"],"c".repeat(64));assert_eq!(document["sequence"],5);
   for key in["initial_selection","update","target"]{let mut bad=status.clone();bad[key]=json!({});assert!(continuation_document(&doc,&bad,&request,None,1000).is_err())}
   status["selection"]["chain_id"]=json!(1);assert!(continuation_document(&doc,&status,&request,None,1000).is_err());
+ }
+}
+
+#[cfg(test)]mod reinstallation_tests{
+ use super::*;
+ #[test]fn removal_must_prove_exact_root_no_backup_and_no_remaining_records(){
+  let target=Target{kind:"remote".into(),host:Some("example".into()),port:Some(22),root:"/opt/synergy".into(),guest:None};
+  let good=json!({"version":1,"ok":true,"result":{"removed_root":"/opt/synergy","logical_removal_verified":true,"backup_created":false,"remaining_host_managed_records":[]}});assert!(verify_removal(&target,good.clone()).is_ok());
+  for key in["removed_root","logical_removal_verified","backup_created","remaining_host_managed_records"]{let mut bad=good.clone();bad["result"][key]=Value::Null;assert!(verify_removal(&target,bad).is_err(),"{key}");}
+  let mut bad=good;bad["result"]["remaining_host_managed_records"]=json!(["account:owned"]);assert!(verify_removal(&target,bad).is_err());
+ }
+ #[test]fn new_approval_requires_clean_bootstrap_selection_host_and_distinct_formation(){
+  let old=json!({"target":{"host":"example","host_key":"original"},"artifacts":{"formation-context.json":"a".repeat(64)}});
+  let new=json!({"target":old["target"],"sequence":1,"release_id":"new","manifest_sha256":"b".repeat(64),"network_id":"fresh","chain_id":99999,"node_name":"validator","artifacts":{"formation-context.json":"c".repeat(64)}});
+  let ticket=json!({"old_initial_sha256":"d".repeat(64),"bootstrap_request_sha256":"e".repeat(64),"removal":{"id":"f".repeat(64)},"selection":new});let boot=json!({"request_sha256":"e".repeat(64)});
+  assert!(replacement_allowed(&old,&new,&ticket,&boot,&"d".repeat(64)).is_ok());
+  for key in["target","sequence","release_id","manifest_sha256","network_id","chain_id","node_name","artifacts"]{let mut bad=new.clone();bad[key]=Value::Null;assert!(replacement_allowed(&old,&bad,&ticket,&boot,&"d".repeat(64)).is_err(),"{key}");}
+  let mut reused=new.clone();reused["artifacts"]=old["artifacts"].clone();assert!(replacement_allowed(&old,&reused,&ticket,&boot,&"d".repeat(64)).is_err());
+  let mut changed=new.clone();changed["target"]["host_key"]=json!("changed");assert!(replacement_allowed(&old,&changed,&ticket,&boot,&"d".repeat(64)).is_err());
+  for key in["old_initial_sha256","bootstrap_request_sha256","removal","selection"]{let mut bad=ticket.clone();bad[key]=Value::Null;assert!(replacement_allowed(&old,&new,&bad,&boot,&"d".repeat(64)).is_err());}
  }
 }

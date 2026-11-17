@@ -60,7 +60,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  let target_identity=target.journal_identity();
  if mutation{exact_continuation(&app,&target,&request,&directory,None).await?;}
  let dispatch=if mutation {Some(request_journal::Dispatch::begin(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?,&target_identity,&operation,&request.canonical())?)} else {None};
- let result=controller(&app,target,request,&directory).await;
+ let result=controller(&app,target,request,&directory).await.and_then(|reply|if operation=="uninstall"{crate::authorization_lifecycle::verify_removal(&target_for_eligibility,reply)}else{Ok(reply)});
  if let Some(dispatch)=dispatch {dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;}
  let mut result=result?;
  if result["ok"]==true {
@@ -128,8 +128,15 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
   .buttons(MessageDialogButtons::OkCancelCustom("Bootstrap selected target once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Bootstrap confirmation did not finish.")?;
  if !confirmed{return Err("Operator canceled; no bootstrap was sent.".into());}
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- let dispatch=request_journal::Dispatch::begin(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no bootstrap was sent.")?,&target.journal_identity(),"bootstrap",&serde_json::json!({"version":1,"operation":"bootstrap","operator":operator,"parameters":parameters,"bootstrapPin":node_bootstrap::script_pin()}))?;
- let result=node_bootstrap::execute(target,operator,parameters,prepared,&directory).await;
+ let base=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no bootstrap was sent.")?;
+ let bootstrap_request=serde_json::json!({"version":1,"operation":"bootstrap","operator":operator,"parameters":parameters,"bootstrapPin":node_bootstrap::script_pin()});
+ crate::authorization_lifecycle::prepare_reinstallation(&base,&target,&operator,&parameters,&bootstrap_request)?;
+ let pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
+ let dispatch=request_journal::Dispatch::begin(&base,&target.journal_identity(),"bootstrap",&bootstrap_request)?;
+ let expected=parameters.clone();
+ let result=node_bootstrap::execute_pinned(target,operator,parameters,prepared,&directory,pin.as_deref()).await.and_then(|reply|{
+  if reply["ok"]==true&&(reply["result"]["root"]!="/opt/synergy"||reply["result"]["stagedRelease"]!=expected["release_id"]||reply["result"]["manifestSha256"]!=expected["manifest_sha256"]||reply["result"]["controllerEnrolled"]!=true||reply["result"]["softwareInstalled"]!=false||reply["result"]["rootDeletionGuardActive"]!=true){return Err("Fresh bootstrap receipt differs; preserve the native journal for reconciliation".into())}Ok(reply)
+ });
  dispatch.finish(&result).map_err(|_|"Bootstrap outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;
  result.map(Some)
 }
