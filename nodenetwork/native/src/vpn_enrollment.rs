@@ -37,19 +37,20 @@ fn binding(target:&Target,status:&Value)->Result<Value,String>{
  if !selected["manifest_sha256"].is_string()||!selected["network_id"].is_string()||!selected["chain_id"].is_u64(){return Err("Target selected network is unavailable".into())}
  Ok(json!({"target_sha256":hash(target.journal_identity().to_string().as_bytes()),"manifest_sha256":selected["manifest_sha256"],"formation_sha256":status["formation_sha256"],"network_id":selected["network_id"],"chain_id":selected["chain_id"]}))
 }
+fn cleanup_action(operation:&str)->Result<Option<&str>,String>{match operation{"revoke"|"retire"=>Ok(Some(operation)),"prepare"|"reconcile"=>Ok(None),_=>Err("Unsupported native provider action".into())}}
 async fn provider(config:&Config,credential:&[u8],directory:&Path,operation:&str,binding:&Value,local:&Value)->Result<(Value,Zeroizing<String>),String>{
  let token=std::str::from_utf8(credential).map_err(|_|"Provider credential must be ASCII")?.trim_end_matches(['\r','\n']);
  if token.is_empty()||token.len()>4096||!token.bytes().all(|c|(33..=126).contains(&c)){return Err("Private provider credential is invalid".into())}
- #[derive(serde::Serialize)]struct PrivateWire<'a>{policy:&'a str,pin:&'a str,ca:String,token:&'a str,directory:&'a Path,operation:&'a str,binding:&'a Value,local:&'a Value}
- let wire=Zeroizing::new(serde_json::to_vec(&PrivateWire{policy:&config.raw,pin:&config.pin,ca:STANDARD.encode(config.ca.as_slice()),token,directory,operation,binding,local}).map_err(|_|"Cannot encode private provider exchange")?);
+ #[derive(serde::Serialize)]struct PrivateWire<'a>{policy:&'a str,pin:&'a str,ca:String,token:&'a str,directory:&'a Path,operation:&'a str,cleanup_action:Option<&'a str>,binding:&'a Value,local:&'a Value}
+ let wire=Zeroizing::new(serde_json::to_vec(&PrivateWire{policy:&config.raw,pin:&config.pin,ca:STANDARD.encode(config.ca.as_slice()),token,directory,operation,cleanup_action:cleanup_action(operation)?,binding,local}).map_err(|_|"Cannot encode private provider exchange")?);
  let runner=r#"
 import base64,sys
 try:
     wire=decode(sys.stdin.buffer.read(256*1024+1))
     ca=base64.b64decode(wire['ca'],validate=True)
-    policy=provider_policy(wire['policy'].encode(),wire['pin'],ca,int(time.time()))
+    policy=provider_policy(wire['policy'].encode(),wire['pin'],ca,int(time.time()),cleanup_action=wire['cleanup_action'])
     client=HttpsProvider(policy,ca,wire['token'])
-    flow=Authorization(wire['directory'],policy,client.request)
+    flow=Authorization(wire['directory'],policy,client.request,cleanup_action=wire['cleanup_action'])
     if wire['operation']=='prepare':
         public,secret=flow.prepare(wire['binding'])
         sys.stdout.buffer.write(encode(public)+b'\n'+secret.encode())
@@ -133,4 +134,12 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
 #[cfg(test)]mod tests{
  use super::*;
  #[test]fn context_is_exact_and_rejects_missing_formation(){let t=Target{kind:"remote".into(),host:Some("guest.example".into()),port:Some(22),root:"/opt/synergy".into(),guest:None};let mut s=json!({"formation_sha256":"a".repeat(64),"selection":{"manifest_sha256":"b".repeat(64),"network_id":"isolated-network","chain_id":999998}});let b=binding(&t,&s).unwrap();assert_eq!(b["target_sha256"],hash(t.journal_identity().to_string().as_bytes()));s["formation_sha256"]=Value::Null;assert!(binding(&t,&s).is_err());}
+}
+
+#[cfg(test)]mod cleanup_tests{
+ use super::*;
+ #[test]fn only_exact_cleanup_actions_can_use_expired_approval_mode(){
+  assert_eq!(cleanup_action("revoke").unwrap(),Some("revoke"));assert_eq!(cleanup_action("retire").unwrap(),Some("retire"));
+  for op in ["prepare","reconcile"]{assert_eq!(cleanup_action(op).unwrap(),None)}for op in ["enroll","delete","","Revoke"]{assert!(cleanup_action(op).is_err())}
+ }
 }

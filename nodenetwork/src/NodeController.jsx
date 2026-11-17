@@ -1,3 +1,4 @@
+import {FleetReadiness} from './FleetReadiness.jsx';
 import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
@@ -189,6 +190,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <Card title="4. Connect VPN, commission and verify runtime">
   {!target.guest&&<GuestHosts invokeConfigureGuest={nodeNetworkConfigureGuest} onSelectGuest={async(host,id)=>{const selected=await nodeNetworkSelectGuest(host,id);if(selected&&onSelectTarget)onSelectTarget(selected);return selected;}} target={target} disabled={!permitted||!state||!!pending} invokeGuest={nodeNetworkGuest} onMutation={()=>setState(null)}/>}
    {target.guest&&<Card title="Managed guest target"><Detail data={{physicalHost:target.host,guest:target.guest.guest_id,creationRequest:target.guest.create_request_sha256}}/><p>SSH is routed through the authenticated hosting machine. Guest administration uses its approved synergy account.</p><button type="button" disabled={!!pending} onClick={()=>{const physical={...target};delete physical.guest;onSelectTarget?.(physical);}}>Return to hosting machine</button></Card>}
+     <FleetReadiness target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
      <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
     <p>{vpn?.connected&&vpn?.server_bound?'VPN connected and server binding observed':vpn?'VPN enrollment or connection pending':'VPN status not verified'}</p>
     {['register','vpn_status','commission','start','health'].map(action)}

@@ -24,7 +24,7 @@ pub struct Prepared {wire:Zeroizing<Vec<u8>>,pub summary:Value,pub host_key:Opti
 fn digest(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
 fn pin(s:&str)->bool{s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))}
 fn limit(name:&str)->Option<usize>{match name{
- "managed-guest.json"=>Some(16384),"formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
+ "managed-guest.json"=>Some(16384),"commissioning-readiness.json"=>Some(128*1024),"formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
  "commissioning/config/node.json"=>Some(1024*1024),"commissioning/config/start-authorized.json"=>Some(65536),
  "commissioning/network/genesis.json"=>Some(4*1024*1024),"commissioning/network/authority.json"|
  "commissioning/network/network-manifest.json"|"commissioning/network/transport-registry.json"=>Some(1024*1024),
@@ -182,6 +182,15 @@ pub(super) fn guest_continuation(mut doc:Value,target:&Target,initial:&str,paren
  doc["artifacts"]=json!({"managed-guest.json":digest(artifact.bytes)});let text=doc.to_string();let hash=digest(text.as_bytes());
  validate(&text,target,&hash,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
  prepared.wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{"managed-guest.json":STANDARD.encode(artifact.bytes)}})).map_err(|_|"Cannot encode exact guest policy")?);
+ prepared.document=text;prepared.sha256=hash.clone();prepared.summary=json!({"sha256":hash,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
+}
+
+pub(super) fn readiness_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,bytes:&[u8])->Result<Prepared,String>{
+ let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
+ if bytes.is_empty()||bytes.len()>128*1024||doc["requests"].as_array().is_none_or(|v|v.len()!=1)||doc["requests"][0]["operation"]!="commission"||doc["requests"][0]["request_sha256"]!=request.approval_id(){return Err("Readiness may accompany only one exact commissioning request".into())}
+ let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ doc["artifacts"]=json!({"commissioning-readiness.json":digest(bytes)});let text=doc.to_string();let hash=digest(text.as_bytes());validate(&text,target,&hash,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ prepared.wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{"commissioning-readiness.json":STANDARD.encode(bytes)}})).map_err(|_|"Cannot encode exact readiness approval")?);
  prepared.document=text;prepared.sha256=hash.clone();prepared.summary=json!({"sha256":hash,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
 }
 

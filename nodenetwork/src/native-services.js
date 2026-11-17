@@ -119,3 +119,11 @@ export async function nodeNetworkConfigureGuest(target){
  if(result?.schema!=='nodenetwork-guest-configuration-v1'||result.configured!==true||result.guest_created!==false||!/^[a-z][a-z0-9-]{0,31}$/.test(result.guest_id))throw Error('Invalid native guest configuration receipt.');
  return result;
 }
+
+export async function nodeNetworkFleetReadiness(target,operation,targets=null,reviewSha256=null){
+ if(!isTauri())throw Error('Fleet readiness requires native Portal and authenticated controllers.');
+ if(!['collect','stage','reconcile'].includes(operation)||(operation==='collect'?(!Array.isArray(targets)||targets.length!==5||reviewSha256!==null):(targets!==null||(operation==='stage'?!/^[a-f0-9]{64}$/.test(reviewSha256):reviewSha256!==null))))throw Error('Unsupported bounded fleet readiness request.');
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_fleet_readiness',{target,operation,targets,reviewSha256}));if(reply===null)return null;
+ const schema=operation==='collect'?'nodenetwork-native-fleet-readiness-v1':operation==='stage'?'nodenetwork-native-fleet-readiness-staged-v1':'nodenetwork-native-fleet-readiness-reconciled-v1';
+ if(reply?.schema!==schema||(operation==='reconcile'&&(reply.pending!==false||typeof reply.original_stage_verified!=='boolean'||reply.freshness_verified!==false||reply.commissioned!==false||(reply.review_sha256!==null&&!/^[a-f0-9]{64}$/.test(reply.review_sha256))))||(operation!=='reconcile'&&(!/^[a-f0-9]{64}$/.test(reply.review_sha256)||reply.finality_verified!==false||reply.runtime_participation_verified!==false)))throw Error('Unsupported native commissioning readiness response.');return reply;
+}

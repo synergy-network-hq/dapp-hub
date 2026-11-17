@@ -201,6 +201,40 @@ pub(super) async fn guest_grant(base:&Path,target:&Target,request:&Request,contr
  dispatch.finish(&result)?;result.map(|v|v["result"].clone())
 }
 
+pub(super) async fn reconcile_readiness(base:&Path,target:&Target,control:&Path)->Result<Option<Value>,String>{
+ let intent=folder(base)?.join(format!("readiness-continuation-{}.json",hash(target.journal_identity().to_string().as_bytes())));
+ if !intent.exists()&&!intent.is_symlink(){return Ok(None)}
+ let old:Value=serde_json::from_slice(&read(&intent,4096)?).map_err(|_|"Malformed readiness intent")?;
+ if !old.as_object().is_some_and(|o|o.len()==4&&["authorization_sha256","request_sha256","artifact_sha256","dispatch_sha256"].iter().all(|k|o.get(*k).and_then(Value::as_str).is_some_and(|v|v.len()==64&&v.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))))){return Err("Malformed original readiness intent commitments".into())}
+ let(record,_)=initial(base,target)?;let reply=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
+ if reply["ok"]!=true||reply["result"]["initial_sha256"]!=hash(record.document.as_bytes())||reply["result"]["authorization"]["sha256"]!=old["authorization_sha256"]{return Err("Original readiness authorization is not independently confirmed; preserve the intent without replay".into())}
+ let dispatch=old["dispatch_sha256"].as_str().ok_or("Missing original readiness dispatch commitment")?;
+ crate::request_journal::reconcile_verified(base,&target.journal_identity(),"authorization_stage",dispatch)?;
+ std::fs::remove_file(intent).map_err(|_|"Readiness confirmed; local reconciliation interrupted")?;Ok(Some(old))
+}
+
+pub(super) async fn readiness_grant(base:&Path,target:&Target,control:&Path,bytes:&[u8])->Result<(),String>{
+ if !cfg!(debug_assertions){return Err("Readiness approval is isolated engineering only".into())}
+ let request=Request{version:1,operation:"commission".into(),parameters:json!({})};let(record,doc)=initial(base,target)?;
+ let reply=execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
+ let status=&reply["result"];if reply["ok"]!=true||status["initial_sha256"]!=hash(record.document.as_bytes()){return Err("Readiness target lacks its original independent authorization".into())}
+ let artifact:Value=serde_json::from_slice(bytes).map_err(|_|"Invalid readiness artifact")?;
+ let own=artifact["observations"].as_array().and_then(|v|v.iter().find(|v|v["target"]==doc["target"])).ok_or("Readiness lacks the exact commissioning target")?;
+ if own["manifest_sha256"]!=status["selection"]["manifest_sha256"]||own["formation_sha256"]!=status["formation_sha256"]{return Err("Commissioning target release or formation changed after collection".into())}
+ let intent=folder(base)?.join(format!("readiness-continuation-{}.json",hash(target.journal_identity().to_string().as_bytes())));
+ if intent.exists()||intent.is_symlink(){return Err("Readiness staging outcome is uncertain; inspect the original authorization without restaging".into())}
+ let next=continuation_document(&doc,status,&request,None,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ let prepared=authorization::readiness_continuation(next,target,&hash(record.document.as_bytes()),status["authorization"]["sha256"].as_str().ok_or("Missing authorization parent")?,status["formation_sha256"].as_str().ok_or("Missing formation")?,bytes)?;
+ let expected=prepared.sha256.clone();let dispatch_request=json!({"operation":"commission","request_sha256":request.approval_id(),"artifact_sha256":hash(bytes)});let dispatch=crate::request_journal::Dispatch::begin(base,&target.journal_identity(),"authorization_stage",&dispatch_request)?;
+ let result=async{
+  save(&intent,&json!({"authorization_sha256":expected,"request_sha256":request.approval_id(),"artifact_sha256":hash(bytes),"dispatch_sha256":hash(dispatch_request.to_string().as_bytes())}))?;
+  let result=authorization::execute(target.clone(),record.operator,prepared,control).await?;
+  if result["ok"]!=true||result["result"]["sha256"]!=expected||result["result"]["applied"]!=true||result["result"]["grants_recreated"]!=false{return Err("Readiness authorization outcome uncertain or refused; never replay".into())}
+  std::fs::remove_file(&intent).map_err(|_|"Readiness applied; local reconciliation interrupted")?;Ok(result)
+ }.await;
+ dispatch.finish(&result)?;result.map(|_|())
+}
+
 #[cfg(test)]mod tests{
  use super::*;use base64::{engine::general_purpose::STANDARD,Engine as _};
  fn context()->(Value,Value){let doc=json!({"target":{"kind":"remote","host":"host.example","port":22,"root":"/opt/synergy","host_key":"pinned","machine_id_sha256":null},"release_id":"reviewed","manifest_sha256":"a".repeat(64),"network_id":"isolated-network","chain_id":99999,"node_name":"validator-test","artifacts":{"formation-context.json":"b".repeat(64)}});let status=json!({"target":doc["target"],"selection":{"release_id":doc["release_id"],"manifest_sha256":doc["manifest_sha256"],"network_id":doc["network_id"],"chain_id":doc["chain_id"],"node_name":doc["node_name"]},"formation_sha256":"b".repeat(64),"genesis_pins":null,"authorization":{"sequence":3,"sha256":"c".repeat(64)}});(doc,status)}

@@ -24,3 +24,5 @@ pub mod bare_rollback;
 pub mod managed_guest;
 
 pub mod guest_configuration;
+
+pub mod fleet_readiness;
