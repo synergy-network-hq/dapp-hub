@@ -40,7 +40,7 @@ export function acceptedReview(operation,parameters,response,target){
  return false;
 }
 
-export function workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus,identityReview,formationReview,formationRecord,bindingReview}){
+export function workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus,identityReview,formationReview,formationRecord,bindingReview,networkReview}){
  const unavailable=blocker=>({available:false,blocker});
  if(!permitted)return unavailable('Allow NodeNetwork inspection in Security & permissions.');
  if(!state)return unavailable('Inspect the selected target first.');
@@ -48,6 +48,8 @@ export function workflowGate({target,state,permitted,operation,form,review,confi
  if(!capability.available)return capability;
  if((operation==='install'||operation==='install_preflight')&&state.installed)return unavailable('A node is already installed. Use Updates for a qualified replacement.');
  if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
+ if(operation==='network_formation_prepare'&&(!state.installed||!formationRecord?.pending||networkReview?.pending))return unavailable('Read the prepared formation identity and reconcile any existing network before preparing another.');
+ if(operation==='network_formation_sign'&&(!networkReview?.pending||networkReview.signed||networkReview.target!==JSON.stringify(target)))return unavailable('Read and review the exact unsigned Genesis on this target before signing.');
  if(operation==='vpn_enroll'){
   if(!vpnStatus)return unavailable('Read VPN status before enrolling.');
   if(vpnStatus.reconciliation_required)return unavailable('Reconcile the prior enrollment with the VPN control plane before retrying.');
@@ -68,6 +70,7 @@ export function workflowGate({target,state,permitted,operation,form,review,confi
  if(operation==='genesis_bind'&&(!formationRecord?.pending||bindingReview?.target!==JSON.stringify(target)||bindingReview?.bound!==false||bindingReview.address!==formationRecord.address))return unavailable('Verify the independently signed Genesis and review its exact identity binding before continuing.');
  if(operation==='commission'&&(!bindingReview?.bound||!vpnStatus?.connected||!vpnStatus?.server_bound))return unavailable('Verify the bound Genesis and read the connected, server-bound VPN status before commissioning.');
  let parameters={};
+ if(operation==='network_formation_sign')parameters={review_sha256:networkReview.review_sha256};
  if(operation==='formation_prepare')parameters={formation_sha256:formationReview.formation_sha256};
  if(operation==='genesis_bind')parameters={genesis_sha256:bindingReview.genesis_sha256};
  if(operation==='identity_generate'){
@@ -120,4 +123,14 @@ export function vpnView(value){
  const fields=['service_registered','enrollment_staged','enrollment_recorded','reconciliation_required','server_bound','connected'];
  if(value?.schema!=='nodenetwork-vpn-status-v1'||fields.some(key=>typeof value[key]!=='boolean')||(value.overlay_address!==null&&(typeof value.overlay_address!=='string'||!/^[0-9a-fA-F:.]{1,45}(?:\/[0-9]{1,3})?$/.test(value.overlay_address))))throw Error('The controller returned an unsupported VPN status.');
  return {...Object.fromEntries(fields.map(key=>[key,value[key]])),overlay_address:value.overlay_address};
+}
+
+export function authorizationView(value){
+ if(value?.schema==='nodenetwork-engineering-authorization-status-v1'&&value.authorization===null)return {approved:false};
+ const receipt=value?.schema==='nodenetwork-engineering-authorization-status-v1'?value.authorization:
+  value?.schema==='nodenetwork-engineering-authorization-v1'&&value.applied===true&&value.grants_recreated===false?value:null;
+ if(!receipt||typeof receipt.sha256!=='string'||!/^[0-9a-f]{64}$/.test(receipt.sha256)||
+  !Number.isSafeInteger(receipt.sequence)||receipt.sequence<1||!Number.isSafeInteger(receipt.expires_at)||receipt.expires_at<0)
+  throw Error('The target did not confirm its exact engineering authorization receipt.');
+ return {approved:true,sha256:receipt.sha256,sequence:receipt.sequence,expires_at:receipt.expires_at};
 }

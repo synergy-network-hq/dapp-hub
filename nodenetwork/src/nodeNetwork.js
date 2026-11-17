@@ -42,7 +42,7 @@ export function controllerOperation(target,operation){
  const matches=target.operations.filter(row=>row&&typeof row==='object'&&!Array.isArray(row)&&row.operation===operation);
  if(matches.length!==1)return unavailable;
  const entry=matches[0];
- return entry.available===true?{available:true,blocker:null}:{available:false,blocker:typeof entry.blocker==='string'&&entry.blocker.length>0&&entry.blocker.length<=512&&!/[\u0000-\u001f\u007f]/.test(entry.blocker)?entry.blocker:unavailable.blocker};
+ return entry.available===true||(target.engineeringContinuation===true&&entry.engineeringContinuation===true)?{available:true,blocker:null}:{available:false,blocker:typeof entry.blocker==='string'&&entry.blocker.length>0&&entry.blocker.length<=512&&!/[\u0000-\u001f\u007f]/.test(entry.blocker)?entry.blocker:unavailable.blocker};
 }
 export function provisioningChecks(form){
  const checks=[

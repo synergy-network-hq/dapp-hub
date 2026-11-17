@@ -50,8 +50,8 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight" => false,
-            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage" => true,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export" => false,
+            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
@@ -61,11 +61,14 @@ impl Request {
             "identity_generate"|"genesis_bind" => &["genesis_sha256"],
             "formation_prepare" => &["formation_sha256"],
             "genesis_stage" => &["artifacts"],
+            "network_formation_prepare" => &["formation_sha256","recipe_json","registrations_json"],
+            "network_formation_sign" => &["review_sha256"],
             _ => &[],
         };
         if p.len() != expected.len() || expected.iter().any(|k| !p.contains_key(*k)) {
             return Err("Unexpected controller parameters; paths, secrets and shell commands are forbidden.".into());
         }
+        if self.operation=="network_formation_prepare" && (!p["recipe_json"].as_str().is_some_and(|s|!s.is_empty()&&s.len()<=1024*1024)||!p["registrations_json"].as_array().is_some_and(|a|a.len()==5&&a.iter().all(|v|v.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=128*1024)))){return Err("Bounded public recipe and five registrations required".into())}
         if self.operation=="genesis_stage" { crate::formation::stage_artifacts(&p["artifacts"])?; }
         if expected.contains(&"release_id") {
             let release = p["release_id"].as_str().ok_or("Missing release ID.")?;
@@ -86,6 +89,7 @@ impl Request {
         if self.operation=="uninstall" && p["confirmation"]!=ROOT { return Err("Confirm the exact Synergy root before uninstalling.".into()); }
         for (field, error) in [
             ("genesis_sha256", "Review the exact authenticated Genesis before binding custody."),
+            ("review_sha256", "Review the exact unsigned Genesis before signing."),
             ("formation_sha256", "Review the exact approved network formation before preparing custody."),
         ] {
             if expected.contains(&field) && !p[field].as_str().is_some_and(|pin|
@@ -104,7 +108,7 @@ impl Request {
 }
 
 #[cfg(unix)]
-fn ensure_private_control_dir(directory: &Path) -> Result<(), String> {
+pub(super) fn protect_control_directory(directory: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     if !directory.exists() {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(directory).map_err(|_|"Cannot create Portal SSH control directory.")?;
@@ -127,11 +131,11 @@ pub(super) fn control_directory(home:&Path)->Result<std::path::PathBuf,String>{
 }
 
 fn control_socket(target:&Target,directory:&Path,account:&str)->std::path::PathBuf {
-    directory.join(format!("{:x}",Sha256::digest(format!("{account}@{}:{}",target.host.as_deref().unwrap_or(""),target.port.unwrap_or(22)).as_bytes()))[..24].to_string())
+    directory.join(&format!("{:x}",Sha256::digest(format!("{account}@{}:{}",target.host.as_deref().unwrap_or(""),target.port.unwrap_or(22)).as_bytes()))[..24])
 }
 pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>)->Result<tokio::process::Command,String>{
     target.validate()?;
-    #[cfg(unix)] ensure_private_control_dir(directory)?;
+    #[cfg(unix)] protect_control_directory(directory)?;
     let socket=control_socket(target,directory,account);
     if socket.as_os_str().len()>95 {return Err("Portal SSH control path is too long on this platform.".into());}
     let qualification_pin=if known_hosts.is_none()&&cfg!(debug_assertions)&&target.host.as_deref()==Some("127.0.0.1")&&target.port==Some(22280){
@@ -171,10 +175,11 @@ pub async fn execute(target: Target, request: Request, control_dir: &Path) -> Re
     execute_pinned(target,request,control_dir,None).await
 }
 
-async fn execute_pinned(target: Target, request: Request, control_dir: &Path, known_hosts: Option<&Path>) -> Result<Value, String> {
+pub(super) async fn execute_pinned(target: Target, request: Request, control_dir: &Path, known_hosts: Option<&Path>) -> Result<Value, String> {
     target.validate()?; request.validate()?;
     let mut wire=request.canonical().to_string().into_bytes();
-    let input_limit=if request.operation=="genesis_stage" {12*1024*1024} else {REQUEST_LIMIT};
+    let input_limit=if request.operation=="genesis_stage" {12*1024*1024} else if request.operation=="network_formation_prepare" {2*1024*1024} else {REQUEST_LIMIT};
+    let output_limit=if request.operation=="network_formation_export" {2*1024*1024} else {LIMIT};
     if wire.len()>=input_limit { return Err("Controller request exceeds the operation's safe wire limit.".into()); }
     wire.push(b'\n');
     let _serial=SERIAL.lock().await;
@@ -190,13 +195,13 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child=command.spawn().map_err(|_|"Controller could not start. Enroll the target and verify its SSH host identity first.")?;
     let mut input=child.stdin.take().ok_or("Controller input unavailable.")?;
-    let mut output=child.stdout.take().ok_or("Controller output unavailable.")?.take(LIMIT+1);
+    let mut output=child.stdout.take().ok_or("Controller output unavailable.")?.take(output_limit+1);
     let result=tokio::time::timeout(Duration::from_secs(if request.operation=="vpn_enroll" {240} else {180}),async {
         input.write_all(&wire).await.map_err(|_|"Cannot send controller request.")?;
         drop(input);
         let mut bytes=Vec::new();
         output.read_to_end(&mut bytes).await.map_err(|_|"Cannot read controller response.")?;
-        if bytes.len()>LIMIT as usize { return Err("Controller response exceeds safe limit."); }
+        if bytes.len()>output_limit as usize { return Err("Controller response exceeds safe limit."); }
         let status=child.wait().await.map_err(|_|"Controller did not finish.")?;
         if !status.success() { return Err("Controller connection failed. Check enrolled target, pinned SSH identity, agent authentication and restricted sudo policy."); }
         let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Controller returned an invalid response.")?;
@@ -258,7 +263,7 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         let host_field=if target.port.unwrap_or(22)==22 {host.to_string()} else {format!("[{}]:{}",host.trim_matches(['[',']']),target.port.unwrap())};
         std::fs::write(&bad_pin,format!("{} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",host_field)).unwrap();
         let connection=root.join("ssh");
-        let socket=connection.join(format!("{:x}",Sha256::digest(format!("{}:{}",host,port).as_bytes()))[..24].to_string());
+        let socket=connection.join(&format!("{:x}",Sha256::digest(format!("{}:{}",host,port).as_bytes()))[..24]);
         struct Cleanup {root:std::path::PathBuf,socket:std::path::PathBuf,host:String}
         impl Drop for Cleanup {fn drop(&mut self){
             let _=std::process::Command::new("/usr/bin/ssh").arg("-S").arg(&self.socket).args(["-O","exit","--",&self.host]).stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -280,6 +285,6 @@ async fn execute_pinned(target: Target, request: Request, control_dir: &Path, kn
         assert_eq!(request.validate(),Ok(false));
         let pin=request.approval_id(); request.parameters["chain_id"]=json!(100000);
         assert_ne!(pin,request.approval_id());
-        assert_eq!(serde_json::from_value::<Request>(json!({"version":1,"operation":"start","parameters":{},"shell":"reboot"})).is_err(),true);
+        assert!(serde_json::from_value::<Request>(json!({"version":1,"operation":"start","parameters":{},"shell":"reboot"})).is_err());
     }
 }

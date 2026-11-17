@@ -47,7 +47,7 @@ fn walk(root:&Path,at:&Path,members:&mut Vec<Member>,files:&BTreeMap<String,Stri
         else if metadata.is_file(){
             #[cfg(unix)] {use std::os::unix::fs::MetadataExt;if metadata.nlink()!=1{return Err("Hard-linked master member refused.".into());}}
             if name!="package.json"&&!files.contains_key(&name){return Err("Master contains an undeclared file.".into());}
-            let size=metadata.len();*total=total.checked_add(512+((size+511)/512)*512).ok_or("Master archive exceeds its limit.")?;
+            let size=metadata.len();*total=total.checked_add(512+size.div_ceil(512)*512).ok_or("Master archive exceeds its limit.")?;
             if *total>MAX_ARCHIVE{return Err("Master archive exceeds 256 MiB.".into());}
             members.push(Member{digest:files.get(&name).cloned(),name,size,directory:false,file:None});
         } else{return Err("Master symlinks and special files are forbidden.".into());}

@@ -113,3 +113,13 @@ test('existing-network staging requires an installed target and explicit chain',
  assert.equal(gate('genesis_stage_existing',{state,formationRecord:{pending:true}}).available,false);
  assert.equal(gate('genesis_stage',{state}).available,false);
 });
+
+test('engineering authorization readback is exact, bounded and does not confer membership',async()=>{
+ const {authorizationView}=await import('../src/operator-workflow.js');
+ assert.deepEqual(authorizationView({schema:'nodenetwork-engineering-authorization-status-v1',authorization:null}),{approved:false});
+ const receipt={sha256:'e'.repeat(64),sequence:2,expires_at:1234};
+ const expected={approved:true,...receipt};
+ assert.deepEqual(authorizationView({schema:'nodenetwork-engineering-authorization-status-v1',authorization:{...receipt,secret:'must not render'}}),expected);
+ assert.deepEqual(authorizationView({schema:'nodenetwork-engineering-authorization-v1',...receipt,applied:true,grants_recreated:false,membership_granted:true}),expected);
+ for(const changed of [{sequence:0},{sequence:1.5},{expires_at:-1},{sha256:'not-a-pin'},{applied:false},{grants_recreated:true}])assert.throws(()=>authorizationView({schema:'nodenetwork-engineering-authorization-v1',...receipt,applied:true,grants_recreated:false,...changed}));
+});

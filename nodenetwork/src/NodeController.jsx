@@ -1,29 +1,34 @@
 import {useEffect,useRef,useState} from 'react';
-import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis} from './native-services.js';
+import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis} from './native-services.js';
 import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
+import {networkFormationView} from './network-formation.js';
 import {installParameters} from './nodeNetwork.js';
-import {acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,vpnView,workflowGate} from './operator-workflow.js';
+import {authorizationView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,vpnView,workflowGate} from './operator-workflow.js';
 
-const MUTATIONS=new Set(['bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
+const MUTATIONS=new Set(['network_formation_prepare','network_formation_sign','authorization_stage','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
 const PREFLIGHTS=new Set(['install_preflight','upgrade_preflight','uninstall_preflight']);
-const LABELS={target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
+const LABELS={network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported}){
  const [operator,setOperator]=useState('');
  const [state,setState]=useState(null),[pending,setPending]=useState(null),[error,setError]=useState(''),[results,setResults]=useState({}),[latest,setLatest]=useState(null),[review,setReview]=useState(null),[confirmation,setConfirmation]=useState('');
+ const [networkReview,setNetworkReview]=useState(null);
  const [identityReview,setIdentityReview]=useState(null);
  const [formationReview,setFormationReview]=useState(null),[formationRecord,setFormationRecord]=useState(null),[bindingReview,setBindingReview]=useState(null);
  const active=useRef(true),locked=useRef(false);
  useEffect(()=>{active.current=true;return()=>{active.current=false;};},[]);
  const targetKey=JSON.stringify(target);
- const gateFor=operation=>workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus:results.vpn_status?.response,identityReview,formationReview,formationRecord,bindingReview});
+ useEffect(()=>{setNetworkReview(null);},[targetKey]);
+ const gateFor=operation=>workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus:results.vpn_status?.response,identityReview,formationReview,formationRecord,bindingReview,networkReview});
 
  async function perform(operation){
   if(!permitted||locked.current)return;
   let parameters={};
   try{
-   if(operation==='bootstrap'){
+   if(operation==='authorization_stage'){
+    if(!state||!operator||!(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operator)))throw Error('Inspect the target and enter its existing administrative account.');
+   }else if(operation==='bootstrap'){
     if(state||!operator||!(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operator))||(target.kind==='local'&&!localSupported))throw Error('Select a supported clean host and enter its existing administrative account.');
     parameters=installParameters(form);
    }else if(operation!=='target'){
@@ -40,9 +45,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   if(operation==='genesis_stage'||operation==='genesis_binding_preflight'||operation==='genesis_bind')setBindingReview(null);
   if(operation==='target'||MUTATIONS.has(operation))setState(null);
   try{
-   const raw=operation==='bootstrap'?await nodeNetworkBootstrap(target,operator,parameters):operation==='genesis_stage_existing'?await stageNodeNetworkSignedGenesis(target,`network:${form.chain_id}:${form.network_id}`):operation==='genesis_stage'?await stageNodeNetworkSignedGenesis(target,formationRecord.address):await nodeNetworkController(target,operation,parameters);
+   const raw=operation==='network_formation_prepare'?await prepareNodeNetworkGenesis(target,formationRecord.formation_sha256):operation==='authorization_stage'?await stageNodeNetworkAuthorization(target,operator):operation==='bootstrap'?await nodeNetworkBootstrap(target,operator,parameters):operation==='genesis_stage_existing'?await stageNodeNetworkSignedGenesis(target,`network:${form.chain_id}:${form.network_id}`):operation==='genesis_stage'?await stageNodeNetworkSignedGenesis(target,formationRecord.address):await nodeNetworkController(target,operation,parameters);
    if(!active.current)return;
-   if(operation==='bootstrap'&&raw===null){setError('Native review cancelled. No completed operation was reported.');return;}
+   if((operation==='bootstrap'||operation==='authorization_stage'||operation==='network_formation_prepare')&&raw===null){setError('Native review cancelled. No completed operation was reported.');return;}
    if((operation==='genesis_stage'||operation==='genesis_stage_existing')&&raw===null)return;
    if(operation==='target')setState(checkedTarget(raw,target));
    if(PREFLIGHTS.has(operation)){
@@ -50,7 +55,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     setReview({target:targetKey,scope:approvedReviewScope(operation,parameters)});
    }
    if(operation==='bootstrap'&&(raw?.root!==target.root||raw.controllerEnrolled!==true||raw.rootDeletionGuardActive!==true||raw.stagedRelease!==parameters.release_id||raw.manifestSha256!==parameters.manifest_sha256))throw Error('The controller enrollment response did not confirm the selected target, release and removal guard. Inspect the target before attempting another operation.');
-   const response=operation==='diagnostics'?diagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
+   const response=operation.startsWith('network_formation_')?networkFormationView(raw,operation==='network_formation_sign'?networkReview:null):operation==='authorization_stage'||operation==='authorization_status'?authorizationView(raw):operation==='diagnostics'?diagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
     operation==='identity_status'?identityStatusView(raw):
     operation==='identity_preflight'||operation==='identity_generate'?identityView(raw,operation==='identity_generate'):
     operation==='formation_preflight'?formationView(raw):
@@ -58,6 +63,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     operation==='formation_status'?formationStatusView(raw):
     operation==='genesis_stage_existing'?existingGenesisStageView(raw,form):operation==='genesis_stage'?genesisStageView(raw,formationRecord):
     operation==='genesis_binding_preflight'||operation==='genesis_bind'?genesisBindingView(raw,formationRecord,parameters.genesis_sha256??null):raw;
+   if(operation.startsWith('network_formation_'))setNetworkReview({target:targetKey,...response});
    if(operation==='identity_preflight')setIdentityReview({target:targetKey,...response});
    if(operation==='formation_preflight')setFormationReview({target:targetKey,...response});
    if(operation==='formation_prepare'||operation==='formation_status'){
@@ -81,6 +87,12 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   }catch(failure){if(active.current)setError(String(failure?.message||failure));}
   finally{locked.current=false;if(active.current)setPending(null);}
  }
+ async function exportNetwork(){
+  if(!permitted||locked.current||!networkReview?.signed||networkReview.target!==targetKey)return;
+  locked.current=true;setPending('network_formation_export');setError('');
+  try{const response=await exportNodeNetworkGenesis(target,networkReview.review_sha256);if(active.current&&response)setLatest({operation:'network_formation_export',parameters:{},response,receivedAt:Date.now()});}
+  catch(failure){if(active.current)setError(String(failure?.message||failure));}finally{locked.current=false;if(active.current)setPending(null);}
+ }
  function action(operation){
   const gate=gateFor(operation);
   return <div className="native-controller-action" key={operation}><button type="button" disabled={!!pending||!gate.available} onClick={()=>perform(operation)}>{LABELS[operation]}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
@@ -99,10 +111,16 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <Card title="2. Enroll a clean host, or resume on an enrolled host">
     <p>Inspect an existing controller first. For a clean host, native review verifies the selected package, SSH host key and public operator key. Enrollment stages the release; it does not grant installation, consensus membership or activation.</p>
     {master&&<button type="button" disabled={!!pending} onClick={()=>setForm({...form,release_id:master.release,manifest_sha256:master.manifestSha256})}>Copy inspected release reference into draft</button>}
-    <label>Existing administrative account<input value={operator} maxLength={32} autoComplete="off" disabled={!!pending||!!state} onChange={event=>setOperator(event.target.value)}/></label>
+    <label>Existing administrative account<input value={operator} maxLength={32} autoComplete="off" disabled={!!pending} onChange={event=>setOperator(event.target.value)}/></label>
     <button type="button" disabled={!permitted||!!pending||!!state||!operator||(target.kind==='local'&&!localSupported)} onClick={()=>perform('bootstrap')}>{LABELS.bootstrap}</button>
    </Card>
-   <Card title="3. Stage and install validator software">
+   <Card title="3. Review exact engineering formation authorization">
+    <p>The isolated native build independently pins up to five exact initial host authorization documents. Select the matching document and fixed-name inputs through native review. Later native-confirmed operations can use short-lived one-request continuations bound to that same target, master and formation. This does not approve production, membership or stake.</p>
+    <button type="button" disabled={!permitted||!!pending||!state||!operator} onClick={()=>perform('authorization_stage')}>{LABELS.authorization_stage}</button>
+    {action('authorization_status')}
+    <p>After an interrupted result, read the target authorization receipt. No grant is recreated and no operation is replayed. A different initial host authorization requires a separately reviewed native build pin. A confirmed continuation never regenerates custody or replays an uncertain operation.</p>
+   </Card>
+   <Card title="4. Install the approved validator software">
     <p>Inspect the target after each change. Software installation does not commission a validator or start consensus.</p>
     {setup.map(action)}
    </Card>
@@ -121,8 +139,17 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <button type="button" disabled={!!pending||!exportRegistration.available} onClick={()=>exportPublic('formation')}>{LABELS.formation_export}</button>
     <p>After an interrupted response, inspect and read formation status to recover the same identity. Do not prepare another one.</p>
    </Card>
+   <Card title="Create fresh engineering Genesis from five prepared validators">
+    <p>On the selected formation coordinator, choose recipe.json and registration-1.json through registration-5.json in one public input folder. The native master verifies each APQE possession proof and exact formation membership. New encrypted authority custody remains inside this managed root.</p>
+    {action('network_formation_status')}{action('network_formation_prepare')}
+    {networkReview?.pending&&<Detail data={networkReview}/>}
+    <p>Preparation is unsigned. Signing requires a separate native review and exact host authorization; it does not authorize production, prove stake or start any validator.</p>
+    {action('network_formation_sign')}
+    <button type="button" disabled={!!pending||!permitted||!networkReview?.signed||networkReview.target!==targetKey} onClick={exportNetwork}>{LABELS.network_formation_export}</button>
+    <p>Export only the verified signed public files, then independently review their exact hashes for Stage B on each validator. After an interrupted operation, read network formation status; do not regenerate custody or repeat signing.</p>
+   </Card>
    <Card title="Stage B · Verify signed Genesis and bind custody">
-    <p>Select the folder containing the independently signed Genesis, signed authority manifest, and public authority key. Portal checks the target’s pinned hashes before sending the files. Verify the staged result before binding custody.</p>
+    <p>For a freshly created engineering network, Portal re-verifies the original approved formation coordinator and its exact saved signed public export. Otherwise, select the independently signed Genesis, authority manifest and public key folder. Portal checks the target’s pinned hashes before sending the files. Verify the staged result before binding custody.</p>
     {action('genesis_stage')}{action('genesis_binding_preflight')}
     {bindingReview&&<Detail data={{network:bindingReview.network_id,chainId:bindingReview.chain_id,address:bindingReview.address,verifiedGenesisSha256:bindingReview.genesis_sha256}}/>}
     <p role="status">{bindingReview?.bound===true?'Existing custody bound to the verified Genesis':bindingReview?'Genesis and signed membership verified · Custody not yet bound':'Genesis authorization pending verification'}</p>
@@ -137,7 +164,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    </Card>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
-   {['health','vpn_status','vpn_enroll','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
+   {['authorization_status','health','vpn_status','vpn_enroll','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
    <p>Use health to verify the result after a start or restart. Recovery remains a separately qualified operation. This workspace does not offer arbitrary shell or checkpoint access.</p>
   </Card>}
   {tab==='Updates'&&<Card title="Controlled master update">
