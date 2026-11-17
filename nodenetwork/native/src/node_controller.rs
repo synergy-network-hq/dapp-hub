@@ -53,8 +53,8 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_preflight"|"guest_resources"|"commissioning_observation" => false,
-            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_remove" => true,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_preflight"|"guest_resources"|"commissioning_observation"|"treasury_preflight"|"treasury_status"|"treasury_export" => false,
+            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_remove"|"treasury_prepare" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
         let expected: &[&str] = match self.operation.as_str() {
@@ -63,6 +63,7 @@ impl Request {
             "uninstall" => &["confirmation"],
             "identity_generate"|"genesis_bind" => &["genesis_sha256"],
             "formation_prepare" => &["formation_sha256"],
+            "treasury_prepare" => &["formation_sha256","effective_at_unix"],
             "genesis_stage" => &["artifacts"],
             "network_formation_prepare" => &["formation_sha256","recipe_json","registrations_json"],
             "network_formation_sign" => &["review_sha256"],
@@ -84,6 +85,7 @@ impl Request {
             }
         }
         if self.operation=="network_formation_prepare" && (!p["recipe_json"].as_str().is_some_and(|s|!s.is_empty()&&s.len()<=1024*1024)||!p["registrations_json"].as_array().is_some_and(|a|a.len()==5&&a.iter().all(|v|v.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=128*1024)))){return Err("Bounded public recipe and five registrations required".into())}
+        if self.operation=="treasury_prepare"&&!p["effective_at_unix"].as_u64().is_some_and(|n|n>0&&n<1<<53){return Err("Review exact native treasury effective time".into())}
         if self.operation=="network_transport_prepare"{
             let members=p["members"].as_array().filter(|a|a.len()==5).ok_or("Five public transport members required")?;
             let from=p["valid_from_unix"].as_u64().ok_or("Invalid transport validity")?;let until=p["expires_at_unix"].as_u64().ok_or("Invalid transport expiration")?;
@@ -194,7 +196,7 @@ pub(super) fn bootstrap_host_pin(target:&Target,directory:&Path)->Result<std::pa
     let line=approved_host_line(target,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"),cfg!(debug_assertions),true)?.ok_or("Missing bootstrap host pin")?;
     qualification_host_pin(directory,&line)
 }
-fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,String>{
+pub(super) fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,String>{
     let expected=format!("{}\n",pin.trim());
     let path=directory.join(format!("isolated-qualification-{:x}.known-hosts",Sha256::digest(expected.as_bytes())));
     if path.exists()||path.is_symlink(){
@@ -209,8 +211,11 @@ fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,S
     Ok(path)
 }
 pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>)->Result<tokio::process::Command,String>{
+    remote_command_with_identity(target,directory,account,remote,known_hosts,None)
+}
+pub(super) fn remote_command_with_identity(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>,identity:Option<&Path>)->Result<tokio::process::Command,String>{
     target.validate()?;
-    if target.guest.is_some(){return crate::managed_guest::remote_command(target,directory,account,remote)}
+    if target.guest.is_some(){if identity.is_some(){return Err("Guest credential source is unsupported".into())}return crate::managed_guest::remote_command(target,directory,account,remote)}
     #[cfg(unix)] protect_control_directory(directory)?;
     let socket=control_socket(target,directory,account);
     if socket.as_os_str().len()>95 {return Err("Portal SSH control path is too long on this platform.".into());}
@@ -222,6 +227,7 @@ pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:
         "-oServerAliveInterval=15","-oServerAliveCountMax=2","-oControlMaster=auto","-oControlPersist=600"])
         .arg("-o").arg(format!("ControlPath={}",socket.display())).arg("-p").arg(target.port.unwrap_or(22).to_string());
     if let Some(pins)=known_hosts {c.arg("-o").arg(format!("UserKnownHostsFile={}",pins.display())).arg("-oGlobalKnownHostsFile=/dev/null");}
+    if let Some(key)=identity {c.arg("-oIdentitiesOnly=yes").arg("-i").arg(key);}
     c.arg("--").arg(format!("{}@{}",account,target.host.as_deref().ok_or("Missing remote host.")?.trim_matches(['[',']']))).arg(remote);
     Ok(c)
 }

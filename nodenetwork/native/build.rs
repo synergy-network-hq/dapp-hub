@@ -12,6 +12,13 @@ fn main() {
         assert!(pin.len()==64&&pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),"Invalid VPN provider policy pin");
         println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256={pin}");
     }
+    println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256");
+    if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256"){
+        assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Remote VPN credential authority is forbidden in production");
+        assert!(std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256").is_ok(),"Remote credential requires an exact provider pin");
+        assert!(pin.len()==64&&pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),"Invalid exact remote credential locator pin");
+        println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256={pin}");
+    }
     println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_BARE_ROLLBACK_MANIFEST_SHA256");
     if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_BARE_ROLLBACK_MANIFEST_SHA256"){
         assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Bare rollback qualification is forbidden in production");

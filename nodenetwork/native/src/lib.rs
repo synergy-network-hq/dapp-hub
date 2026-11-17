@@ -27,3 +27,6 @@ pub mod managed_guest;
 pub mod guest_configuration;
 
 pub mod fleet_readiness;
+
+pub mod treasury;
+mod vpn_credential;

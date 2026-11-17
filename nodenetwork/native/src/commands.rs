@@ -33,7 +33,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;
  target.validate()?;
- if matches!(request.operation.as_str(),"commissioning_observation"|"genesis_stage"|"genesis_stage_preflight"|"network_formation_prepare"|"network_formation_export"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"network_transport_prepare"|"network_transport_sign"|"network_transport_export"|"guest_preflight"|"guest_status"|"guest_create"|"guest_stop"|"guest_remove"){
+ if matches!(request.operation.as_str(),"treasury_prepare"|"treasury_export"|"treasury_preflight"|"commissioning_observation"|"genesis_stage"|"genesis_stage_preflight"|"network_formation_prepare"|"network_formation_export"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"network_transport_prepare"|"network_transport_sign"|"network_transport_export"|"guest_preflight"|"guest_status"|"guest_create"|"guest_stop"|"guest_remove"){
   return Err("Use the native signed Genesis folder review.".into());
  }
  let mutation=request.validate()?;

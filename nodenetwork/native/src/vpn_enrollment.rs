@@ -112,7 +112,8 @@ pub(super) fn require_terminal(base:&Path,target:&Target,doc:&Value)->Result<(),
 pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Path,credential_path:&Path,operation:&str)->Result<Value,String>{
  let _serial=SERIAL.lock().await;
  if !matches!(operation,"enroll"|"reconcile"|"revoke"|"retire"){return Err("Unsupported native VPN workflow".into())}
- let config=config(config_directory)?;let credential=read(credential_path,4098,true)?;
+ let config=config(config_directory)?;
+ let credential=crate::vpn_credential::load(read(credential_path,16384,true)?,&config.pin,config.policy["profile"]=="nodenetwork-controlled-canary-v1",control).await?;
  let original=lifecycle::bare_initial(base,&target)?.ok_or("VPN target requires its original native authorization receipt")?;
  let doc=crate::operator_authorization::verify_initial(&original,&target)?;
  let status=lifecycle::execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;

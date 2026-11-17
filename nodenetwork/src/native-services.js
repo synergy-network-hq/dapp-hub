@@ -4,9 +4,9 @@ export async function nodeNetworkRequests(){
  const value=await invoke('portal_nodenetwork_requests');
  const pin=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
  const states=new Set(['dispatch_intent','uncertain','response_received','verified_target_outcome']);
- const operations=new Set(['authorization_stage','update_stage','bare_bootstrap_rollback','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','guest_create','guest_stop','guest_remove','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
+ const operations=new Set(['authorization_stage','update_stage','bare_bootstrap_rollback','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_prepare','guest_create','guest_stop','guest_remove','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
  const time=value=>Number.isSafeInteger(value)&&value>=0&&value<=8640000000000000;
- if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','guest_create','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
+ if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_prepare','guest_create','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
  return value;
 }
 // First-party native extension only; remote community HTML has no Tauri bridge.
@@ -126,4 +126,16 @@ export async function nodeNetworkFleetReadiness(target,operation,targets=null,re
  const reply=await withNodeChange(()=>invoke('portal_nodenetwork_fleet_readiness',{target,operation,targets,reviewSha256}));if(reply===null)return null;
  const schema=operation==='collect'?'nodenetwork-native-fleet-readiness-v1':operation==='stage'?'nodenetwork-native-fleet-readiness-staged-v1':'nodenetwork-native-fleet-readiness-reconciled-v1';
  if(reply?.schema!==schema||(operation==='reconcile'&&(reply.pending!==false||typeof reply.original_stage_verified!=='boolean'||reply.freshness_verified!==false||reply.commissioned!==false||(reply.review_sha256!==null&&!/^[a-f0-9]{64}$/.test(reply.review_sha256))))||(operation!=='reconcile'&&(!/^[a-f0-9]{64}$/.test(reply.review_sha256)||reply.finality_verified!==false||reply.runtime_participation_verified!==false)))throw Error('Unsupported native commissioning readiness response.');return reply;
+}
+
+export async function nodeNetworkTreasury(target,operation){
+ if(!isTauri())throw Error('Ordinary treasury custody requires the native Portal app.');
+ if(!['status','prepare','export'].includes(operation))throw Error('Unsupported ordinary treasury operation.');
+ const call=()=>invoke('portal_nodenetwork_treasury',{target,operation});
+ const reply=await(operation==='status'?call():withNodeChange(call));
+ if(reply===null)return null;
+ const exported=operation==='export';
+ if(reply?.pending===false&&operation!=='export'&&Object.keys(reply).length===1)return reply;
+ if(reply?.schema!==(exported?'nodenetwork-formation-treasury-export-v1':'nodenetwork-formation-treasury-v1')||reply.pending!==true||reply.possession_verified!==true||reply.allocation_nwei!=='5000000000000000'||typeof reply.address!=='string'||!reply.address.startsWith('syna1')||(exported&&reply.canary_testing_treasury?.address!==reply.address))throw Error('Unsupported ordinary treasury result; no custody or allocation is inferred.');
+ return reply;
 }

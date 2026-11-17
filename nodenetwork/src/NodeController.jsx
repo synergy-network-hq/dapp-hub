@@ -1,3 +1,4 @@
+import {TreasuryFormation} from './TreasuryFormation.jsx';
 import {FleetReadiness} from './FleetReadiness.jsx';
 import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
@@ -169,6 +170,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <button type="button" disabled={!!pending||!exportRegistration.available} onClick={()=>exportPublic('formation')}>{LABELS.formation_export}</button>
     <p>After an interrupted response, inspect and read formation status to recover the same identity. Do not prepare another one.</p>
    </Card>
+   <TreasuryFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
    <Card title="Create fresh engineering Genesis from five prepared validators">
     <p>On the selected formation coordinator, choose recipe.json and registration-1.json through registration-5.json in one public input folder. The native master verifies each APQE possession proof and exact formation membership. New encrypted authority custody remains inside this managed root.</p>
     {action('network_formation_status')}{action('network_formation_prepare')}
