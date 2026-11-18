@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {updateStageView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,NODE_ROLES,nodeRoleCatalog,vpnView,workflowGate} from '../src/operator-workflow.js';
+import {updateStageView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,NODE_ROLES,nodeRoleCatalog,vpnView,vpnDiagnosticsView,workflowGate} from '../src/operator-workflow.js';
 import {emptyProvisioningDraft} from '../src/provisioning-draft.js';
 import {installParameters,nodeNetworkTarget} from '../src/nodeNetwork.js';
 
@@ -88,6 +88,41 @@ test('VPN response accepts CIDR and exposes only typed status fields',()=>{
  assert.equal(gate('vpn_enroll',{state}).available,false);
  assert.equal(gate('vpn_enroll',{state,vpnStatus:{...vpnStatus,reconciliation_required:true}}).available,false);
  assert.deepEqual(gate('vpn_enroll',{state,vpnStatus}),{available:true,parameters:{}});
+});
+
+test('VPN diagnostics preserve uncertain enrollment and strip raw logs and credentials',()=>{
+ const input={schema:'nodenetwork-vpn-diagnostics-v1',observed_at_ms:123,
+  enrollment:{service_registered:true,enrollment_staged:false,enrollment_recorded:false,reconciliation_required:true,server_bound:false,private_key:'never-render'},
+  trust:{mode:'approved_private_ca',error_code:null,credential:'never-render'},
+  client:{available:true,management_connected:true,signal_connected:true,wireguard_public_key:'A'.repeat(43)+'=',overlay_address:'10.69.3.4/16',error_code:null,raw:'never-render'},
+  peers:[{ip:'10.69.51.205',route_via_wt0:true,reachable:false,error_code:'peer_unreachable',raw:'never-render'}],
+  log:{available:true,modified_at_ms:120,sampled_bytes:65536,codes:['tls_untrusted','transport_timeout'],raw:'never-render'},mutation_performed:false,credential:'never-render'};
+ const result=vpnDiagnosticsView(input);
+ assert.equal(result.enrollment.reconciliation_required,true);
+ assert.equal(result.enrollment.enrollment_recorded,false);
+ assert.equal(result.client.management_connected,true);
+ assert.equal(result.peers[0].reachable,false);
+ assert.equal(result.mutation_performed,false);
+ assert.ok(!JSON.stringify(result).includes('never-render'));
+ const missing={...input,client:{available:false,management_connected:null,signal_connected:null,wireguard_public_key:null,overlay_address:null,error_code:'client_status_unavailable'},log:{available:false,modified_at_ms:null,sampled_bytes:0,codes:[]}};
+ assert.equal(vpnDiagnosticsView(missing).client.management_connected,null);
+ assert.equal(gate('vpn_diagnostics',{state:targetState(false,'vpn_diagnostics')}).available,false);
+ assert.equal(gate('vpn_diagnostics',{state:targetState(true,'vpn_status')}).available,false);
+ assert.deepEqual(gate('vpn_diagnostics',{state:targetState(true,'vpn_diagnostics')}),{available:true,parameters:{}});
+ for(const change of [
+  {mutation_performed:true},{observed_at_ms:Infinity},
+  {client:{...input.client,management_connected:'true'}},
+  {client:{...input.client,wireguard_public_key:'secret'}},
+  {client:{...input.client,overlay_address:'10.69.3.4/33'}},
+  {peers:[{...input.peers[0],ip:'http://untrusted'}]},
+  {peers:[{...input.peers[0],ip:'999.1.1.1'}]},
+  {peers:Array.from({length:6},(_,i)=>({...input.peers[0],ip:`10.69.3.${i}`}))},
+  {peers:[input.peers[0],input.peers[0]]},
+  {log:{...input.log,codes:['token=secret']}},
+  {log:{...input.log,codes:['tls_untrusted','tls_untrusted']}},
+  {log:{...input.log,sampled_bytes:65537}},
+ ])assert.throws(()=>vpnDiagnosticsView({...input,...change}));
+ assert.equal(vpnDiagnosticsView({...input,peers:[{...input.peers[0],ip:'2001:db8::1'}]}).peers[0].ip,'2001:db8::1');
 });
 
 test('diagnostics preserve unavailable measurements and exact chain IDs without rendering raw logs',()=>{

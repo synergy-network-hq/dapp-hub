@@ -25,7 +25,7 @@ export async function exportNodeNetworkPublicArtifact(target,kind,expectedAddres
 // Survives controller component remounts; does not replace native grants or locks.
 let changePending=false;
 async function withNodeChange(task){if(changePending)throw Error('A NodeNetwork change is still pending. Wait for its result and inspect the target before repeating an uncertain operation.');changePending=true;try{return await task();}finally{changePending=false;}}
-const readOperations=new Set(['network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','diagnostics']);
+const readOperations=new Set(['network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','vpn_diagnostics','diagnostics']);
 
 
 export async function stageNodeNetworkSignedGenesis(target,expectedAddress){

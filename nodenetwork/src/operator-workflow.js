@@ -47,7 +47,7 @@ export function workflowGate({target,state,permitted,operation,form,review,confi
  const capability=controllerOperation(state,operation==='genesis_stage_existing'?'genesis_stage':operation);
  if(!capability.available)return capability;
  if((operation==='install'||operation==='install_preflight')&&state.installed)return unavailable('A node is already installed. Use Updates for a qualified replacement.');
- if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
+ if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_diagnostics','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
  if(operation==='network_formation_prepare'&&(!state.installed||!formationRecord?.pending||networkReview?.pending))return unavailable('Read the prepared formation identity and reconcile any existing network before preparing another.');
  if(operation==='network_formation_sign'&&(!networkReview?.pending||networkReview.signed||networkReview.target!==JSON.stringify(target)))return unavailable('Read and review the exact unsigned Genesis on this target before signing.');
  if(operation==='vpn_enroll'){
@@ -123,6 +123,37 @@ export function vpnView(value){
  const fields=['service_registered','enrollment_staged','enrollment_recorded','reconciliation_required','server_bound','connected'];
  if(value?.schema!=='nodenetwork-vpn-status-v1'||fields.some(key=>typeof value[key]!=='boolean')||(value.overlay_address!==null&&(typeof value.overlay_address!=='string'||!/^[0-9a-fA-F:.]{1,45}(?:\/[0-9]{1,3})?$/.test(value.overlay_address))))throw Error('The controller returned an unsupported VPN status.');
  return {...Object.fromEntries(fields.map(key=>[key,value[key]])),overlay_address:value.overlay_address};
+}
+
+// Diagnostics are observations only. Never expose raw logs or infer enrollment
+// success from a live client, a provider-issued key or a reachable peer.
+export function vpnDiagnosticsView(value){
+ const fail=()=>{throw Error('The controller returned unsupported VPN diagnostics.');};
+ const time=v=>Number.isSafeInteger(v)&&v>=0&&v<=8640000000000000;
+ const flag=v=>typeof v==='boolean';
+ const literalIp=v=>{
+  if(typeof v!=='string'||v.length>45)return false;
+  if(!v.includes(':'))return /^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$/.test(v)&&v.split('.').every(p=>Number(p)<=255);
+  if(!/^[0-9a-fA-F:.]+$/.test(v))return false;
+  try{return new URL(`https://[${v}]/`).hostname.startsWith('[');}catch{return false;}
+ };
+ const cidr=v=>{if(typeof v!=='string')return false;const parts=v.split('/');return parts.length===2&&literalIp(parts[0])&&/^(0|[1-9][0-9]{0,2})$/.test(parts[1])&&Number(parts[1])<=(parts[0].includes(':')?128:32);};
+ const oneOf=(v,allowed)=>v===null||allowed.includes(v);
+ if(value?.schema!=='nodenetwork-vpn-diagnostics-v1'||!time(value.observed_at_ms)||value.mutation_performed!==false)fail();
+ const fields=['service_registered','enrollment_staged','enrollment_recorded','reconciliation_required','server_bound'];
+ if(fields.some(k=>!flag(value.enrollment?.[k])))fail();
+ const t=value.trust,c=value.client,l=value.log;
+ if(!t||!oneOf(t.mode,['approved_private_ca','system'])||!oneOf(t.error_code,['approved_trust_scope_refused']))fail();
+ if(!c||!flag(c.available)||!oneOf(c.management_connected,[true,false])||!oneOf(c.signal_connected,[true,false])||
+   !(c.wireguard_public_key===null||typeof c.wireguard_public_key==='string'&&/^[A-Za-z0-9+/]{43}=$/.test(c.wireguard_public_key))||
+   !(c.overlay_address===null||cidr(c.overlay_address))||!oneOf(c.error_code,['client_status_timeout','client_status_unavailable']))fail();
+ if(!Array.isArray(value.peers)||value.peers.length>5||new Set(value.peers.map(p=>p?.ip)).size!==value.peers.length||value.peers.some(p=>!literalIp(p?.ip)||!flag(p.route_via_wt0)||!flag(p.reachable)||!oneOf(p.error_code,['peer_unreachable','peer_route_unavailable'])))fail();
+ const codes=['tls_untrusted','tls_expired','tls_name_mismatch','setup_key_rejected','transport_timeout','connection_refused','interface_permission'];
+ if(!l||!flag(l.available)||!(l.modified_at_ms===null||time(l.modified_at_ms))||!Number.isSafeInteger(l.sampled_bytes)||l.sampled_bytes<0||l.sampled_bytes>65536||!Array.isArray(l.codes)||l.codes.some(x=>!codes.includes(x))||JSON.stringify(l.codes)!==JSON.stringify([...new Set(l.codes)].sort()))fail();
+ return {observed_at_ms:value.observed_at_ms,enrollment:Object.fromEntries(fields.map(k=>[k,value.enrollment[k]])),
+  trust:{mode:t.mode,error_code:t.error_code},client:{available:c.available,management_connected:c.management_connected,signal_connected:c.signal_connected,wireguard_public_key:c.wireguard_public_key,overlay_address:c.overlay_address,error_code:c.error_code},
+  peers:value.peers.map(p=>({ip:p.ip,route_via_wt0:p.route_via_wt0,reachable:p.reachable,error_code:p.error_code})),
+  log:{available:l.available,modified_at_ms:l.modified_at_ms,sampled_bytes:l.sampled_bytes,codes:[...l.codes]},mutation_performed:false};
 }
 
 export function authorizationView(value){
