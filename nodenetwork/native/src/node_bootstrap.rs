@@ -212,7 +212,148 @@ async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload
  Ok(reply)
 }
 
+// Fixed, read-only proof. No renderer-selected commands, paths, units or accounts.
+const CLEAN_BOOTSTRAP_PROOF:&str=r#"
+import os,sys,json,pwd,grp,subprocess,fnmatch
+from pathlib import Path
+ROOTS=('/opt/synergy','/opt/Synergy')
+PATTERNS=('synergy-node*.service','synergy-validator*.service','synergy-vpn*.service','synergy-canary-*.service','synergy-posy-*.service','synergy-installation-guard*.service','synergy-guest-*.service')
+def require(ok):
+    if not ok: raise ValueError('Bootstrap absence is not proven')
+def bounded(path,limit):
+    with open(path,'rb') as f: data=f.read(limit+1)
+    require(len(data)<=limit)
+    return data
+def rooted(value,roots):
+    return any(value==r or value.startswith(r+'/') for r in roots)
+def clean(roots,etc,proc,mountinfo,accounts,units,service_dirs=None,ancestors=None):
+    require(all(not os.path.lexists(r) for r in roots))
+    require(accounts())
+    for directory in ('ssh/sshd_config.d','sudoers.d'):
+        d=etc/directory
+        if d.exists():
+            entries=list(d.iterdir());require(len(entries)<=4096)
+            require(not any('synergy-nodenetwork' in p.name for p in entries))
+    for base in (service_dirs if service_dirs is not None else (etc/'systemd/system',Path('/run/systemd/system'),Path('/usr/lib/systemd/system'),Path('/lib/systemd/system'))):
+        if not base.exists():continue
+        count=0
+        for current,dirs,files in os.walk(base,followlinks=False):
+            require(len(Path(current).relative_to(base).parts)<=4)
+            for name in dirs+files:
+                count+=1;require(count<=20000)
+                p=Path(current)/name
+                require(not any(fnmatch.fnmatchcase(name,pattern) for pattern in PATTERNS))
+                if p.is_symlink():require(not any(r in os.readlink(p) for r in roots))
+    require(units())
+    def mounts(data):
+        for line in data.decode('utf-8','strict').splitlines():
+            fields=line.split();require(len(fields)>=6)
+            # Reject root mounts, submounts and bind sources, including escapes.
+            decoded=[__import__('re').sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),v) for v in fields]
+            require(not any(rooted(part,roots) for v in decoded for part in __import__('re').split(r'[=,:]',v)))
+    mounts(bounded(mountinfo,4*1024*1024))
+    if ancestors is None:
+        ancestors=set();pid=os.getpid()
+        while pid>1 and pid not in ancestors:
+            ancestors.add(pid)
+            status=bounded(Path('/proc')/str(pid)/'status',65536).decode()
+            pid=int(next(line.split()[1] for line in status.splitlines() if line.startswith('PPid:')))
+    entries=list(proc.iterdir());require(len(entries)<=32768)
+    for entry in entries:
+        if not entry.name.isdecimal():continue
+        try:
+            command=bounded(entry/'cmdline',262144)
+            args=command.split(b'\0')
+            require(not any(rooted(a.decode('utf-8','replace'),roots) for a in args))
+            for leaf in ('exe','cwd'):
+                require(not rooted(os.readlink(entry/leaf).removesuffix(' (deleted)'),roots))
+            mounts(bounded(entry/'mountinfo',4*1024*1024))
+            mappings=bounded(entry/'maps',8*1024*1024).decode('utf-8','replace')
+            require(not any(rooted(line.split(None,5)[-1].removesuffix(' (deleted)'),roots) for line in mappings.splitlines()))
+            descriptors=list((entry/'fd').iterdir());require(len(descriptors)<=65536)
+            for descriptor in descriptors:
+                try:require(not rooted(os.readlink(descriptor).removesuffix(' (deleted)'),roots))
+                except FileNotFoundError:continue
+            if int(entry.name) not in ancestors:
+                require(not any(m in command for m in (b'NATIVE_AUTHENTICATED_MANIFEST_SHA256=',b'--stage-engineering-update',b'--bare-bootstrap-',b'synergy-node',b'/opt/synergy',b'/opt/Synergy')))
+        except (FileNotFoundError,ProcessLookupError):continue
+    require(all(not os.path.lexists(r) for r in roots))
+def accounts_absent():
+    for lookup in (pwd.getpwnam,grp.getgrnam):
+        try:lookup('synergy-nodenetwork')
+        except KeyError:continue
+        return False
+    return True
+def units_absent():
+    for verb in ('list-unit-files','list-units'):
+        result=subprocess.run(['/usr/bin/systemctl',verb,'--all','--no-legend','--no-pager','--plain',*PATTERNS],capture_output=True,timeout=8,check=False)
+        require(not result.stdout and not result.stderr)
+        require(result.returncode==0 or (verb=='list-unit-files' and result.returncode==1))
+    return True
+if __name__=='__main__':
+    try:
+        require(os.geteuid()==0)
+        challenge=sys.argv[1];require(len(challenge)==64 and all(c in '0123456789abcdef' for c in challenge))
+        clean(ROOTS,Path('/etc'),Path('/proc'),Path('/proc/self/mountinfo'),accounts_absent,units_absent)
+        print(json.dumps({'schema':'nodenetwork-bootstrap-absence-v1','challenge':challenge,'absent':True},separators=(',',':')))
+    except Exception:
+        sys.stderr.write('Exact clean bootstrap absence could not be verified.\n');sys.exit(1)
+"#;
+pub(super) async fn prove_clean_bootstrap(target:&Target,operator:&str,prepared:&Prepared,control:&Path,known_hosts:Option<&Path>,challenge:&str)->Result<(),String>{
+    target.validate()?;validate_operator(operator)?;authenticate_release(&prepared.manifest_sha256)?;
+    if target.kind!="remote"{return Err("Uncertain bootstrap absence currently requires a pinned remote Linux target".into())}
+    let _guard=node_controller::SERIAL.lock().await;
+    node_controller::close_connection_checked(target,control,operator).await?;
+    let pin=if target.guest.is_none()&&known_hosts.is_none(){Some(node_controller::bootstrap_host_pin(target,control)?)}else{None};
+    let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {}",shell_quote_static(CLEAN_BOOTSTRAP_PROOF),shell_quote_static(challenge));
+    let mut cmd=node_controller::remote_command(target,control,operator,&command,known_hosts.or(pin.as_deref()))?;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    let mut child=cmd.spawn().map_err(|_|"Cannot start pinned read-only bootstrap reconciliation")?;
+    let output=child.stdout.take().ok_or("Absence proof output unavailable")?;
+    let result=async{let mut bytes=Vec::new();output.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Absence proof read failed")?;
+        if bytes.len()>4096||!child.wait().await.map_err(|_|"Absence proof exit unavailable")?.success(){return Err("Exact clean bootstrap absence was not proven")}
+        let expected=json!({"schema":"nodenetwork-bootstrap-absence-v1","challenge":challenge,"absent":true});
+        if serde_json::from_slice::<Value>(&bytes).ok()!=Some(expected){return Err("Bootstrap absence response differs from this exact read-only challenge")}
+        Ok(())};
+    let result=tokio::time::timeout(Duration::from_secs(60),result).await.map_err(|_|"Bootstrap absence proof timed out; journal remains uncertain".to_string()).and_then(|r|r.map_err(String::from));
+    drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
+}
+
 #[cfg(test)] mod tests {
+    #[test]fn clean_bootstrap_proof_rejects_partial_state_and_active_bootstrap(){
+     let fixture=r#"
+import tempfile
+with tempfile.TemporaryDirectory() as temp:
+    base=Path(temp);etc=base/'etc';proc=base/'proc';etc.mkdir();proc.mkdir()
+    roots=(str(base/'synergy'),str(base/'Synergy'));mount=base/'mountinfo';mount.write_text('1 0 0:1 / / rw - tmpfs tmpfs rw\n')
+    def prove(accounts=lambda:True,units=lambda:True):clean(roots,etc,proc,mount,accounts,units,(etc/'systemd/system',),set())
+    def denied():
+        try:prove()
+        except (ValueError,OSError):return
+        raise AssertionError('partial state accepted')
+    prove()
+    Path(roots[0]).mkdir();denied();Path(roots[0]).rmdir()
+    Path(roots[1]).symlink_to(base/'absent');denied();Path(roots[1]).unlink()
+    d=etc/'sudoers.d';d.mkdir();p=d/'synergy-nodenetwork';p.write_text('public fixture');denied();p.unlink()
+    d=etc/'systemd/system';d.mkdir(parents=True);p=d/'synergy-installation-guard.service';p.symlink_to(base/'absent');denied();p.unlink()
+    mount.write_text('1 0 0:1 / '+roots[0]+' rw - tmpfs tmpfs rw\n');denied();mount.write_text('1 0 0:1 / / rw - tmpfs tmpfs rw\n')
+    process=proc/'999999';process.mkdir();(process/'cmdline').write_bytes(b'python3\0-c\0NATIVE_AUTHENTICATED_MANIFEST_SHA256=x\0')
+    (process/'exe').symlink_to('/usr/bin/python3');(process/'cwd').symlink_to('/');(process/'mountinfo').write_bytes(mount.read_bytes());(process/'maps').write_text('');(process/'fd').mkdir();denied()
+    (process/'cmdline').write_bytes(b'ordinary-process\0');prove()
+    descriptor=process/'fd/3';descriptor.symlink_to(roots[0]+'/deleted (deleted)');denied();descriptor.unlink()
+    (process/'maps').write_text('0-1 r--p 0 0:0 0 '+roots[1]+'/mapped (deleted)\n');denied();(process/'maps').write_text('')
+    mount.write_text('1 0 0:1 / '+roots[0].replace('/',r'\057')+' rw - tmpfs tmpfs rw\n');denied();mount.write_text('1 0 0:1 / / rw - overlay overlay rw,lowerdir='+roots[0]+'/deleted\n');denied();mount.write_text('1 0 0:1 / / rw - tmpfs tmpfs rw\n')
+    (process/'cwd').unlink();(process/'cwd').symlink_to(roots[0]);denied()
+    for check in ((lambda:False,lambda:True),(lambda:True,lambda:False)):
+        try:prove(*check)
+        except ValueError:continue
+        raise AssertionError('account or units accepted')
+"#;
+     // Execute the same fixed checker, with only filesystem fixtures substituted.
+     let script=format!("scope={{'__name__':'fixture'}}\nexec({},scope)\nexec({},scope)",serde_json::to_string(CLEAN_BOOTSTRAP_PROOF).unwrap(),serde_json::to_string(fixture).unwrap());
+     let out=std::process::Command::new("/usr/bin/python3").args(["-I","-B","-c",&script]).output().unwrap();
+     assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+    }
     #[test]fn public_archive_upload_deadline_is_bounded_by_authenticated_size(){
      assert_eq!(super::archive_upload_deadline(1024,MAX_ARCHIVE).unwrap().as_secs(),301);
      assert_eq!(super::archive_upload_deadline(512*1024,MAX_ARCHIVE).unwrap().as_secs(),301);

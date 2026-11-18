@@ -56,8 +56,8 @@ fn reinstallation_ticket(base:&Path,target:&Target,old:&str)->Result<PathBuf,Str
 fn same_host(old:&Value,new:&Value)->bool{old["target"]==new["target"]}
 /// Called only after native bootstrap confirmation, before dispatch. The master
 /// bootstrap independently rejects an existing root, services or foreign state.
-pub(super) fn prepare_reinstallation(base:&Path,target:&Target,operator:&str,selection:&Value,request:&Value)->Result<(),String>{
- if !initial_path(base,target)?.exists(){return Ok(())}
+pub(super) fn prepare_reinstallation(base:&Path,target:&Target,operator:&str,selection:&Value,request:&Value)->Result<Option<crate::request_journal::BootstrapRetry>,String>{
+ if !initial_path(base,target)?.exists(){return Ok(None)}
  let(record,doc)=initial(base,target)?;
  if !cfg!(debug_assertions)||record.operator!=operator{return Err("Reinstallation must retain its independently approved administrative identity".into())}
  crate::vpn_enrollment::require_terminal(base,target,&doc)?;
@@ -65,7 +65,19 @@ pub(super) fn prepare_reinstallation(base:&Path,target:&Target,operator:&str,sel
   let path=folder(base)?.join(format!("{prefix}-{}.json",hash(target.journal_identity().to_string().as_bytes())));
   if path.exists()||path.is_symlink(){return Err("Prior authorization mutation is uncertain; reconcile before reinstallation".into())}
  }
- crate::request_journal::with_latest_success(base,&target.journal_identity(),"uninstall",|terminal|save(&reinstallation_ticket(base,target,&hash(record.document.as_bytes()))?,&json!({"old_initial_sha256":hash(record.document.as_bytes()),"selection":selection,"removal":terminal,"bootstrap_request_sha256":hash(request.to_string().as_bytes())})))
+ let old=hash(record.document.as_bytes());let path=reinstallation_ticket(base,target,&old)?;
+ if path.exists()||path.is_symlink(){
+  let ticket:Value=serde_json::from_slice(&read(&path,4096)?).map_err(|_|"Malformed saved reinstall ticket")?;
+  validate_retry_ticket(&ticket,&old,selection,request)?;
+  if let Some(retry)=crate::request_journal::bootstrap_retry(base,&target.journal_identity(),request,&ticket["removal"])?{return Ok(Some(retry))}
+ }
+ crate::request_journal::with_latest_success(base,&target.journal_identity(),"uninstall",|terminal|save(&path,&json!({"old_initial_sha256":old,"selection":selection,"removal":terminal,"bootstrap_request_sha256":hash(request.to_string().as_bytes())})))?;
+ Ok(None)
+}
+fn validate_retry_ticket(ticket:&Value,old:&str,selection:&Value,request:&Value)->Result<(),String>{
+ if ticket.as_object().is_none_or(|m|m.len()!=4)||ticket["old_initial_sha256"]!=old||&ticket["selection"]!=selection||ticket["bootstrap_request_sha256"]!=hash(request.to_string().as_bytes()){
+  return Err("Saved reinstall ticket differs from this incarnation, selection or exact bootstrap request".into())
+ }Ok(())
 }
 fn replacement_allowed(old:&Value,new:&Value,ticket:&Value,boot:&Value,old_sha:&str)->Result<(),String>{
  if !same_host(old,new)||new["sequence"]!=1||!new["artifacts"]["formation-context.json"].as_str().is_some_and(|p|p.len()==64)||old["artifacts"]["formation-context.json"]==new["artifacts"]["formation-context.json"]{return Err("New installation requires a distinct approved formation, sequence1 and identical host identity".into())}
@@ -367,6 +379,14 @@ pub(super) async fn update_context(base:&Path,target:&Target,control:&Path)->Res
 
 #[cfg(test)]mod reinstallation_tests{
  use super::*;
+ #[test]fn saved_retry_ticket_cannot_change_incarnation_selection_or_request(){
+  let old="a".repeat(64);let selection=json!({"release_id":"exact","manifest_sha256":"b".repeat(64)});let request=json!({"bootstrap":"exact"});
+  let ticket=json!({"old_initial_sha256":old,"selection":selection,"bootstrap_request_sha256":hash(request.to_string().as_bytes()),"removal":{"id":"c".repeat(64),"request_sha256":"d".repeat(64)}});
+  validate_retry_ticket(&ticket,&old,&selection,&request).unwrap();
+  for field in ["old_initial_sha256","selection","bootstrap_request_sha256"]{let mut changed=ticket.clone();changed[field]=Value::Null;assert!(validate_retry_ticket(&changed,&old,&selection,&request).is_err());}
+  let mut changed=ticket.clone();changed["extra"]=json!(true);assert!(validate_retry_ticket(&changed,&old,&selection,&request).is_err());
+  assert!(validate_retry_ticket(&ticket,&"e".repeat(64),&selection,&request).is_err());assert!(validate_retry_ticket(&ticket,&old,&json!({"other":1}),&request).is_err());
+ }
  #[test]fn removal_must_prove_exact_root_no_backup_and_no_remaining_records(){
   let target=Target{kind:"remote".into(),host:Some("example".into()),port:Some(22),root:"/opt/synergy".into(),guest:None};
   let good=json!({"version":1,"ok":true,"result":{"removed_root":"/opt/synergy","logical_removal_verified":true,"backup_created":false,"remaining_host_managed_records":[]}});assert!(verify_removal(&target,good.clone()).is_ok());

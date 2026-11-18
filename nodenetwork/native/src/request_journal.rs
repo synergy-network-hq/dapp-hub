@@ -99,6 +99,7 @@ fn load(path: &Path) -> Result<Vec<Record>, String> {
             "dispatch_intent" => record.observed_at_ms.is_none() && record.response_ok.is_none(),
             "uncertain" => record.observed_at_ms.is_some() && record.response_ok.is_none(),
             "response_received" => record.observed_at_ms.is_some() && record.response_ok.is_some(),
+            "verified_bootstrap_absence" => record.operation=="bootstrap" && record.observed_at_ms.is_some() && record.response_ok.is_none(),
             "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "guest_create" | "formation_prepare"|"genesis_stage"|"genesis_bind"),
             _ => false,
         };
@@ -144,16 +145,81 @@ pub(super) fn with_latest_success<T>(base:&Path,target:&Value,operation:&str,app
     apply(json!({"id":record.id,"request_sha256":record.request_digest}))
 }
 
+/// A short-lived CAS ticket, never an approval or a replay instruction.
+pub(super) struct BootstrapAbsence {
+    id:String, scope:String, request:String, recorded:u64, observed:u64,
+    snapshot:String, issued:std::time::Instant,
+}
+fn bootstrap_candidate(records:&[Record],scope:&str,request:&str)->Result<Option<&'static str>,String>{
+    let scoped=records.iter().filter(|r|r.target_digest==scope).collect::<Vec<_>>();
+    let pending=scoped.iter().filter(|r|matches!(r.state.as_str(),"dispatch_intent"|"uncertain")).collect::<Vec<_>>();
+    if pending.is_empty(){return Ok(None)}
+    let latest=scoped.first().ok_or_else(failure)?;let clock=now()?;
+    if pending.len()!=1||latest.id!=pending[0].id||latest.state!="uncertain"||latest.operation!="bootstrap"||latest.request_digest!=request
+        ||latest.recorded_at_ms>clock||latest.observed_at_ms.is_none_or(|at|at>clock)
+        ||scoped.iter().skip(1).any(|r|r.recorded_at_ms>=latest.recorded_at_ms){
+        return Err("Only the exact latest uncertain bootstrap can be reconciled; other operations and changed requests remain fenced.".into())
+    }
+    Ok(Some("exact uncertain bootstrap"))
+}
+fn snapshot(records:&[Record],scope:&str)->Result<String,String>{
+    Ok(digest(&serde_json::to_value(records.iter().filter(|r|r.target_digest==scope).collect::<Vec<_>>()).map_err(|_|failure())?))
+}
+pub(super) fn bootstrap_absence_candidate(base:&Path,target:&Value,request:&Value)->Result<Option<BootstrapAbsence>,String>{
+    let _serial=SERIAL.lock().map_err(|_|failure())?;
+    let Some(path)=directory(base,false)?else{return Ok(None)};
+    let _writer=WriterLock::acquire(&path)?;
+    let scope=scoped_digest(base,target)?;let records=load(&path)?;let request=digest(request);
+    if bootstrap_candidate(&records,&scope,&request)?.is_none(){return Ok(None)}
+    let r=records.iter().find(|r|r.target_digest==scope).ok_or_else(failure)?;
+    Ok(Some(BootstrapAbsence{id:r.id.clone(),scope:scope.clone(),request,recorded:r.recorded_at_ms,observed:r.observed_at_ms.ok_or_else(failure)?,snapshot:snapshot(&records,&scope)?,issued:std::time::Instant::now()}))
+}
+impl BootstrapAbsence {pub(super) fn challenge(&self)->String{digest(&json!([self.id,self.scope,self.request,self.recorded,self.observed,now().unwrap_or(0),std::process::id()]))}}
+pub(super) fn verify_bootstrap_absence(base:&Path,target:&Value,request:&Value,ticket:BootstrapAbsence)->Result<(),String>{
+    let _serial=SERIAL.lock().map_err(|_|failure())?;
+    let path=directory(base,false)?.ok_or_else(failure)?;let _writer=WriterLock::acquire(&path)?;
+    let scope=scoped_digest(base,target)?;let mut records=load(&path)?;let request=digest(request);
+    if ticket.issued.elapsed()>std::time::Duration::from_secs(120)||scope!=ticket.scope||request!=ticket.request
+        ||snapshot(&records,&scope)?!=ticket.snapshot||bootstrap_candidate(&records,&scope,&request)?.is_none(){return Err("Bootstrap absence proof is stale or its journal changed; no outcome was reconciled.".into())}
+    let r=records.iter_mut().find(|r|r.id==ticket.id).ok_or_else(failure)?;
+    if r.recorded_at_ms!=ticket.recorded||r.observed_at_ms!=Some(ticket.observed){return Err(failure())}
+    r.state="verified_bootstrap_absence".into();r.observed_at_ms=Some(now()?);
+    // Explicit verified absence is neither success nor custody completion.
+    write(&path,r,false)
+}
+
+pub(super) struct BootstrapRetry{scope:String,request:String,snapshot:String}
+/// Only the directly subsequent exact verified-absence record may reuse the
+/// saved successful-uninstall ticket. No other terminal records are skipped.
+pub(super) fn bootstrap_retry(base:&Path,target:&Value,request:&Value,removal:&Value)->Result<Option<BootstrapRetry>,String>{
+    let _serial=SERIAL.lock().map_err(|_|failure())?;let path=directory(base,false)?.ok_or_else(failure)?;
+    let _writer=WriterLock::acquire(&path)?;let records=load(&path)?;let scope=scoped_digest(base,target)?;
+    let scoped=records.iter().filter(|r|r.target_digest==scope).collect::<Vec<_>>();
+    if scoped.first().is_none_or(|r|r.state!="verified_bootstrap_absence"){return Ok(None)}
+    let clock=now()?;let request=digest(request);
+    if scoped.len()<2||scoped.iter().any(|r|matches!(r.state.as_str(),"uncertain"|"dispatch_intent"))
+        ||removal.as_object().is_none_or(|m|m.len()!=2)||!removal["id"].as_str().is_some_and(pin)||!removal["request_sha256"].as_str().is_some_and(pin){return Err(failure())}
+    let (absence,uninstall)=(scoped[0],scoped[1]);
+    if absence.operation!="bootstrap"||absence.request_digest!=request||absence.recorded_at_ms>clock||absence.observed_at_ms.is_none_or(|t|t>clock)
+        ||uninstall.operation!="uninstall"||uninstall.state!="response_received"||uninstall.response_ok!=Some(true)
+        ||removal["id"]!=uninstall.id||removal["request_sha256"]!=uninstall.request_digest
+        ||absence.recorded_at_ms<=uninstall.recorded_at_ms||scoped.iter().skip(2).any(|r|r.recorded_at_ms>=uninstall.recorded_at_ms){return Err("Saved reinstall ticket is not the exact immediately preceding successful removal".into())}
+    Ok(Some(BootstrapRetry{scope:scope.clone(),request,snapshot:snapshot(&records,&scope)?}))
+}
+
 pub struct Dispatch { directory: PathBuf, record: Record }
 impl Dispatch {
     /// Caller must validate the typed target/request and obtain native consent first.
-    pub fn begin(base: &Path, target: &Value, operation: &str, request: &Value) -> Result<Self, String> {
+    pub fn begin(base: &Path, target: &Value, operation: &str, request: &Value) -> Result<Self, String> {Self::begin_checked(base,target,operation,request,None)}
+    pub(super) fn begin_bootstrap(base:&Path,target:&Value,request:&Value,retry:Option<BootstrapRetry>)->Result<Self,String>{Self::begin_checked(base,target,"bootstrap",request,retry)}
+    fn begin_checked(base:&Path,target:&Value,operation:&str,request:&Value,retry:Option<BootstrapRetry>)->Result<Self,String>{
         let _serial = SERIAL.lock().map_err(|_| failure())?;
         if !matches!(operation, "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "guest_create" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;
         let target_digest = scoped_digest(base,target)?;
+        if let Some(ticket)=retry{if operation!="bootstrap"||target_digest!=ticket.scope||digest(request)!=ticket.request||snapshot(&records,&target_digest)?!=ticket.snapshot{return Err("Reinstallation retry journal changed; no bootstrap was sent".into())}}
         if records.iter().any(|r| r.target_digest == target_digest && matches!(r.state.as_str(),"dispatch_intent"|"uncertain")) {
             return Err("An earlier local dispatch for this target has an uncertain outcome. Reconcile the target through a qualified procedure before another mutation; Portal will not replay or clear it automatically.".into());
         }
@@ -214,6 +280,59 @@ pub fn inspect(base: &Path) -> Result<Value, String> {
  use super::*;
  struct Cleanup(PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
  fn scratch()->Cleanup{let p=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-incarnation-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));fs::create_dir(&p).unwrap();Cleanup(p)}
+ #[test]fn reinstall_retry_requires_direct_exact_removal_and_cas_unchanged_scope(){
+  let c=scratch();let t=json!({"host":"pinned","root":"/opt/synergy"});let q=json!({"bootstrap":"exact"});
+  Dispatch::begin(&c.0,&t,"uninstall",&json!({})).unwrap().finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
+  let removal=with_latest_success(&c.0,&t,"uninstall",Ok).unwrap();std::thread::sleep(std::time::Duration::from_millis(2));
+  Dispatch::begin(&c.0,&t,"bootstrap",&q).unwrap().finish(&Err("timeout".into())).unwrap();
+  let proof=bootstrap_absence_candidate(&c.0,&t,&q).unwrap().unwrap();let replay=bootstrap_absence_candidate(&c.0,&t,&q).unwrap().unwrap();
+  verify_bootstrap_absence(&c.0,&t,&q,proof).unwrap();assert!(verify_bootstrap_absence(&c.0,&t,&q,replay).is_err());
+  assert!(bootstrap_retry(&c.0,&t,&json!({"changed":true}),&removal).is_err());
+  let mut changed=removal.clone();changed["id"]=json!("a".repeat(64));assert!(bootstrap_retry(&c.0,&t,&q,&changed).is_err());
+  let retry=bootstrap_retry(&c.0,&t,&q,&removal).unwrap().unwrap();
+  let path=directory(&c.0,false).unwrap().unwrap();let mut newer=load(&path).unwrap().remove(0);newer.id="f".repeat(64);newer.operation="install".into();newer.recorded_at_ms+=1;newer.state="response_received".into();newer.response_ok=Some(false);write(&path,&newer,true).unwrap();
+  assert!(Dispatch::begin_bootstrap(&c.0,&t,&q,Some(retry)).is_err());assert!(bootstrap_retry(&c.0,&t,&q,&removal).unwrap().is_none());
+  fs::remove_file(path.join(format!("{}.json",newer.id))).unwrap();
+  let retry=bootstrap_retry(&c.0,&t,&q,&removal).unwrap().unwrap();
+  let parent=c.0.join("nodenetwork-engineering-v1");fs::create_dir(&parent).unwrap();
+  let pointer=parent.join(format!("incarnation-{}.json",digest(&t)));fs::write(&pointer,serde_json::to_vec(&json!({"initial_sha256":"a".repeat(64),"target_sha256":digest(&t)})).unwrap()).unwrap();
+  #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;fs::set_permissions(&pointer,fs::Permissions::from_mode(0o600)).unwrap();}
+  assert!(Dispatch::begin_bootstrap(&c.0,&t,&q,Some(retry)).is_err());assert!(bootstrap_retry(&c.0,&t,&q,&removal).unwrap().is_none());
+  fs::remove_file(pointer).unwrap();
+  let retry=bootstrap_retry(&c.0,&t,&q,&removal).unwrap().unwrap();Dispatch::begin_bootstrap(&c.0,&t,&q,Some(retry)).unwrap();
+ }
+ #[test]fn uncertain_bootstrap_absence_is_exact_terminal_and_never_success(){
+  let c=scratch();let t=json!({"host":"pinned","root":"/opt/synergy"});let q=json!({"operation":"bootstrap","operator":"admin","bootstrapPin":"script","parameters":{"manifest":"exact"}});
+  assert!(bootstrap_absence_candidate(&c.0,&t,&q).unwrap().is_none());
+  let d=Dispatch::begin(&c.0,&t,"bootstrap",&q).unwrap();
+  assert!(bootstrap_absence_candidate(&c.0,&t,&q).is_err());
+  d.finish(&Err("timeout".into())).unwrap();
+  assert!(bootstrap_absence_candidate(&c.0,&t,&json!({"changed":true})).is_err());
+  assert!(bootstrap_absence_candidate(&c.0,&json!({"host":"foreign"}),&q).unwrap().is_none());
+  let ticket=bootstrap_absence_candidate(&c.0,&t,&q).unwrap().unwrap();
+  verify_bootstrap_absence(&c.0,&t,&q,ticket).unwrap();
+  let records=inspect(&c.0).unwrap();let r=&records["records"][0];
+  assert_eq!(r["state"],"verified_bootstrap_absence");assert!(r["response_ok"].is_null());
+  assert!(with_latest_success(&c.0,&t,"bootstrap",Ok).is_err());
+  assert!(bootstrap_absence_candidate(&c.0,&t,&q).unwrap().is_none());
+  std::thread::sleep(std::time::Duration::from_millis(2));
+  Dispatch::begin(&c.0,&t,"bootstrap",&q).unwrap().finish(&Err("new timeout".into())).unwrap();
+  let mut ticket=bootstrap_absence_candidate(&c.0,&t,&q).unwrap().unwrap();ticket.issued=std::time::Instant::now()-std::time::Duration::from_secs(121);
+  assert!(verify_bootstrap_absence(&c.0,&t,&q,ticket).is_err());
+ }
+ #[test]fn bootstrap_absence_cas_rejects_cross_operation_newer_and_changed_journal(){
+  let c=scratch();let t=json!({"host":"pinned"});let q=json!({"same":1});
+  Dispatch::begin(&c.0,&t,"install",&q).unwrap().finish(&Err("lost".into())).unwrap();
+  assert!(bootstrap_absence_candidate(&c.0,&t,&q).is_err());
+  let c=scratch();Dispatch::begin(&c.0,&t,"bootstrap",&q).unwrap().finish(&Err("lost".into())).unwrap();
+  let ticket=bootstrap_absence_candidate(&c.0,&t,&q).unwrap().unwrap();
+  let path=directory(&c.0,false).unwrap().unwrap();let mut records=load(&path).unwrap();
+  let r=&mut records[0];r.observed_at_ms=Some(r.observed_at_ms.unwrap().saturating_sub(1));write(&path,r,false).unwrap();
+  assert!(verify_bootstrap_absence(&c.0,&t,&q,ticket).is_err());
+  let mut newer=load(&path).unwrap().remove(0);newer.id="e".repeat(64);newer.operation="install".into();newer.recorded_at_ms+=1;newer.state="response_received".into();newer.response_ok=Some(false);write(&path,&newer,true).unwrap();
+  assert!(bootstrap_absence_candidate(&c.0,&t,&q).is_err());
+  assert_eq!(inspect(&c.0).unwrap()["records"].as_array().unwrap().len(),2);
+ }
  #[test]fn terminal_uninstall_requires_latest_success_and_never_clears_uncertainty(){
   let c=scratch();let t=json!({"host":"example","root":"/opt/synergy"});
   assert!(with_latest_success(&c.0,&t,"uninstall",Ok).is_err());

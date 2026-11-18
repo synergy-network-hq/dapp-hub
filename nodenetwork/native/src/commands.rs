@@ -123,16 +123,25 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
   node_bootstrap::prepare(&root,&key,&fields).map(Some)
  }).await.map_err(|_|"Master bootstrap inspection did not finish.")??;
  let Some(prepared)=prepared else{return Ok(None)};
+ let base=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no bootstrap was sent.")?;
+ let bootstrap_request=serde_json::json!({"version":1,"operation":"bootstrap","operator":operator,"parameters":parameters,"bootstrapPin":node_bootstrap::script_pin()});
+ let reconciliation=request_journal::bootstrap_absence_candidate(&base,&target.journal_identity(),&bootstrap_request)?;
+ let reconciliation_notice=if reconciliation.is_some(){"\n\nAn exact previous bootstrap is UNCERTAIN. This confirmation authorizes ONLY a pinned, read-only absence check of both Synergy roots, registrations, accounts, mounts and application/bootstrap processes. Only a fully clean proof resolves that journal entry as verified absence, never success. No bootstrap is retried in this action; you must confirm a fresh Bootstrap action separately."}else{""};
  let message=format!("Target: {}\nAdministrative account: {}\nRoot: /opt/synergy\nRelease: {}\nManifest SHA-256: {}\nEmbedded bootstrap SHA-256: {}\nNetwork incarnation: {}\nChain: {}\nNode name: {}\nOperator public-key SHA-256: {}\n\nThis stages the verified software and installs a restricted host controller account, rooted SSH/sudo definitions and the automatic removal guard. The target must be clean. No community enrollment, custody creation, consensus membership or activation is authorized. No passwords are requested or stored by Portal.",target.label(),operator,prepared.release,prepared.manifest_sha256,node_bootstrap::script_pin(),parameters["network_id"],parameters["chain_id"],parameters["node_name"],format_args!("{:x}",Sha256::digest(prepared.public_key.as_bytes())));
+ let message=format!("{message}{reconciliation_notice}");
  let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title("Authorize NodeNetwork target bootstrap")
   .buttons(MessageDialogButtons::OkCancelCustom("Bootstrap selected target once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Bootstrap confirmation did not finish.")?;
  if !confirmed{return Err("Operator canceled; no bootstrap was sent.".into());}
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
- let base=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no bootstrap was sent.")?;
- let bootstrap_request=serde_json::json!({"version":1,"operation":"bootstrap","operator":operator,"parameters":parameters,"bootstrapPin":node_bootstrap::script_pin()});
- crate::authorization_lifecycle::prepare_reinstallation(&base,&target,&operator,&parameters,&bootstrap_request)?;
+ if let Some(ticket)=reconciliation{
+  let pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
+  node_bootstrap::prove_clean_bootstrap(&target,&operator,&prepared,&directory,pin.as_deref(),&ticket.challenge()).await?;
+  request_journal::verify_bootstrap_absence(&base,&target.journal_identity(),&bootstrap_request,ticket)?;
+  return Err("The exact prior uncertain bootstrap was reconciled as verified clean absence, not success. No bootstrap was retried. Select Bootstrap and confirm again to authorize one fresh attempt.".into())
+ }
+ let retry=crate::authorization_lifecycle::prepare_reinstallation(&base,&target,&operator,&parameters,&bootstrap_request)?;
  let pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
- let dispatch=request_journal::Dispatch::begin(&base,&target.journal_identity(),"bootstrap",&bootstrap_request)?;
+ let dispatch=request_journal::Dispatch::begin_bootstrap(&base,&target.journal_identity(),&bootstrap_request,retry)?;
  let expected=parameters.clone();
  let result=node_bootstrap::execute_pinned(target,operator,parameters,prepared,&directory,pin.as_deref()).await.and_then(|reply|{
   if reply["ok"]==true&&(reply["result"]["root"]!="/opt/synergy"||reply["result"]["stagedRelease"]!=expected["release_id"]||reply["result"]["manifestSha256"]!=expected["manifest_sha256"]||reply["result"]["controllerEnrolled"]!=true||reply["result"]["softwareInstalled"]!=false||reply["result"]["rootDeletionGuardActive"]!=true){return Err("Fresh bootstrap receipt differs; preserve the native journal for reconciliation".into())}Ok(reply)
