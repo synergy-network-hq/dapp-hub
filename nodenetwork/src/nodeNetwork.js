@@ -1,3 +1,9 @@
+// Public observations never grant enrollment, installation or signing authority.
+export const CANARY_PROFILE = Object.freeze({
+ id:'posy-canary', name:'PoSy Canary', chainId:99999,
+ rpc:'https://canary-rpc.synergy-network.io',
+});
+
 export function nodeNetworkTarget(value) {
  if(value?.root!==undefined&&value.root!=='/opt/synergy')throw Error('Saved validator root is unsupported; recover the original configuration before selecting a target.');
  if(value?.kind==='local'&&value.guest!=null)throw Error('Managed guest requires its physical host.');
@@ -39,6 +45,7 @@ export async function readNodeNetwork(request, profile, signal) {
  return {chain,chainReceivedAt,observations,receivedAt,errors,checkedAt:Date.now()};
 }
 
+export const R5_BASELINE=Object.freeze({release_id:'synergy-linux-389c509e47e55219',manifest_sha256:'43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b'});
 export function controllerOperation(target,operation){
  const unavailable={available:false,blocker:'Inspect an enrolled target to establish unambiguous controller capabilities.'};
  if(!Array.isArray(target?.operations)||target.operations.length>100)return unavailable;
@@ -47,17 +54,38 @@ export function controllerOperation(target,operation){
  const entry=matches[0];
  return entry.available===true||(target.engineeringContinuation===true&&entry.engineeringContinuation===true)?{available:true,blocker:null}:{available:false,blocker:typeof entry.blocker==='string'&&entry.blocker.length>0&&entry.blocker.length<=512&&!/[\u0000-\u001f\u007f]/.test(entry.blocker)?entry.blocker:unavailable.blocker};
 }
+export const validReleaseId=value=>typeof value==='string'&&value.length>0&&value.length<=128&&!/[^a-zA-Z0-9._-]/.test(value);
+const releaseFields=[
+ ['release_id','Release ID',validReleaseId,'Enter the approved release ID using letters, digits, dots, underscores or hyphens.'],
+ ['manifest_sha256','Manifest SHA-256',value=>typeof value==='string'&&value.length===64&&!/[^0-9a-f]/.test(value),'Enter the exact 64-character lowercase manifest SHA-256.'],
+];
+const checkFields=(fields,form)=>fields.map(([field,label,accept,message])=>({field,label,valid:accept(form?.[field]),message}));
+export const releaseReferenceChecks=form=>checkFields(releaseFields,form);
+export const validInstallNetworkId=value=>typeof value==='string'&&value.length>=2&&value.length<=128
+ && /^[a-z0-9]/.test(value)&&!/[^a-z0-9_-]/.test(value);
+export const validInstallNodeName=value=>typeof value==='string'&&value.length>=1&&value.length<=64
+ && !/[^a-zA-Z0-9_-]/.test(value);
+
 export function provisioningChecks(form){
- const checks=[
-  ['release_id','Release ID',value=>typeof value==='string'&&/^[a-zA-Z0-9._-]{1,128}$/.test(value),'Enter the approved release ID using letters, digits, dots, underscores or hyphens.'],
-  ['manifest_sha256','Manifest SHA-256',value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value),'Enter the exact 64-character lowercase manifest SHA-256.'],
-  ['network_id','Network incarnation',value=>typeof value==='string'&&/^[a-z0-9][a-z0-9_-]{1,127}$/.test(value),'Enter the exact approved network incarnation.'],
-  ['chain_id','Chain ID',value=>typeof value==='string'&&/^[1-9][0-9]{0,15}$/.test(value)&&Number.isSafeInteger(Number(value)),'Enter a positive safe integer chain ID in decimal digits without leading zeros.'],
-  ['node_name','Node name',value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(value),'Enter a node name using up to 64 letters, digits, underscores or hyphens.'],
- ];
- return checks.map(([field,label,accept,message])=>({field,label,valid:accept(form?.[field]),message}));
+ return checkFields([
+  ...releaseFields,
+  ['network_id','Network incarnation',validInstallNetworkId,'Enter the exact approved network incarnation.'],
+  ['chain_id','Chain ID',value=>typeof value==='string'&&value.length<=16&&/^[1-9]/.test(value)&&!/\D/.test(value)&&Number.isSafeInteger(Number(value)),'Enter a positive safe integer chain ID in decimal digits without leading zeros.'],
+  ['node_name','Node name',validInstallNodeName,'Enter a node name using up to 64 letters, digits, underscores or hyphens.'],
+ ],form);
 }
 export function installParameters(form){
  const failed=provisioningChecks(form).find(check=>!check.valid);if(failed)throw Error(failed.message);
  return {release_id:form.release_id,manifest_sha256:form.manifest_sha256,network_id:form.network_id,chain_id:Number(form.chain_id),node_name:form.node_name};
+}
+
+export function upgradeParameters(form){
+ const failed=releaseReferenceChecks(form).find(check=>!check.valid);
+ if(failed)throw Error(failed.message);
+ return {release_id:form.release_id,manifest_sha256:form.manifest_sha256};
+}
+
+export function sameUpgradeParameters(first,second){
+ return Boolean(first&&second&&releaseReferenceChecks(first).every(check=>check.valid)
+  &&first.release_id===second.release_id&&first.manifest_sha256===second.manifest_sha256);
 }

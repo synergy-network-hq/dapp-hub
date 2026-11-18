@@ -6,7 +6,7 @@ import {installParameters,nodeNetworkTarget} from '../src/nodeNetwork.js';
 
 const form={release_id:'release-42',manifest_sha256:'b'.repeat(64),network_id:'test-rotation-b',chain_id:'1266',node_name:'operator-node-42'};
 const target=nodeNetworkTarget({kind:'remote',host:'target.example',port:'2202'});
-const targetState=(installed,...ops)=>checkedTarget({controllerVersion:1,root:target.root,installed,operations:ops.map(operation=>({operation,available:true}))},target);
+const targetState=(installed,...ops)=>checkedTarget({controllerVersion:1,root:target.root,installed,operations:ops.map(operation=>({operation,kind:operation.endsWith('_preflight')||['target','health','inventory','identity_status','formation_status','formation_export','network_formation_status','vpn_status','vpn_diagnostics','authorization_status'].includes(operation)?'read':'mutation',available:true}))},target);
 const gate=(operation,options={})=>workflowGate({target,form,operation,permitted:true,...options});
 const review=(operation,parameters={})=>({target:JSON.stringify(target),scope:approvedReviewScope(operation,parameters)});
 
@@ -50,9 +50,9 @@ test('unsupported, missing, and ambiguous target capability fail closed',()=>{
 test('install review affirms exact release and binds exact target and all install parameters',()=>{
  const state=targetState(false,'install','install_preflight');
  const parameters=installParameters(form);
- const response={packageVerified:true,networkSelectionApproved:true,release:form.release_id,root:target.root,activationAuthorized:false};
+ const response={packageVerified:true,networkSelectionApproved:true,release:form.release_id,root:target.root,genesisAuthorityVerified:false,activationAuthorized:false};
  assert.ok(acceptedReview('install_preflight',parameters,response,target));
- for(const bad of [{...response,release:'other'},{...response,root:'/tmp/Synergy'},{...response,networkSelectionApproved:false},{...response,packageVerified:'true'}])assert.equal(acceptedReview('install_preflight',parameters,bad,target),false);
+ for(const bad of [{...response,release:'other'},{...response,root:'/tmp/Synergy'},{...response,networkSelectionApproved:false},{...response,packageVerified:'true'},{...response,activationAuthorized:true},{...response,extra:true}])assert.equal(acceptedReview('install_preflight',parameters,bad,target),false);
  assert.equal(gate('install_preflight',{state}).available,true);
  assert.equal(gate('install',{state}).available,false);
  const same=review('install_preflight',parameters);
@@ -73,7 +73,7 @@ test('upgrade uses only release inputs; removal requires review and exact root c
  assert.equal(gate('uninstall',{state,confirmation:target.root+'/',review:review('uninstall_preflight')}).available,false);
  assert.deepEqual(gate('uninstall',{state,confirmation:target.root,review:review('uninstall_preflight')}),{available:true,parameters:{confirmation:target.root}});
  assert.equal(acceptedReview('uninstall_preflight',{}, {root:target.root,destructive:true},target),false);
- assert.ok(acceptedReview('uninstall_preflight',{}, {root:target.root,destructive:true,inventory:{root:target.root,members:[]}},target));
+ assert.ok(acceptedReview('uninstall_preflight',{}, {root:target.root,destructive:true,managedAccountRemoval:true,outsideRootAuditComplete:false,forensicErasureProven:false,scopes:['chain_data','custody','recovery','other'].map(id=>({id,files:0,directories:0,sockets:0,file_bytes:'0'}))},target));
 });
 
 test('VPN response accepts CIDR and exposes only typed status fields',()=>{
@@ -164,3 +164,12 @@ test('update staging preserves exact native release and never implies an upgrade
  assert.deepEqual(updateStageView(receipt),{release_id:'reviewed-release',manifest_sha256:'a'.repeat(64),controllerAdopted:true,validatorUpgraded:false});
  for(const [key,value]of [['schema','other'],['manifestSha256','bad'],['initial_sha256',null],['parent_sha256',null],['controllerAdopted',false],['validatorUpgraded',true],['stagedRelease','../../escape']])assert.throws(()=>updateStageView({...receipt,[key]:value}));
 });
+
+ test('operation kinds cannot reclassify reads or mutations even under engineering continuation',()=>{
+  for(const [operation,kind] of [['inventory','mutation'],['start','read'],['inventory',undefined],['start','unknown']]){
+   const state=targetState(true,operation);state.engineeringContinuation=true;state.operations[0]={operation,kind,available:true,engineeringContinuation:true};
+   assert.equal(gate(operation,{state}).available,false);
+  }
+  assert.equal(gate('inventory',{state:targetState(true,'inventory')}).available,true);
+  assert.equal(gate('start',{state:targetState(true,'start')}).available,true);
+ });

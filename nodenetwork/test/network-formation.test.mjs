@@ -15,7 +15,7 @@ test('preparation cannot claim signing and signed results must match exact revie
 import {workflowGate} from '../src/operator-workflow.js';
 test('signing requires the current target unsigned review and never retries a signed network',()=>{
  const target={kind:'remote',host:'disposable.example',root:'/opt/synergy'};
- const state={installed:true,operations:['network_formation_prepare','network_formation_sign'].map(operation=>({operation,available:true}))};
+ const state={installed:true,operations:['network_formation_prepare','network_formation_sign'].map(operation=>({operation,kind:'mutation',available:true}))};
  const gate=extra=>workflowGate({target,state,permitted:true,operation:'network_formation_sign',...extra});
  assert.equal(gate({}).available,false);
  assert.equal(gate({networkReview:{...review,target:JSON.stringify(target)}}).parameters.review_sha256,p);

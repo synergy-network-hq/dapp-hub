@@ -13,7 +13,7 @@ import {
   projectFromFileList,
   projectFromZip,
 } from "../lib/ide/project";
-import { listProjects, loadProject, saveProject } from "../lib/ide/storage";
+import { listProjects, loadProject, rememberLastProject, saveProject } from "../lib/ide/storage";
 import { randomId } from "../lib/ide/id";
 import type {
   ForgeBuild,
@@ -27,6 +27,7 @@ import type {
 } from "../lib/ide/types";
 
 type CompilerStatus = "loading" | "ready" | "error";
+type WorkspaceTask = "build" | "check" | "test" | "save" | "workspace";
 
 type AbiTest = {
   name: string;
@@ -113,11 +114,7 @@ function evaluateTest(test: AbiTest, artifacts: SynqArtifacts) {
 function defaultReplaceRoute(path: string) { window.history.replaceState(null, "", path); }
 
 export function useForgeWorkspace(initialPath: string, replaceRoute: (path: string) => void = defaultReplaceRoute) {
-  const [project, setProject] = useState<ForgeProject | null>(() =>
-    projectIdFromPath(initialPath) === "local-counter"
-      ? createStarterProject()
-      : null,
-  );
+  const [project, setProject] = useState<ForgeProject | null>(null);
   const [recentProjects, setRecentProjects] = useState<ForgeProject[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>("loading");
@@ -125,11 +122,25 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
   const [builds, setBuilds] = useState<ForgeBuild[]>([]);
   const [testRuns, setTestRuns] = useState<ForgeTestRun[]>([]);
   const [taskLog, setTaskLog] = useState<ForgeTaskLog[]>([]);
-  const [busyTask, setBusyTask] = useState<"build" | "check" | "test" | null>(null);
+  const [busyTask, setBusyTask] = useState<WorkspaceTask | null>(null);
   const [notice, setNotice] = useState("");
   const persistTimer = useRef<number | null>(null);
+  const cancelScheduledSave = useCallback(() => {
+    if (persistTimer.current !== null) window.clearTimeout(persistTimer.current);
+    persistTimer.current = null;
+  }, []);
   const currentProject=useRef(project);currentProject.current=project;
   const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+  const currentTask = useRef<WorkspaceTask | null>(null);
+  const beginTask = useCallback((task: WorkspaceTask) => {
+    if (currentTask.current) throw Error("Wait for the current Forge task to finish.");
+    currentTask.current = task;
+    setBusyTask(task);
+  }, []);
+  const endTask = useCallback(() => {
+    currentTask.current = null;
+    if (alive.current) setBusyTask(null);
+  }, []);
   const taskSnapshot=(value:ForgeProject)=>JSON.stringify([value.id,value.trusted,value.files.map(file=>[file.path,file.content])]);
 
 
@@ -163,6 +174,7 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
         setProject(loaded);
         setRecentProjects(recent);
         setBuilds(loaded?.buildHistory || []);
+        setDiagnostics(loaded?.buildHistory?.[0]?.diagnostics || []);
         setTestRuns(loaded?.testHistory || []);
         setHydrated(true);
         if (loaded?.files.some((file) => file.content !== file.savedContent)) {
@@ -192,14 +204,17 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
 
   useEffect(() => {
     if (!project || !hydrated) return;
-    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    cancelScheduledSave();
     persistTimer.current = window.setTimeout(() => {
-      void saveProject({ ...project, updatedAt: now() }).catch((error) => setNotice(error instanceof Error ? error.message : "Local project save failed."));
+      persistTimer.current = null;
+      void saveProject({ ...project, updatedAt: now() }).catch((error) => {
+        if (alive.current && currentProject.current?.id === project.id) {
+          setNotice(error instanceof Error ? error.message : "Local project save failed.");
+        }
+      });
     }, 250);
-    return () => {
-      if (persistTimer.current) window.clearTimeout(persistTimer.current);
-    };
-  }, [hydrated, project]);
+    return cancelScheduledSave;
+  }, [cancelScheduledSave, hydrated, project]);
 
   const activeFile = useMemo(
     () => project?.files.find((file) => file.path === project.activeFile) || null,
@@ -211,83 +226,87 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
     [project],
   );
 
-  const replaceProject = useCallback(async (next: ForgeProject) => {
+  const replaceProject = useCallback(async (next: ForgeProject, create: boolean, notice: string) => {
+    const outgoing = currentProject.current;
+    if (outgoing?.id === next.id) {
+      setNotice(`${outgoing.name} is already open.`);
+      return;
+    }
+    cancelScheduledSave();
+    if (outgoing) await saveProject({ ...outgoing, updatedAt: now() });
+    if (!alive.current) return;
+    if (create) await saveProject(next);
+    if (!alive.current) return;
+
+    const remembered = rememberLastProject(next.id);
     setProject(next);
+    setDiagnostics(next.buildHistory?.[0]?.diagnostics || []);
     setBuilds(next.buildHistory || []);
     setTestRuns(next.testHistory || []);
+    setTaskLog([]);
     setRecentProjects((current) => [
       next,
       ...current.filter((project) => project.id !== next.id),
     ].slice(0, 10));
-    await saveProject(next);
+    setNotice(remembered ? notice : notice + " Forge could not remember this selection for the next launch.");
     const selected = next.activeFile
       ? `/file/${next.activeFile.split("/").map(encodeURIComponent).join("/")}`
       : "";
     replaceRoute(`/workspace/project/${next.id}${selected}`);
-  }, [replaceRoute]);
+  }, [cancelScheduledSave, replaceRoute]);
 
-  const openTemplate = useCallback(() => {
-    const saving = replaceProject(createStarterProject());
-    setDiagnostics([]);
-    setBuilds([]);
-    setTestRuns([]);
-    setTaskLog([]);
-    setNotice("Created the explicit Counter starter from the authoritative SynQ example.");
-    return saving;
-  }, [replaceProject]);
+  const changeWorkspace = useCallback(async (operation: () => Promise<void>) => {
+    beginTask("workspace");
+    try {
+      await operation();
+    } finally {
+      endTask();
+    }
+  }, [beginTask, endTask]);
 
-  const newProject = useCallback(
-    (name: string) => {
-      const saving = replaceProject(createBlankProject(name));
-      setDiagnostics([]);
-      setTaskLog([]);
-      setNotice("Created a new local Forge project.");
-      return saving;
-    },
-    [replaceProject],
-  );
+  const openTemplate = useCallback(() => changeWorkspace(async () => {
+    const current = currentProject.current;
+    if (current?.id === "local-counter") {
+      setNotice("Counter Starter is already open.");
+      return;
+    }
+    const saved = await loadProject("local-counter");
+    if (saved) {
+      await replaceProject(saved, false, `Opened ${saved.name}.`);
+    } else {
+      await replaceProject(createStarterProject(), true, "Created the Counter starter from the SynQ example.");
+    }
+  }), [changeWorkspace, replaceProject]);
 
-  const openRecent = useCallback(
-    async (projectId: string) => {
-      const loaded = await loadProject(projectId);
-      if (!loaded) throw new Error("That recent project is no longer available.");
-      await replaceProject(loaded);
-      setNotice(`Opened ${loaded.name}.`);
-    },
-    [replaceProject],
-  );
+  const newProject = useCallback((name: string) => changeWorkspace(async () => {
+    await replaceProject(createBlankProject(name), true, "Created a new local Forge project.");
+  }), [changeWorkspace, replaceProject]);
 
-  const importFiles = useCallback(
-    async (files: File[]) => {
-      const imported = await projectFromFileList(
-        files,
-        files[0]?.webkitRelativePath?.split("/")[0] || "Imported Forge Project",
-      );
-      await replaceProject(imported.project);
-      setNotice(
-        imported.warnings.length
-          ? `Imported in restricted mode. ${imported.warnings.join(" ")}`
-          : "Imported in restricted mode. Review project trust before running tasks.",
-      );
-    },
-    [replaceProject],
-  );
+  const openRecent = useCallback((projectId: string) => changeWorkspace(async () => {
+    const loaded = await loadProject(projectId);
+    if (!loaded) throw new Error("That recent project is no longer available.");
+    await replaceProject(loaded, false, `Opened ${loaded.name}.`);
+  }), [changeWorkspace, replaceProject]);
 
-  const importArchive = useCallback(
-    async (file: File) => {
-      if (file.size > 10_000_000) {
-        throw new Error("ZIP imports are limited to 10 MB.");
-      }
-      const imported = await projectFromZip(await file.arrayBuffer(), file.name.replace(/\.zip$/i, ""));
-      await replaceProject(imported.project);
-      setNotice(
-        imported.warnings.length
-          ? `Archive imported in restricted mode. ${imported.warnings.join(" ")}`
-          : "Archive imported in restricted mode. Review project trust before running tasks.",
-      );
-    },
-    [replaceProject],
-  );
+  const importFiles = useCallback((files: File[]) => changeWorkspace(async () => {
+    const imported = await projectFromFileList(
+      files,
+      files[0]?.webkitRelativePath?.split("/")[0] || "Imported Forge Project",
+    );
+    await replaceProject(imported.project, true,
+      imported.warnings.length
+        ? `Imported in restricted mode. ${imported.warnings.join(" ")}`
+        : "Imported in restricted mode. Review project trust before running tasks.");
+  }), [changeWorkspace, replaceProject]);
+
+  const importArchive = useCallback((file: File) => changeWorkspace(async () => {
+    if (file.size > 10_000_000) throw new Error("ZIP imports are limited to 10 MB.");
+    const imported = await projectFromZip(await file.arrayBuffer(), file.name.replace(/\.zip$/i, ""));
+    await replaceProject(imported.project, true,
+      imported.warnings.length
+        ? `Archive imported in restricted mode. ${imported.warnings.join(" ")}`
+        : "Archive imported in restricted mode. Review project trust before running tasks.");
+  }), [changeWorkspace, replaceProject]);
 
   const exportProject = useCallback(async () => {
     if (!project) return;
@@ -342,14 +361,28 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
   }, []);
 
   const saveActiveFile = useCallback(async () => {
-    const current=currentProject.current;if(!current?.activeFile)return;
-    const path=current.activeFile,file=current.files.find(value=>value.path===path);if(!file)return;
-    const next:ForgeProject={...current,updatedAt:now(),files:current.files.map(value=>value.path===path?{...value,savedContent:file.content,modifiedAt:now()}:value)};
-    await saveProject(next);
-    if(!alive.current||currentProject.current?.id!==current.id)return;
-    setProject(value=>value?.id===current.id?{...value,updatedAt:now(),files:value.files.map(entry=>entry.path===path?{...entry,savedContent:file.content}:entry)}:value);
-    appendLog('success',`Saved ${path}.`);
-  }, [appendLog]);
+    const current = currentProject.current;
+    if (!current?.activeFile) return;
+    const selected = current.files.find(file => file.path === current.activeFile);
+    if (!selected) return;
+    beginTask("save");
+    try {
+      const next: ForgeProject = {
+        ...current,
+        updatedAt: now(),
+        files: current.files.map(file => file.path === selected.path
+          ? { ...file, savedContent: selected.content, modifiedAt: now() }
+          : file),
+      };
+      cancelScheduledSave();
+      await saveProject(next);
+      if (!alive.current || currentProject.current?.id !== current.id) return;
+      setProject(next);
+      appendLog("success", `Saved ${selected.path}.`);
+    } finally {
+      endTask();
+    }
+  }, [appendLog, beginTask, cancelScheduledSave, endTask]);
 
   const createFile = useCallback((path: string, content = "") => {
     const normalized = normalizeProjectPath(path);
@@ -421,7 +454,7 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
       project.files.find((file) => file.path.startsWith("contracts/") && file.path.endsWith(".synq"));
     if (!sourceFile) throw new Error("No SynQ contract source file is available.");
     const submittedSnapshot=taskSnapshot(project);
-    setBusyTask(mode);
+    beginTask(mode);
     try{
     const buildId = id("build");
     const startedAt = now();
@@ -452,6 +485,7 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
     const generated=result.ok&&result.artifacts&&mode==='build'?generatedArtifactFiles(sourceFile.path,result.artifacts):[];
     const generatedPaths=new Set(generated.map(file=>file.path));
     const next:ForgeProject={...current,buildHistory:[completed,...(current.buildHistory||[]).filter(entry=>entry.id!==buildId)].slice(0,20),files:[...current.files.filter(file=>!generatedPaths.has(file.path)),...generated],updatedAt:now()};
+    cancelScheduledSave();
     await saveProject(next);
     if(!alive.current||currentProject.current?.id!==project.id)throw Error('Workspace changed before build publication.');
     setProject(next);setBuilds(next.buildHistory||[]);
@@ -464,14 +498,14 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
       appendLog("error", `${mode === "build" ? "Build" : "Check"} failed with ${result.diagnostics.length} diagnostic(s).`);
     }
     return completed;
-    }catch(error){if(alive.current){setBuilds(currentProject.current?.buildHistory||[]);setNotice('Local task did not commit a result. Source buffers are retained; review the error before retrying.');}throw error;}finally{if(alive.current)setBusyTask(null);}
-  }, [activeFile, appendLog, project]);
+    }catch(error){if(alive.current){setBuilds(currentProject.current?.buildHistory||[]);setNotice('Local task did not commit a result. Source buffers are retained; review the error before retrying.');}throw error;}finally{endTask();}
+  }, [activeFile, appendLog, beginTask, cancelScheduledSave, endTask, project]);
 
   const runTests = useCallback(async () => {
     if (!project) throw new Error("Open a project first.");
     if (!project.trusted) throw new Error("Trust the imported workspace before running tasks.");
     const submittedSnapshot=taskSnapshot(project);
-    setBusyTask("test");
+    beginTask("test");
     try{
     appendLog("command", "forge test --all");
     const startedAt = performance.now();
@@ -577,6 +611,7 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
     };
     if(!alive.current||!currentProject.current||taskSnapshot(currentProject.current)!==submittedSnapshot)throw Error('Workspace changed during artifact checks; results not applied.');
     const next:ForgeProject={...currentProject.current,testHistory:[run,...(currentProject.current.testHistory||[])].slice(0,20),updatedAt:now()};
+    cancelScheduledSave();
     await saveProject(next);
     if(!alive.current||currentProject.current?.id!==project.id)throw Error('Workspace changed before artifact-check publication.');
     setProject(next);setTestRuns(next.testHistory||[]);
@@ -585,8 +620,8 @@ export function useForgeWorkspace(initialPath: string, replaceRoute: (path: stri
       `${run.passed} passed, ${run.failed} failed in ${Math.max(1, Math.round(performance.now() - startedAt))} ms.`,
     );
     return run;
-    }catch(error){if(alive.current){setBuilds(currentProject.current?.buildHistory||[]);setNotice('Local task did not commit a result. Source buffers are retained; review the error before retrying.');}throw error;}finally{if(alive.current)setBusyTask(null);}
-  }, [appendLog, project]);
+    }catch(error){if(alive.current){setBuilds(currentProject.current?.buildHistory||[]);setNotice('Local task did not commit a result. Source buffers are retained; review the error before retrying.');}throw error;}finally{endTask();}
+  }, [appendLog, beginTask, cancelScheduledSave, endTask, project]);
 
   const search = useCallback((query: string) => {
     if (!project || !query.trim()) return [];

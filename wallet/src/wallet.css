@@ -1,3 +1,5 @@
 .wallet-migrated .integration-table{overflow:auto;max-width:100%}.wallet-migrated table{width:100%;border-collapse:collapse}.wallet-migrated th,.wallet-migrated td{padding:12px;text-align:left;overflow-wrap:anywhere}.wallet-migrated button,.wallet-migrated input,.wallet-migrated select{min-height:44px}.wallet-migrated .integration-filters{display:flex;flex-wrap:wrap;gap:12px}.wallet-migrated small{display:block}.wallet-migrated img{max-width:100%}.wallet-migrated dd,.wallet-migrated .native-address{overflow-wrap:anywhere}
 
 .wallet-migrated .wallet-balance-card{padding:24px;border-radius:16px;background-size:cover;background-position:center;color:white;overflow-wrap:anywhere}.wallet-migrated .wallet-balance-card strong{font-size:clamp(1.4rem,4vw,2.4rem)}
+
+.wallet-migrated .native-dialog.wallet-contact-drawer{inset:12px 12px 12px auto;margin:0;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 24px)}

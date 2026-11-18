@@ -7,7 +7,7 @@ test('native VPN IPC carries only selected target and action, handles cancel/ref
  globalThis.__nnVpnTest={native:true,invoke:async(...args)=>{calls.push(args);return response;}};
  try{
   const source=(await readFile(new URL('../src/native-services.js',import.meta.url),'utf8')).replace('import {isTauri,invoke} from "@tauri-apps/api/core";', 'const isTauri=()=>globalThis.__nnVpnTest.native;const invoke=(...args)=>globalThis.__nnVpnTest.invoke(...args);');
-  const {nodeNetworkVpn}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  const {nodeNetworkVpn}=await import(`data:text/javascript;base64,${Buffer.from(source.replace(/from (['"])(\.\/[^'"]+)\1/g,(_,quote,path)=>`from ${quote}${new URL(`../src/${path.slice(2)}`,import.meta.url).href}${quote}`)).toString('base64')}`);
   const target={kind:'remote',host:'guest.example',port:22,root:'/opt/synergy'};
   assert.equal(await nodeNetworkVpn(target,'enroll'),null);
   assert.deepEqual(calls,[['portal_nodenetwork_vpn',{target,operation:'enroll'}]]);

@@ -1,24 +1,82 @@
 import {useEffect,useRef,useState} from 'react';
-import {atlas,rpc,chainIdNumber,useResource,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
+import {rpc,chainIdNumber,useNative,useResource,ErrorMessage,Detail,Resource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
+import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {readAccountHistory} from './account-history.js';
 import {WalletActivity} from './WalletActivity.jsx';
+import {activityWalletVersion} from './WalletActivityExport.jsx';
 import {WalletTransactionDetails} from './WalletTransactionDetails.jsx';
-export function WalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas=atlas}){
+import {checkIndexedHistorySnapshot,checkRpcHistorySnapshot,indexedHistorySnapshot} from './history-snapshot.js';
+import {checkConfiguredReceiptGenesis as checkConfiguredGenesis} from './rpc-receipt-observation.js';
+import {atlasAccountKey} from './atlas-account.js';
+import {canReadWalletAtlas} from './atlas-scope.js';
+import {blockLookupHeight} from './transaction-observation.js';
+import {useWalletReadScope} from './wallet-account-read.js';
+
+export function WalletHistory(props) {
+ const n = useNative();
+ const {account, endpoint} = props;
+ const accountKey = atlasAccountKey(account);
+ const canReadRpcSnapshot = () => !!accountKey && canReadWalletAtlas(n,endpoint) &&
+   atlasAccountKey(n.wallet.connection.address) === accountKey;
+ const scope = JSON.stringify([account, endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey, endpoint.genesisHash,
+   n?.walletConsentSession, activityWalletVersion(n), canReadRpcSnapshot()]);
+ return <ScopedWalletHistory key={scope} {...props} canReadRpcSnapshot={canReadRpcSnapshot}/>;
+}
+
+function ScopedWalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,readAtlas,canReadRpcSnapshot}){
  const [epoch,setEpoch]=useState(0),[pages,setPages]=useState([]),[position,setPosition]=useState(0),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [snapshotRevision,setSnapshotRevision]=useState(0);
+ const [rpcSnapshotRevision,setRpcSnapshotRevision]=useState(0);
+ const [genesisConflict,setGenesisConflict]=useState(null);
  const request=useRef({generation:0,controller:null,pending:false});
- async function load(cursor,previous,signal){if(chainIdNumber(await readRpc('synergy_getChainId',[],{endpoint:endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet history chain1266.');return readAccountHistory(readAtlas,account,{cursor,previous,signal});}
+ async function load(cursor,previous,signal){
+  signal.throwIfAborted();
+  const options={endpoint:endpoint.rpc,signal};
+  const chain=chainIdNumber(await readRpc('synergy_getChainId',[],options));
+  signal.throwIfAborted();
+  if(chain!==1266)throw Error('RPC chain identity does not match Wallet history chain1266.');
+  if(endpoint.genesisHash!=null){
+   let readiness;
+   try{
+    readiness=rpcReadinessObservation(await readRpc('synergy_getReadiness',[],options),chain);
+   }catch{
+    throw Error('The selected RPC history genesis check could not be completed. Try again.');
+   }
+   signal.throwIfAborted();
+   try{
+    checkConfiguredGenesis(readiness.chain,endpoint.genesisHash);
+   }catch(failure){
+    return {genesisConflict:failure.message};
+   }
+  }
+  return {page:await readAccountHistory(readAtlas,account,{cursor,previous,signal})};
+ }
  const first=useResource(signal=>load(null,null,signal),`account-history:${epoch}`);
- useEffect(()=>{if(first.data){setPages([{...first.data,ordinal:1}]);setPosition(0);setSelected(null);}},[first.data]);
+ const firstPage=first.data?.page;
+ useEffect(()=>{if(firstPage){setPages([{...firstPage,ordinal:1}]);setPosition(0);setSelected(null);}},[firstPage]);
  useEffect(()=>()=>{request.current.generation++;request.current.controller?.abort();},[]);
- const current=pages[position]||(first.data?{...first.data,ordinal:1}:null);
- function restart(){request.current.generation++;request.current.controller?.abort();request.current.pending=false;setBusy(false);setError('');setPages([]);setPosition(0);setSelected(null);setEpoch(value=>value+1);}
+ const current=pages[position]||(firstPage?{...firstPage,ordinal:1}:null);
+ const snapshot=indexedHistorySnapshot(current?.snapshot);
+ const snapshotCheck=useResource(signal=>snapshotRevision&&snapshot?checkIndexedHistorySnapshot(readAtlas,snapshot,signal):null,
+  JSON.stringify([epoch,snapshotRevision,snapshot?.height,snapshot?.hash]));
+ const rpcSnapshotAvailable=!!snapshot&&blockLookupHeight(snapshot.height)!==null&&canReadRpcSnapshot();
+ const rpcSnapshotKey=JSON.stringify([epoch,rpcSnapshotRevision,snapshot?.height,snapshot?.hash,rpcSnapshotAvailable]);
+ const allowed=useWalletReadScope(rpcSnapshotKey,canReadRpcSnapshot);
+ const rpcSnapshotCheck=useResource(signal=>rpcSnapshotRevision&&rpcSnapshotAvailable
+  ?checkRpcHistorySnapshot(readRpc,endpoint,snapshot,signal,allowed):null,rpcSnapshotKey);
+ const checkingSnapshot=(!!snapshot&&snapshotRevision>0&&snapshotCheck.loading)||
+  (rpcSnapshotAvailable&&rpcSnapshotRevision>0&&rpcSnapshotCheck.loading);
+ const conflictingSnapshot=snapshotCheck.data?.changed?snapshotCheck.data:rpcSnapshotCheck.data?.changed?rpcSnapshotCheck.data:null;
+ function restart(){request.current.generation++;request.current.controller?.abort();request.current.pending=false;setBusy(false);setError('');setPages([]);setPosition(0);setSelected(null);setSnapshotRevision(0);setRpcSnapshotRevision(0);setGenesisConflict(null);setEpoch(value=>value+1);}
  async function next(){
-  if(!current||request.current.pending)return;
+  if(!current||request.current.pending||checkingSnapshot||conflictingSnapshot)return;
   if(position+1<pages.length){setPosition(position+1);setSelected(null);return;}
   if(!current.hasMore)return;
   const generation=++request.current.generation,controller=new AbortController();request.current.controller=controller;request.current.pending=true;setBusy(true);setError('');
-  try{const page=await load(current.nextCursor,current,controller.signal);if(controller.signal.aborted||generation!==request.current.generation)return;
+  try{const result=await load(current.nextCursor,current,controller.signal);if(controller.signal.aborted||generation!==request.current.generation)return;
+   if(result.genesisConflict){setGenesisConflict(result.genesisConflict);return;}
+   const {page}=result;
    const retained=pages.length?pages:[current],hashes=new Set(retained.flatMap(p=>p.items.map(row=>row.hash)));
    if(page.items.some(row=>hashes.has(row.hash)))throw Error('Indexed pages overlap or changed during reading. Restart history before combining these observations.');
    const updated=[...retained,{...page,ordinal:current.ordinal+1}].slice(-20);setPages(updated);setPosition(updated.length-1);setSelected(null);
@@ -26,8 +84,57 @@ export function WalletHistory({account,endpoint,recent,recentAt,readRpc=rpc,read
   finally{if(generation===request.current.generation){request.current.pending=false;setBusy(false);}}
  }
  if(first.loading)return <><p role="status">Reading account-scoped history…</p><button onClick={restart}>Restart history read</button></>;
- if(first.error)return <><ErrorMessage error={first.error}/><p>Paginated account history is unavailable. The recent records below remain a separate limited source view.</p><button onClick={restart}>Retry paginated history</button><SourceAge updatedAt={recentAt}/><WalletActivity data={recent} account={account} onSelect={setSelected}/>{selected&&<WalletTransactionDetails data={recent} hash={selected}/>}</>;
+ const conflict=first.data?.genesisConflict??genesisConflict;
+ if(conflict)return <>
+  <ErrorMessage error={conflict}/>
+  <button onClick={restart}>Restart history</button>
+ </>;
+ if(first.error)return <>
+  <ErrorMessage error={first.error}/>
+  <p>Paginated account history is unavailable. The recent records are a separate limited source without an indexed snapshot height.</p>
+  <button onClick={restart}>Retry paginated history</button>
+  <SourceAge source="Atlas recent account records" updatedAt={recentAt}/>
+  <WalletActivity data={recent} account={account} onSelect={setSelected}/>
+  {selected&&<WalletTransactionDetails data={recent} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}
+ </>;
  if(!current)return <p role="status">Preparing account history page…</p>;
+ if(conflictingSnapshot){
+  const source=conflictingSnapshot===snapshotCheck.data?'Atlas':'Selected RPC';
+  return <>
+   <ErrorMessage error={`${source} reported a different block hash at snapshot height ${snapshot.height}. Restart history to load a new snapshot.`}/>
+   <Detail data={{previousSnapshotHash:snapshot.hash,
+    [source==='Atlas'?'currentAtlasBlockHash':'reportedRpcBlockHash']:conflictingSnapshot.hash}}/>
+   <p>{source} snapshot checked <time dateTime={conflictingSnapshot.checkedAt}>{conflictingSnapshot.checkedAt}</time></p>
+   <button onClick={restart}>Restart history</button>
+  </>;
+ }
  const data={recentTransactions:current.items};
- return <><SourceAge updatedAt={current.receivedAt} source="Atlas account-history page read"/><p>Page {current.ordinal} · reported network {current.network}. Filters apply to this page. Up to20 pages remain in local memory; restart to return to the newest records. The snapshot bounds indexing, not chain finality or complete account coverage.</p>{current.warnings.map((warning,i)=><p key={i}>{warning}</p>)}<div className="native-actions"><button disabled={busy||position===0} onClick={()=>{setPosition(position-1);setSelected(null);}}>Previous retained page</button><button disabled={busy||(!current.hasMore&&position+1>=pages.length)} onClick={next}>Next page</button><button onClick={restart}>Restart history</button></div>{busy&&<p role="status">Reading the next page…</p>}<ErrorMessage error={error}/><WalletActivity key={current.ordinal} data={data} account={account} paged onSelect={setSelected}/>{selected&&<WalletTransactionDetails data={data} hash={selected}/>}</>;
+ return <>
+  <SourceAge updatedAt={current.receivedAt} source="Atlas account-history page read"/>
+  <p>Page {current.ordinal} · reported network {current.network} · Atlas snapshot height {current.snapshot?.blockNumber ?? 'unavailable'}</p>
+  <p>Filters apply to this page. Up to 20 pages remain in local memory. Restart to return to the newest records. The snapshot is an index boundary. Finality and full account coverage remain unverified.</p>
+  {current.warnings.map((warning,i)=><p key={i}>{warning}</p>)}
+  <div className="native-actions">
+    <button disabled={busy||checkingSnapshot||position===0} onClick={()=>{setPosition(position-1);setSelected(null);}}>Previous retained page</button>
+    <button disabled={busy||checkingSnapshot||(!current.hasMore&&position+1>=pages.length)} onClick={next}>Next page</button>
+    {snapshot&&<button disabled={busy||checkingSnapshot} onClick={()=>setSnapshotRevision(value=>value+1)}>
+      {snapshotRevision?'Check Atlas snapshot again':'Check Atlas snapshot'}
+    </button>}
+    {rpcSnapshotAvailable&&<button disabled={busy||checkingSnapshot} onClick={()=>setRpcSnapshotRevision(value=>value+1)}>
+      {rpcSnapshotRevision?'Check snapshot on selected RPC again':'Check snapshot on selected RPC'}
+    </button>}
+    <button onClick={restart}>Restart history</button>
+  </div>
+  {busy&&<p role="status">Reading the next page…</p>}
+  {!!snapshotRevision&&snapshot&&<section aria-label="Atlas snapshot observation">
+    <Resource value={{...snapshotCheck,reload:undefined}}>{value=><p>Atlas reports the same snapshot block hash. Checked <time dateTime={value.checkedAt}>{value.checkedAt}</time>.</p>}</Resource>
+  </section>}
+  {!!rpcSnapshotRevision&&rpcSnapshotAvailable&&<section aria-label="Selected RPC history snapshot observation">
+    <Resource value={{...rpcSnapshotCheck,reload:undefined}}>{value=><p>The selected RPC reports the same snapshot block hash. Checked <time dateTime={value.checkedAt}>{value.checkedAt}</time>.</p>}</Resource>
+  </section>}
+  <ErrorMessage error={error}/>
+  <WalletActivity key={current.ordinal} data={data} account={account} paged onSelect={setSelected}
+    exportPage={current} exportEndpoint={endpoint}/>
+  {selected&&<WalletTransactionDetails data={data} hash={selected} account={account} endpoint={endpoint} readRpc={readRpc}/>}
+ </>;
 }

@@ -1,5 +1,7 @@
 # Synergy dApp Hub
 
+Developer pickup: [Main-branch reconciliation](MIGRATION-STATUS.md) and [historical developer handoff](FINAL-DEVELOPER-HANDOFF.md). Both dApp Hub and Portal use `main`; pull both before changing their shared interfaces. Current native execution state lives in Portal’s `CONTINUE-CODEX.txt`.
+
 The community submission repository and release catalog for Synergy Portal applications. Application source lives here, separately from the Portal host repository. Each application owns its directory, entry point, assets and manifest. NodeNetwork also owns its native controller adapter crate; Portal only registers that reviewed host extension.
 
 Submit applications and updates by pull request; see [CONTRIBUTING.md](CONTRIBUTING.md). Quest and Prism are retired. Planned manifests do not imply implemented or installable applications.

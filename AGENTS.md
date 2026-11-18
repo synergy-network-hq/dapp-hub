@@ -1,5 +1,10 @@
 # dApp Hub contributor instructions
 
+Before every task, read `/Volumes/PortableSSD/02-Synergy-Network/AGENTS.md`.
+Stop if it is inaccessible. Delegated agents must read it too, including after
+compaction. Preserve its Aegis exemption; do not recreate removed global policy
+files or duplicate the canonical master.
+
 Read README.md before editing. This repository owns installable dApps, their
 application assets, and NodeNetwork's native adapter. Portal is a separate
 sibling repository and owns the host, permissions, sandbox and SDK boundary.

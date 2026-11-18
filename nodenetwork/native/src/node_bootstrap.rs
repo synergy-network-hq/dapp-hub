@@ -1,18 +1,27 @@
 //! Streams only an operator-selected, digest-pinned master to the canonical bootstrap.
 use super::node_controller::{self, Request, Target};
 use serde_json::{json,Value};
+use base64::{Engine,engine::general_purpose::STANDARD_NO_PAD};
 use sha2::{Digest,Sha256};
 use std::{collections::BTreeMap,fs,path::{Path,Component},process::Stdio,time::Duration};
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
-const MAX_ARCHIVE:u64=256*1024*1024;
+pub(super) const MAX_ARCHIVE:u64=256*1024*1024;
 const BOOTSTRAP:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/bootstrap.py"));
 
+pub(super) fn matches_builtin_release(_release:&str,pin:&str)->bool{authenticate_release(pin).is_ok()}
 fn authenticate_release(pin:&str)->Result<(),String>{
     if cfg!(debug_assertions)&&option_env!("SYNERGY_NODENETWORK_QUALIFICATION_MANIFEST_SHA256").is_some_and(|approved|approved==pin){return Ok(());}
     Err("The selected release has no independent native approval. Self-declared manifests cannot authorize privileged installation.".into())
 }
 
 pub struct Prepared {members:Vec<Member>,upload_deadline:Duration,pub release:String,pub manifest_sha256:String,pub public_key:String}
+const PUBLIC_KEY_LIMIT:usize = 16_384;
+const INVALID_PUBLIC_KEY:&str = "Select one OpenSSH Ed25519 public key from a .pub file.";
+struct OperatorPublicKey(String);
+impl OperatorPublicKey {
+    fn sha256(&self) -> String { format!("{:x}", Sha256::digest(self.0.as_bytes())) }
+}
+impl Prepared { pub(super) fn operator_public_key_sha256(&self)->String { format!("{:x}",Sha256::digest(self.public_key.as_bytes())) } }
 struct Member {name:String,size:u64,directory:bool,digest:Option<String>,file:Option<fs::File>}
 // Only the authenticated public master stream gets a size-derived allowance.
 // Credential transports and normal controller calls retain their own deadlines.
@@ -41,28 +50,80 @@ fn public_archive_ssh(command:tokio::process::Command)->Result<tokio::process::C
     if let Some(directory)=source.get_current_dir(){compressed.current_dir(directory);}
     Ok(compressed)
 }
-fn safe_member(name:&str)->bool {
+pub(super) fn safe_member(name:&str)->bool {
     !name.is_empty() && name.len()<=100 && name.is_ascii() && !name.contains('\\')
         && Path::new(name).components().all(|c| matches!(c,Component::Normal(_)))
 }
-fn read_bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{
+pub(super) fn declared_files(manifest: &Value) -> Result<BTreeMap<String, String>, String> {
+    let files: BTreeMap<String, String> = serde_json::from_value(manifest["files"].clone())
+        .map_err(|_| "Invalid master file inventory.")?;
+    if files.is_empty() || files.len() > 4096 || files.iter().any(|(name, pin)| {
+        !safe_member(name) || pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }) {
+        return Err("Invalid master inventory paths or digests.".into());
+    }
+    Ok(files)
+}
+pub(super) fn read_bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{
     use std::io::Read;
     let metadata=fs::symlink_metadata(path).map_err(|_|"Selected public input is inaccessible.")?;
     if !metadata.is_file()||metadata.len()>max as u64 {return Err("Selected public input is not a bounded regular file.".into());}
-    let mut out=Vec::new();fs::File::open(path).map_err(|_|"Cannot open selected public input.")?.take(max as u64+1).read_to_end(&mut out).map_err(|_|"Cannot read selected public input.")?;
-    if out.len()>max{return Err("Selected public input exceeds its bound.".into());} Ok(out)
-}
-fn public_key(path:&Path)->Result<String,String>{
-    let raw=read_bounded(path,16_384)?;
-    let text=std::str::from_utf8(&raw).map_err(|_|"Select an SSH public .pub file; never a private key.")?.trim();
-    let fields:Vec<_>=text.split_whitespace().collect();
-    if fields.len()<2 || fields[0]!="ssh-ed25519"
-        || !fields[1].bytes().all(|b|b.is_ascii_alphanumeric()||b"+/=".contains(&b)) || text.contains('\n') {
-        return Err("Select one administrative Ed25519 SSH public key. Private keys and authorized_keys options are forbidden.".into());
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{Mode, OFlags, open};
+        fs::File::from(open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty()).map_err(|_|"Cannot open selected public input.")?)
+    };
+    #[cfg(not(unix))]
+    let file = fs::File::open(path).map_err(|_|"Cannot open selected public input.")?;
+    let opened = file.metadata().map_err(|_|"Cannot inspect selected public input.")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err("Selected public input changed while opening.".into());
+        }
     }
-    Ok(format!("{} {}",fields[0],fields[1]))
+    if !opened.is_file() || opened.len() != metadata.len() {return Err("Selected public input changed while opening.".into());}
+    let mut out = Vec::new();
+    file.take(max as u64+1).read_to_end(&mut out).map_err(|_|"Cannot read selected public input.")?;
+    if out.len() as u64 != opened.len() {return Err("Selected public input changed while reading.".into());}
+    Ok(out)
 }
-fn archive_limit(manifest:&Value)->Result<u64,String>{
+fn parse_operator_public_key(raw:&[u8])->Result<OperatorPublicKey,String>{
+    // The pinned bootstrap public_header expects the 68-character OpenSSH encoding.
+    // The SSH wire blob is a length-prefixed algorithm and 32 public-key bytes.
+    const PREFIX:&[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
+    let text=std::str::from_utf8(raw).map_err(|_|INVALID_PUBLIC_KEY)?;
+    let line=text.strip_suffix("\r\n").or_else(||text.strip_suffix('\n')).unwrap_or(text);
+    if line.chars().any(|character| character.is_control() && character != '\t') {
+        return Err(INVALID_PUBLIC_KEY.into());
+    }
+    let mut fields=line.split_ascii_whitespace();
+    if fields.next()!=Some("ssh-ed25519") {return Err(INVALID_PUBLIC_KEY.into());}
+    let encoded=fields.next().filter(|text|text.len()==68).ok_or(INVALID_PUBLIC_KEY)?;
+    let decoded=STANDARD_NO_PAD.decode(encoded).map_err(|_|INVALID_PUBLIC_KEY)?;
+    if decoded.len()!=PREFIX.len()+32 || !decoded.starts_with(PREFIX) {
+        return Err(INVALID_PUBLIC_KEY.into());
+    }
+    // Ignore a trailing comment; refuse a second key even if it was pasted on the same line.
+    if fields.clone().zip(fields.skip(1)).any(|(label,blob)| {
+        ["ssh-","ecdsa-","sk-"].iter().any(|prefix| label.starts_with(prefix))
+            && blob.len()>=32 && blob.bytes().all(|byte|byte.is_ascii_alphanumeric() || b"+/=".contains(&byte))
+    }) {return Err(INVALID_PUBLIC_KEY.into());}
+    Ok(OperatorPublicKey(format!("ssh-ed25519 {encoded}")))
+}
+
+fn read_operator_public_key(path:&Path)->Result<OperatorPublicKey,String>{
+    parse_operator_public_key(&read_bounded(path,PUBLIC_KEY_LIMIT)?)
+}
+
+pub(super) fn review_operator_public_key(path:&Path)->Result<Value,String>{
+    let key=read_operator_public_key(path)?;
+    Ok(json!({"schema":"nodenetwork-operator-public-key-v1","algorithm":"ssh-ed25519","canonicalSha256":key.sha256()}))
+}
+fn public_key(path:&Path)->Result<String,String>{Ok(read_operator_public_key(path)?.0)}
+pub(super) fn archive_limit(manifest:&Value)->Result<u64,String>{
  let Some(meta)=manifest.get("managed_guest_resources")else{return Ok(MAX_ARCHIVE)};
  let m=meta.as_object().ok_or("Invalid managed guest resources declaration")?;
  let pin=meta["manifest_sha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)));
@@ -162,6 +223,7 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
     if update.is_none(){authenticate_release(&prepared.manifest_sha256)?;}
     let bootstrap_pin=if update.is_none()&&target.kind=="remote"&&target.guest.is_none()&&known_hosts.is_none(){Some(node_controller::bootstrap_host_pin(&target,control_dir)?)}else{None};
     let known_hosts=known_hosts.or(bootstrap_pin.as_deref());
+    let expected_release=prepared.release.clone();let expected_manifest=prepared.manifest_sha256.clone();let is_update=update.is_some();
     let script=if let Some(context)=&update{format!("NATIVE_AUTHENTICATED_UPDATE_CONTEXT=__import__('json').loads({})\n{}",serde_json::to_string(&context.to_string()).map_err(|_|"Cannot encode reviewed update")?,BOOTSTRAP)}else{format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP)};
     let arguments=if update.is_some(){format!(" --stage-engineering-update {} {}",prepared.release,prepared.manifest_sha256)}else{String::new()};
     let mut command=if target.kind=="local"{
@@ -191,7 +253,22 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
     let result=tokio::time::timeout(upload_deadline,bootstrap_transport_reply(output,&mut upload,&mut child)).await;
     upload.abort();
     node_controller::close_connection_checked(&target,control_dir,&operator).await?;
-    match result{Ok(out)=>out.map_err(String::from),Err(_)=>Err("Bootstrap timed out. Inspect target state before retrying; no automatic retry occurred.".into())}
+    match result{Ok(out)=>{let reply=out.map_err(String::from)?;if !is_update{validate_bootstrap_acknowledgement(&reply,&expected_release,&expected_manifest).map_err(String::from)?;}Ok(reply)},Err(_)=>Err("Bootstrap timed out. Inspect target state before retrying; no automatic retry occurred.".into())}
+}
+
+fn validate_bootstrap_acknowledgement(reply:&Value,release:&str,manifest:&str)->Result<(),&'static str>{
+ const UNCERTAIN:&str="Bootstrap acknowledgement differs from the reviewed master or enrollment scope. Inspect the target before another change; no automatic retry occurred.";
+ if reply["ok"]==false{return Ok(())}
+ let result=&reply["result"];
+ let records=["system-account:synergy-nodenetwork","/etc/ssh/sshd_config.d/synergy-nodenetwork.conf","/etc/sudoers.d/synergy-nodenetwork","/etc/systemd/system/synergy-installation-guard.service","/etc/systemd/system/multi-user.target.wants/synergy-installation-guard.service"];
+ if !result.as_object().is_some_and(|fields|fields.len()==10)
+  ||result["root"]!=node_controller::ROOT||result["stagedRelease"]!=release||result["manifestSha256"]!=manifest
+  ||result["rootDeletionGuardActive"]!=true||result["controllerEnrolled"]!=true||result["softwareInstalled"]!=false||result["activationAuthorized"]!=false
+  ||result["communityEnrollment"]!=false||result["operatorAuthorizationRequired"]!=true
+  ||!result["hostManagedRecords"].as_array().is_some_and(|items|items.len()==records.len()&&records.iter().all(|record|items.contains(&json!(record)))){
+  return Err(UNCERTAIN)
+ }
+ Ok(())
 }
 
 // A verified-host refusal can close stdin before the archive is fully sent.
@@ -200,12 +277,13 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
 async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload:&mut tokio::task::JoinHandle<Result<(),&'static str>>,child:&mut tokio::process::Child)->Result<Value,&'static str>{
  let mut bytes=Vec::new();output.take(1_000_001).read_to_end(&mut bytes).await.map_err(|_|"Cannot read bootstrap response.")?;
  if bytes.len()>1_000_000{return Err("Bootstrap response exceeds its limit.")}
- let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid bootstrap response.")?;
- if reply["version"]!=1||!reply["ok"].is_boolean(){return Err("Unsupported bootstrap response.")}
+ let reply=node_controller::decode_receipt_reply(&bytes).map_err(|_|"Invalid bootstrap response.")?;
+ if reply["version"]!=1||!reply["ok"].is_boolean()||!reply.as_object().is_some_and(|fields|fields.len()==3){return Err("Unsupported bootstrap response.")}
  if reply["ok"]==false{
-  if !reply["error"]["code"].is_string()||!reply["error"]["message"].is_string(){return Err("Unsupported bootstrap refusal.")}
+  if !reply["error"].as_object().is_some_and(|fields|fields.len()==2)||!reply["error"]["code"].is_string()||!reply["error"]["message"].is_string(){return Err("Unsupported bootstrap refusal.")}
   upload.abort();let _=upload.await;let _=child.wait().await;return Ok(reply)
  }
+ if !reply["result"].is_object(){return Err("Unsupported bootstrap response.")}
  upload.await.map_err(|_|"Master upload task did not finish.")??;
  let status=child.wait().await.map_err(|_|"Bootstrap did not finish.")?;
  if !status.success(){return Err("Bootstrap transport failed; verify SSH host identity, agent authentication and restricted sudo permissions.")}
@@ -529,4 +607,114 @@ pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&s
     };
     let out=match tokio::time::timeout(Duration::from_secs(180),result).await{Ok(value)=>value,Err(_)=>Err("Rollback outcome uncertain; do not replay apply".into())};
     node_controller::close_connection_checked(&target,control,operator).await?;out
+}
+
+#[cfg(test)] mod incoming_safety_tests {
+ use super::*;
+ const OPENSSH_VECTOR:&str="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINdamAGCsQq31Uv+08lkBzoO4XLz2qYjJa8CGmj3B1Ea";
+ const VECTOR_SHA256:&str="6442aab9f902438a4cb8c8937e7cd0d0a66737acab731501554caaeb89a59774";
+ fn bootstrap_transport_child(script:&str)->tokio::process::Child{let mut c=tokio::process::Command::new("/usr/bin/python3");c.args(["-I","-B","-c",script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);c.spawn().unwrap()}
+    #[test]
+    fn bootstrap_transport_ambiguous_envelopes_preserve_uncertain_dispatch() {
+     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+      let invalid = [
+       r#"{"version":1,"ok":true,"ok":false,"error":{"code":"bootstrap_refused","message":"fixture"}}"#,
+       r#"{"version":1,"ok":false,"error":{"code":"one","code":"two","message":"fixture"}}"#,
+       r#"{"version":1,"ok":false,"error":{"code":"bootstrap_refused","message":"fixture"},"result":{}}"#,
+       r#"{"version":1,"ok":true}"#,
+       r#"{"version":1,"ok":true,"result":null}"#,
+       r#"{"version":1,"ok":false,"error":{"code":"bootstrap_refused"}}"#,
+      ];
+      for (index,wire) in invalid.iter().enumerate() {
+       let script=format!("import sys\nsys.stdin.buffer.read()\nsys.stdout.write({})\n",serde_json::to_string(wire).unwrap());
+       let mut child=bootstrap_transport_child(&script);let input=child.stdin.take().unwrap();let output=child.stdout.take().unwrap();
+       let mut upload=tokio::spawn(async move {drop(input);Ok(())});
+       let outcome=super::bootstrap_transport_reply(output,&mut upload,&mut child).await.map_err(String::from);
+       assert!(outcome.is_err(),"{wire}");
+       let _=upload.await;let _=child.wait().await;
+       let base=std::env::temp_dir().canonicalize().unwrap().join(format!("synergy-bootstrap-envelope-{}-{}-{index}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+       let target=json!({"kind":"remote","host":"fixture.invalid","port":22,"root":"/opt/Synergy"});
+       let request=json!({"version":1,"operation":"bootstrap"});
+       let dispatch=crate::request_journal::Dispatch::begin(&base,&target,"bootstrap",&request).unwrap();
+       dispatch.finish(&outcome).unwrap();
+       let observed=crate::request_journal::inspect(&base).unwrap();
+       assert_eq!(observed["records"][0]["state"],"uncertain");
+       assert_eq!(observed["records"][0]["response_ok"],Value::Null);
+       assert!(crate::request_journal::Dispatch::begin(&base,&target,"bootstrap",&request).is_err());
+       std::fs::remove_dir_all(base).unwrap();
+      }
+     });
+    }
+    #[test]
+    fn bootstrap_transport_acknowledgement_binds_master_and_staging_only_scope(){
+     let release="fixture-release";let pin="a".repeat(64);
+     let result=json!({"root":"/opt/synergy","stagedRelease":release,"manifestSha256":pin,
+      "controllerEnrolled":true,"softwareInstalled":false,"activationAuthorized":false,"communityEnrollment":false,
+      "operatorAuthorizationRequired":true,"rootDeletionGuardActive":true,"hostManagedRecords":["system-account:synergy-nodenetwork",
+       "/etc/ssh/sshd_config.d/synergy-nodenetwork.conf","/etc/sudoers.d/synergy-nodenetwork","/etc/systemd/system/synergy-installation-guard.service","/etc/systemd/system/multi-user.target.wants/synergy-installation-guard.service"]});
+     let wrap=|result|json!({"version":1,"ok":true,"result":result});
+     assert!(validate_bootstrap_acknowledgement(&wrap(result.clone()),release,&pin).is_ok());
+     let mut reordered=result.clone();reordered["hostManagedRecords"].as_array_mut().unwrap().reverse();
+     assert!(validate_bootstrap_acknowledgement(&wrap(reordered),release,&pin).is_ok());
+     for (key,value) in [("root",json!("/opt/Synergy")),("stagedRelease",json!("another-release")),
+      ("manifestSha256",json!("b".repeat(64))),("controllerEnrolled",json!(false)),("softwareInstalled",json!(true)),
+      ("activationAuthorized",json!(true)),("communityEnrollment",json!(true)),("operatorAuthorizationRequired",json!(false)),
+      ("hostManagedRecords",json!(["system-account:synergy-nodenetwork"])),("unknown",json!("excluded"))]{
+      let mut altered=result.clone();altered[key]=value;
+      assert!(validate_bootstrap_acknowledgement(&wrap(altered),release,&pin).is_err(),"{key}");
+     }
+     assert!(validate_bootstrap_acknowledgement(&wrap(json!({})),release,&pin).is_err());
+    }
+
+    #[test]
+    fn operator_public_key_accepts_owner_and_openssh_fixture_with_only_canonical_digest() {
+        // This public test vector passes pinned bootstrap.py::public_header and ssh-keygen -l.
+        for value in [OPENSSH_VECTOR.to_string(), format!("{OPENSSH_VECTOR} fixture comment\n"),
+            format!("{}  fixture comment métro\r\n",OPENSSH_VECTOR.replace(' ',"\t"))] {
+            let parsed = parse_operator_public_key(value.as_bytes()).unwrap();
+            assert_eq!(parsed.0, OPENSSH_VECTOR);
+            assert_eq!(parsed.sha256(), VECTOR_SHA256);
+        }
+    }
+    #[test]
+    fn operator_public_key_rejects_noncanonical_or_ambiguous_inputs() {
+        let payload = OPENSSH_VECTOR.split_ascii_whitespace().nth(1).unwrap();
+        let mut wrong_type = STANDARD_NO_PAD.decode(payload).unwrap();
+        wrong_type[4] = b'x';
+        let mut wrong_size = STANDARD_NO_PAD.decode(payload).unwrap();
+        wrong_size[18] = 31;
+        for value in [String::new(), "ssh-ed25519 AAAA".into(),format!("ssh-ed25519 {}","A".repeat(68)),
+            format!("ssh-rsa {payload}"),format!("{OPENSSH_VECTOR}="),
+            format!("ssh-ed25519 {}",STANDARD_NO_PAD.encode(wrong_type)),
+            format!("ssh-ed25519 {}",STANDARD_NO_PAD.encode(wrong_size)),
+            format!("{OPENSSH_VECTOR}\n{OPENSSH_VECTOR}\n"),format!("{OPENSSH_VECTOR} {OPENSSH_VECTOR}"),
+            format!("{OPENSSH_VECTOR}\r{OPENSSH_VECTOR}"),format!("{OPENSSH_VECTOR}\n\n"),
+            format!("restrict {OPENSSH_VECTOR}"),format!("-----BEGIN OPENSSH {} KEY-----\n", "PRIVATE")] {
+            assert!(parse_operator_public_key(value.as_bytes()).is_err());
+        }
+        assert!(parse_operator_public_key(&[255,0]).is_err());
+    }
+    #[test]
+    fn operator_public_key_reviews_regular_bounded_files_and_returns_no_key_or_comment() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!("portal-node-operator-key-{}-{stamp}",std::process::id()));
+        fs::create_dir(&folder).unwrap();
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch { fn drop(&mut self) { let _=fs::remove_dir_all(&self.0); } }
+        let _cleanup=Scratch(folder.clone());
+        let path=folder.join("operator.pub");
+        fs::write(&path,format!("{OPENSSH_VECTOR} fixture comment\n")).unwrap();
+        let report=review_operator_public_key(&path).unwrap();
+        assert_eq!(report,json!({"schema":"nodenetwork-operator-public-key-v1","algorithm":"ssh-ed25519","canonicalSha256":VECTOR_SHA256}));
+        assert!(review_operator_public_key(&folder).is_err());
+        assert!(review_operator_public_key(&folder.join("missing.pub")).is_err());
+        #[cfg(unix)] {
+            let link=folder.join("link.pub");
+            std::os::unix::fs::symlink(&path,&link).unwrap();
+            assert!(review_operator_public_key(&link).is_err());
+        }
+        fs::write(&path, vec![b'x'; PUBLIC_KEY_LIMIT+1]).unwrap();
+        assert!(review_operator_public_key(&path).is_err());
+    }
+
 }

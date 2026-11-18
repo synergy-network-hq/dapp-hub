@@ -1,19 +1,27 @@
-import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
-import {useNative,atlas,rpc,useResource,ErrorMessage,short} from '@synergy-network/portal-native/dapp-sdk';
+import {useNative,rpc,useResource,ErrorMessage,short} from '@synergy-network/portal-native/dapp-sdk';
 import {amount,text} from '@synergy-network/dapp-data-view';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {sourceRecords} from './source-records.js';
 import {matchesPairedIndexProfile} from './paired-index-profile.js';
+import {readAtlasAddress} from './atlas-account.js';
+import {atlasEndpointRequired,canReadWalletAtlas,readScopedWalletAtlas} from './atlas-scope.js';
+import {checkWalletAccountEndpoint,requireWalletReadScope,useWalletReadScope} from './wallet-account-read.js';
 export function DappWidget({widgetKey:key}){
- const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=permitted&&matchesPairedIndexProfile(connection,n.endpoint);
+ const n=useNative(),connection=n.wallet.connection,permitted=n.permit('wallet','readWallet'),ready=matchesPairedIndexProfile(connection,n.endpoint)&&canReadWalletAtlas(n);
+ const scope=JSON.stringify([connection?.walletId,connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,
+  n.endpoint.networkKey||n.endpoint.id,n.endpoint.genesisHash,n.walletConsentSession,ready]);
+ const allowed=useWalletReadScope(scope,()=>matchesPairedIndexProfile(n.wallet.connection,n.endpoint)&&canReadWalletAtlas(n));
  const value=useResource(async signal=>{
-  if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');
-  if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');
-  const data=await atlas(`address/${encodeURIComponent(connection.address)}`,{signal});if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Account response is unavailable or unsupported; no empty history or zero balance is inferred.');return {data,receivedAt:Date.now()};
- },JSON.stringify([connection?.address,connection?.chainId,n.endpointId,n.endpoint.rpc,n.endpoint.chainId,ready]));
+  if(!allowed())return null;
+  await checkWalletAccountEndpoint(rpc,n.endpoint,signal,allowed);
+  requireWalletReadScope(signal,allowed);
+  const data=await readAtlasAddress((path,options)=>readScopedWalletAtlas(n,path,options),connection.address,{signal});
+  requireWalletReadScope(signal,allowed);
+  return {data,receivedAt:Date.now()};
+ },scope);
  if(!permitted)return <p>Allow Wallet account access in Security.</p>;
  if(!connection)return <p>Connect Synergy Wallet to see your account.</p>;
- if(!ready)return <p>Paired Wallet observations require the canonical Synergy Testnet v3 endpoint.</p>;
+ if(!ready)return <p>{atlasEndpointRequired}</p>;
  if(value.loading)return <p role="status">Reading Wallet observations…</p>;
  if(value.error)return <ErrorMessage error={value.error}/>;
  const data=value.data?.data,history=sourceRecords(data?.recentTransactions,'Transaction history');

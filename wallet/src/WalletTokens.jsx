@@ -1,18 +1,91 @@
-import {sourceRecords} from './source-records.js';
-import {useEffect,useState} from 'react';
+import {useState} from 'react';
 import {text} from '@synergy-network/dapp-data-view';
-const contract=item=>item.contractAddress??item.contract_address??item.contract;
-function reportedBalance(item){
- if(item.formattedBalance!=null)return {value:text(item.formattedBalance),units:'Index-formatted quantity (formattedBalance); denomination unverified'};
- if(item.balance!=null)return {value:text(item.balance),units:'Index quantity (balance); units unspecified'};
- if(item.balanceNwei!=null){const raw=item.balanceNwei,valid=typeof raw==='string'&&/^[0-9]{1,78}$/.test(raw)||typeof raw==='number'&&Number.isSafeInteger(raw)&&raw>=0;return {value:valid?text(raw):'Unavailable',units:'Raw index quantity (balanceNwei); not converted to token units or SNRG'};}
- return {value:'Unavailable',units:'No supported balance field supplied'};
+import {sourceRecords} from './source-records.js';
+import {reportedTokenDecimals, reportedTokenQuantity, tokenBalanceSource, tokenBalanceSources,
+  rpcTokenBalanceSources} from './token-balance-inventory.js';
+import {WalletTokenProvenance} from './WalletTokenProvenance.jsx';
+import {WalletRpcTokenDefinition} from './WalletRpcTokenDefinition.jsx';
+
+const contractAddress = item => item.contractAddress ?? item.contract_address ?? item.contract;
+const tokenAddress = item => item.tokenAddress;
+
+function TokenDetails({item, inventory, sources, accountKey, endpoint, canRead, onClose}) {
+  const inventoryKind = inventory.kind;
+  const source = tokenBalanceSource(item, inventoryKind);
+  const quantity = reportedTokenQuantity(item, inventoryKind);
+  return <aside aria-label="Selected token">
+    <h3>{text(item.name || item.symbol)}</h3>
+    <dl>
+      <dt>Symbol</dt><dd>{text(item.symbol)}</dd>
+      {inventoryKind !== 'rpc' && <><dt>Contract address</dt><dd>{source === 'sts' ? 'Native STS token' : text(contractAddress(item))}</dd></>}
+      {tokenAddress(item) != null && <><dt>Token address</dt><dd>{text(tokenAddress(item))}</dd></>}
+      {item.tokenId != null && <><dt>Token ID</dt><dd>{text(item.tokenId)}</dd></>}
+      <dt>Reported standard</dt><dd>{text(item.tokenStandard)}</dd>
+      <dt>Reported decimals</dt><dd>{reportedTokenDecimals(item.decimals) ?? 'Unavailable'}</dd>
+      <dt>Reported quantity</dt><dd>{quantity.value}</dd>
+      <dt>Quantity interpretation</dt><dd>{quantity.units}</dd>
+      {source !== 'other' && <><dt>Reported atomic quantity</dt><dd>{quantity.raw ?? 'Unavailable'}</dd></>}
+      <dt>Source</dt><dd>{sources[source]}</dd>
+      {(source === 'sts' || source === 'synq') && <><dt>{source === 'sts' ? 'Token creation block' : 'Deployment block'}</dt><dd>{text(item.deployedBlock)}</dd></>}
+      {source === 'rpcSts' && <><dt>Reported freeze flag</dt><dd>{item.frozen ? 'Frozen' : 'Clear'}</dd></>}
+      <dt>Provenance verification</dt><dd>Not independently verified</dd>
+    </dl>
+    {source === 'synq' && <p>This entry records the initial allocation. Current holdings require a balance observation.</p>}
+    {accountKey && <WalletTokenProvenance item={item} accountKey={accountKey}/>}
+    {source === 'rpcSts' && endpoint && canRead &&
+      <WalletRpcTokenDefinition key={item.tokenId} {...{endpoint, inventory, item, canRead}}/>}
+    <button onClick={onClose}>Close token details</button>
+  </aside>;
 }
-export function WalletTokens({data}){
- const [search,setSearch]=useState(''),[selected,setSelected]=useState(null);
- useEffect(()=>setSelected(null),[data]);
- const source=sourceRecords(Array.isArray(data)?data:[data?.items,data?.tokens,data?.balances].find(Array.isArray),'Token balances'),items=source.items;
- const current=items.includes(selected)?selected:null;
- const matches=items.filter(item=>[item.symbol,item.name,contract(item)].some(v=>typeof v==='string'&&v.toLowerCase().includes(search.trim().toLowerCase()))||!search.trim());
- return <>{source.notice&&<p role="alert">{source.notice}</p>}<p>Source: Atlas token-balance index. Values and asset metadata are reported by the index; Portal has not independently verified token provenance or spendability.</p><label>Search tokens<input value={search} maxLength={160} onChange={e=>setSearch(e.target.value)}/></label>{matches.length?<div className="integration-table" role="region" aria-label="Wallet token balances" tabIndex={0}><table><thead><tr><th>Asset</th><th>Reported balance</th><th>Contract</th></tr></thead><tbody>{matches.map((item,i)=><tr key={i}><td><button onClick={()=>setSelected(item)}>{text(item.symbol||item.name)}</button></td><td>{reportedBalance(item).value}<small style={{display:'block'}}>{reportedBalance(item).units}</small></td><td>{text(contract(item))}</td></tr>)}</tbody></table></div>:<p>{items.length?'No returned tokens match this search.':source.notice?'No usable token records are available in this source view.':'The index returned no token balances.'}</p>}{current&&<aside aria-label="Selected token"><h3>{text(current.name||current.symbol)}</h3><dl><dt>Symbol</dt><dd>{text(current.symbol)}</dd><dt>Contract</dt><dd>{text(contract(current))}</dd><dt>Reported decimals</dt><dd>{Number.isSafeInteger(current.decimals)&&current.decimals>=0&&current.decimals<=255?current.decimals:'Unavailable'}</dd><dt>Reported balance</dt><dd>{reportedBalance(current).value}</dd><dt>Quantity interpretation</dt><dd>{reportedBalance(current).units}</dd><dt>Provenance verification</dt><dd>Not independently verified</dd></dl><p>Missing decimals are not assumed to be SNRG decimals. No external token metadata, scripts or media are loaded.</p><button onClick={()=>setSelected(null)}>Close token details</button></aside>}</>;
+
+export function WalletTokens({inventory, endpoint, canRead}) {
+  const [search, setSearch] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [selected, setSelected] = useState(null);
+  if (selected && selected.inventory !== inventory) setSelected(null);
+
+  const inventoryKind = inventory.kind;
+  const fromRpc = inventoryKind === 'rpc';
+  const sources = fromRpc ? rpcTokenBalanceSources : tokenBalanceSources;
+  const source = sourceRecords(inventory.items, 'Token balances');
+  const query = search.trim().toLowerCase();
+  const matches = source.items.filter(item => {
+    if (sourceFilter && sourceFilter !== tokenBalanceSource(item, inventoryKind)) return false;
+    const fields = [item.symbol, item.name, contractAddress(item), tokenAddress(item), item.tokenId];
+    return !query || fields.some(value => typeof value === 'string' && value.toLowerCase().includes(query));
+  });
+  const current = selected?.inventory === inventory && matches.includes(selected.item) ? selected.item : null;
+  const uniqueContract = typeof current?.contractAddress === 'string' &&
+    source.records.filter(item => item.contractAddress === current.contractAddress).length === 1;
+
+  return <>
+    {source.notice && <p role="alert">{source.notice}</p>}
+    {!fromRpc && <p>Atlas supplies indexed STS balances and initial SynQ deployment quantities. Inventory may be incomplete. Provenance and spendability remain unverified.</p>}
+    {!fromRpc && !inventory.accountReported && <p>This Atlas response format does not echo the account.</p>}
+    <div className="integration-filters">
+      <label>{fromRpc ? 'Search RPC tokens' : 'Search tokens'}<input value={search} maxLength={160} onChange={event => setSearch(event.target.value)}/></label>
+      <label>{fromRpc ? 'RPC balance source' : 'Balance source'}<select value={sourceFilter} onChange={event => setSourceFilter(event.target.value)}>
+        <option value="">All sources</option>
+        {Object.entries(sources).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      </select></label>
+    </div>
+    {matches.length ? <div className="integration-table" role="region" aria-label={fromRpc ? 'Selected RPC token balances' : 'Wallet token balances'} tabIndex={0}>
+      <table>
+        <thead><tr><th>Asset</th><th>Reported quantity</th><th>Asset address</th></tr></thead>
+        <tbody>{matches.map((item, index) => {
+          const quantity = reportedTokenQuantity(item, inventoryKind);
+          const kind = tokenBalanceSource(item, inventoryKind);
+          const address = kind === 'sts' ? tokenAddress(item) : contractAddress(item) ?? tokenAddress(item);
+          return <tr key={index}>
+            <td><button onClick={() => setSelected({inventory, item})}>{text(item.symbol || item.name)}</button><small>{sources[kind]}</small></td>
+            <td>{quantity.value}<small>{quantity.units}</small></td>
+            <td>{text(address)}</td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </div> : <p>{source.items.length ? 'No returned tokens match these filters.' :
+      source.notice ? 'No usable token records are available in this source view.' : 'The index returned no token records.'}</p>}
+    {current && <TokenDetails item={current} {...{inventory, sources, endpoint, canRead}}
+      accountKey={uniqueContract ? inventory.accountKey : null} onClose={() => setSelected(null)}/>}
+  </>;
 }

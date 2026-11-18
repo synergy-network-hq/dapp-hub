@@ -1,19 +1,94 @@
 import {isTauri,invoke} from "@tauri-apps/api/core";
+import {parseRequestHistory} from './request-history.js';
+import {genesisStageLocalReview} from './genesis-stage-files.js';
+import {verifyIdentityRequest} from './identity-evidence.js';
 export async function nodeNetworkRequests(){
  if(!isTauri())throw Error('Local request history requires the native Portal app. No native history has been read.');
- const value=await invoke('portal_nodenetwork_requests');
- const pin=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
- const states=new Set(['dispatch_intent','uncertain','response_received','verified_target_outcome','verified_bootstrap_absence']);
- const operations=new Set(['authorization_stage','update_stage','bare_bootstrap_rollback','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_prepare','guest_create','guest_stop','guest_remove','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
- const time=value=>Number.isSafeInteger(value)&&value>=0&&value<=8640000000000000;
- if(value?.schema!=='nodenetwork-local-requests-v1'||value.limit!==256||value.remoteJobRecovery!==false||value.automaticReplay!==false||!Array.isArray(value.records)||value.records.length>256||value.records.some(r=>!r||r.version!==1||!pin(r.id)||!pin(r.target_digest)||!pin(r.request_digest)||!operations.has(r.operation)||!states.has(r.state)||!time(r.recorded_at_ms)||(r.state==='dispatch_intent'?(r.observed_at_ms!==null||r.response_ok!==null):(!time(r.observed_at_ms)||(r.state==='uncertain'?r.response_ok!==null:r.state==='verified_bootstrap_absence'?(r.response_ok!==null||r.operation!=='bootstrap'||r.observed_at_ms<r.recorded_at_ms):r.state==='verified_target_outcome'?(r.response_ok!==true||!['authorization_stage','update_stage','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_prepare','guest_create','identity_generate','formation_prepare','genesis_stage','genesis_bind'].includes(r.operation)):typeof r.response_ok!=='boolean'))))||new Set(value.records.map(r=>r.id)).size!==value.records.length)throw Error('Local request history returned an unsupported record. History is unavailable; no empty or completed state is inferred.');
- return value;
+ return parseRequestHistory(await invoke('portal_nodenetwork_requests'));
+}
+const custodyReceiptPorts = {
+ genesis_stage:{command:'portal_nodenetwork_review_genesis_stage_receipt',schema:'nodenetwork-genesis-stage-receipt-review-v1',label:'Genesis staging'},
+ genesis_bind:{command:'portal_nodenetwork_review_genesis_binding_receipt',schema:'nodenetwork-genesis-binding-receipt-review-v1',label:'Genesis binding'},
+ formation_prepare:{command:'portal_nodenetwork_review_formation_receipt',schema:'nodenetwork-formation-receipt-review-v1',label:'formation preparation'},
+ identity_generate:{command:'portal_nodenetwork_review_identity_receipt',schema:'nodenetwork-identity-receipt-review-v1',label:'identity preparation'},
+};
+export async function nodeNetworkReviewCustodyReceipt(target, recordId, operation) {
+ if (!Object.hasOwn(custodyReceiptPorts, operation)) throw Error('Select a supported custody receipt review.');
+ const {command,schema,label}=custodyReceiptPorts[operation];
+ if (!isTauri()) throw Error(`The ${label} receipt review requires the native Portal app.`);
+ const reply=await invoke(command,{target,recordId});
+ const identity=operation==='identity_generate';
+ const attributed=identity&&Object.hasOwn(reply??{},'provenance');
+ if (!reply || typeof reply !== 'object' || Array.isArray(reply) || Object.keys(reply).length !== (attributed?3:2)
+  || reply.schema !== schema || !['match','different','absent','unsupported'].includes(reply.status)) {
+  throw Error(`The native bridge returned unsupported ${label} receipt evidence.`);
+ }
+ if(identity) {
+  const pending=['match','different'].includes(reply.status);
+  const provenance=attributed?reply.provenance:pending?'genesis_input':'none';
+  if(!(pending?['identity_request','genesis_input']:['none']).includes(provenance)) {
+   throw Error('The native bridge returned unsupported identity preparation receipt evidence.');
+  }
+  return {status:reply.status,provenance};
+ }
+ return reply.status;
+}
+export async function nodeNetworkReviewSoftwareReceipt(target,recordId,operation,selection) {
+ if (!['install','upgrade'].includes(operation)) throw Error('Select a supported installation receipt review.');
+ if (!isTauri()) throw Error(`The ${operation} receipt review requires the native Portal app.`);
+ const {release_id:releaseId,manifest_sha256:manifestSha256}=selection;
+ const args=operation==='install'?{
+  target,recordId,selection:{releaseId,manifestSha256,networkId:selection.network_id,chainId:selection.chain_id,nodeName:selection.node_name},
+ }:{target,recordId,releaseId,manifestSha256};
+ const reply=await invoke(`portal_nodenetwork_review_${operation}_receipt`,args);
+ if (!reply || typeof reply!=='object' || Array.isArray(reply) || Object.keys(reply).length!==2
+  || reply.schema!==`nodenetwork-${operation}-receipt-review-v1` || !['match','different','unavailable'].includes(reply.status)) {
+  throw Error(`The native bridge returned unsupported ${operation} receipt evidence.`);
+ }
+ return reply.status;
 }
 // First-party native extension only; remote community HTML has no Tauri bridge.
 export async function nodeNetworkHostStatus(){if(!isTauri())throw new Error('Open the native Portal app to inspect this machine.');return invoke('portal_nodenetwork_status');}
 export async function nodeNetworkReviewMaster(){if(!isTauri())throw new Error('Open the native Portal app to inspect the node master.');return invoke('portal_nodenetwork_review_master');}
+export async function nodeNetworkReviewOperatorKey(){
+ if(!isTauri())throw Error('Open the native Portal app to inspect an operator public key.');
+ let reply;
+ try{reply=await invoke('portal_nodenetwork_review_operator_key');}
+ catch{throw Error('The public key could not be reviewed. Select one OpenSSH Ed25519 .pub file.');}
+ if(reply===null)return null;
+ if(!reply || Object.keys(reply).length!==3 || reply.schema!=='nodenetwork-operator-public-key-v1'
+  || reply.algorithm!=='ssh-ed25519' || typeof reply.canonicalSha256!=='string'
+  || reply.canonicalSha256.length!==64 || /[^0-9a-f]/.test(reply.canonicalSha256)) throw Error('The native public key inspection returned an unsupported result.');
+ return reply.canonicalSha256;
+}
 export async function nodeNetworkBootstrap(target,operator,parameters){if(!isTauri())throw new Error('Target bootstrap requires the native Portal app.');const reply=await withNodeChange(()=>invoke('portal_nodenetwork_bootstrap',{target,operator,parameters}));if(reply===null)return null;if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid bootstrap response.');if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Bootstrap refused the operation.'}`);return reply.result;}
-export async function nodeNetworkController(target,operation,parameters={}){if(!isTauri())throw new Error('Node management requires the native Portal app.');const call=()=>invoke('portal_nodenetwork_controller',{target,request:{version:1,operation,parameters}});const reply=await (readOperations.has(operation)?call():withNodeChange(call));if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid controller response.');if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Controller refused the operation.'}`);return reply.result;}
+export async function nodeNetworkController(target,operation,parameters={}){
+ if(!isTauri())throw new Error('Node management requires the native Portal app.');
+ const args={target,request:{version:1,operation,parameters}};
+ const call=()=>invoke('portal_nodenetwork_controller',args);
+ const reply=await (readOperations.has(operation)?call():withNodeChange(call));
+ if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid controller response.');
+ if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Controller refused the operation.'}`);
+ if(operation==='identity_generate'||operation==='identity_status'&&reply.result?.pending===true) {
+  await verifyIdentityRequest(reply.result,operation==='identity_generate'?'generation':'status');
+ }
+ return reply.result;
+}
+
+export async function nodeNetworkReviewGenesisStageInputs(){
+ if(!isTauri())throw Error('Open native Portal to review public Genesis files.');
+ const reply=await invoke('portal_nodenetwork_review_genesis_stage_inputs');
+ return reply===null?null:genesisStageLocalReview(reply);
+}
+
+export async function nodeNetworkStageGenesis(target,review){
+ if(!isTauri())throw Error('Genesis staging requires native Portal.');
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_stage_genesis',{target,review}));
+ if(reply===null)return null;
+ if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid Genesis staging response.');
+ if(!reply.ok)throw Error(reply.error?.message||'The controller refused Genesis staging.');
+ return reply.result;
+}
 
 export async function exportNodeNetworkPublicArtifact(target,kind,expectedAddress,expectedScopeSha256){
  if(!isTauri())throw Error('Saving a verified public artifact requires the native Portal app.');
@@ -25,7 +100,7 @@ export async function exportNodeNetworkPublicArtifact(target,kind,expectedAddres
 // Survives controller component remounts; does not replace native grants or locks.
 let changePending=false;
 async function withNodeChange(task){if(changePending)throw Error('A NodeNetwork change is still pending. Wait for its result and inspect the target before repeating an uncertain operation.');changePending=true;try{return await task();}finally{changePending=false;}}
-const readOperations=new Set(['network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','vpn_diagnostics','diagnostics']);
+const readOperations=new Set(['network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','vpn_diagnostics','diagnostics','genesis_stage_preflight']);
 
 
 export async function stageNodeNetworkSignedGenesis(target,expectedAddress){
@@ -138,4 +213,11 @@ export async function nodeNetworkTreasury(target,operation){
  if(reply?.pending===false&&operation!=='export'&&Object.keys(reply).length===1)return reply;
  if(reply?.schema!==(exported?'nodenetwork-formation-treasury-export-v1':'nodenetwork-formation-treasury-v1')||reply.pending!==true||reply.possession_verified!==true||reply.allocation_nwei!=='5000000000000000'||typeof reply.address!=='string'||!reply.address.startsWith('syna1')||(exported&&reply.canary_testing_treasury?.address!==reply.address))throw Error('Unsupported ordinary treasury result; no custody or allocation is inferred.');
  return reply;
+}
+
+export async function nodeNetworkRequestScope(target){
+ if(!isTauri())throw Error('Target request scope requires the native Portal app.');
+ const value=await invoke('portal_nodenetwork_request_scope',{target});
+ if(!value||Object.keys(value).length!==1||typeof value.targetDigest!=='string'||!/^[0-9a-f]{64}$/.test(value.targetDigest))throw Error('Native target request scope is unavailable.');
+ return value;
 }

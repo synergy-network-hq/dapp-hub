@@ -18,6 +18,7 @@
     "@synergy-network/dapp-learn": "link:../learn",
     "@synergy-network/dapp-relay": "link:../relay",
     "@synergy-network/dapp-forge-projects": "link:../forge-projects",
-    "@synergy-network/dapp-spark": "link:../spark"
+    "@synergy-network/dapp-spark": "link:../spark",
+    "@synergy-network/dapp-horizon": "link:../horizon"
   }
 }

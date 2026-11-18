@@ -1,0 +1,38 @@
+{
+  "schema_version": "synergy.validator-operations.v1",
+  "observed_at_utc": "2026-11-15T13:00:00Z",
+  "discovery": {
+    "validator_id": "fixture-validator",
+    "hostname": "fixture-hostname",
+    "chain_id": "1266",
+    "network": "fixture-network",
+    "incarnation": "fixture-incarnation",
+    "validator_public_key_fingerprint": "fixture-validator-key",
+    "consensus_public_key_fingerprint": "fixture-consensus-key",
+    "ingress_public_key_fingerprint": "fixture-ingress-key",
+    "key_binding_status": "BOUND",
+    "vpn_address": "192.0.2.2",
+    "p2p_address": "192.0.2.2:5622",
+    "management_address": "192.0.2.2:47990",
+    "data_path": "/fixture/private-path"
+  },
+  "release": {
+    "release_id": "fixture-release",
+    "release_tag": "v-fixture",
+    "binary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "core_revision": "fixture-core",
+    "synq_revision": "fixture-synq",
+    "aegis_revision": "fixture-aegis",
+    "genesis_hash": "fixture-genesis",
+    "protocol_version": "fixture-protocol",
+    "protected_pipeline_version": "fixture-pipeline",
+    "validator_config_version": "fixture-config"
+  },
+  "service": {"state":"ACTIVE","unit_identity":"fixture.service","uptime_seconds":300,"restart_count":0},
+  "peers": {"p2p_listener_ready":true,"connected_peer_count":4,"authenticated_validator_peer_count":4,"expected_validator_peer_count":4,"peer_quorum_threshold":3},
+  "chain": {"head_height":18446744073709551615,"finalized_height":18446744073709551614,"head_progress":"ADVANCING","finality_progress":"ADVANCING","sync_target_height":18446744073709551615,"quorum_available":true,"divergence_detected":false},
+  "posy": {"current_height":18446744073709551615,"finalized_height":18446744073709551614,"current_view":9007199254740993,"expected_proposer":"fixture-validator","proposal_seen":true,"validation_votes":4,"validation_votes_required":4,"vc_status":"FORMED","finality_votes":4,"finality_votes_required":4,"qc_status":"FORMED","view_change_count":0},
+  "protected_pipeline": {"target_height":18446744073709551615,"source":"NORMAL_ETDAG_STEADY_STATE","phase":"CONSUMED","availability_count":4,"availability_required":4,"cutoff_marker_count":4,"cutoff_markers_required":4,"cut_ready":true,"cut_root":"fixture-cut","order_ready":true,"protected_batch_root":"fixture-batch","parent_commitment":"fixture-parent","reveal_authorized":true,"reveal_share_count":4,"reveal_shares_required":4,"execution_ready":true,"consumed":true},
+  "resources": {"cpu_percent":12.5,"memory_bytes":536870912,"memory_percent":25,"disk_used_percent":30,"network_rx_bytes_per_second":1000,"network_tx_bytes_per_second":2000},
+  "preflight": [{"id":"chain_id","status":"PASS","detail":"fixture detail excluded"}]
+}

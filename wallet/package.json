@@ -5,7 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.jsx",
-    "./widget": "./src/Widget.jsx"
+    "./widget": "./src/Widget.jsx",
+    "./address": "./src/wallet-address.js",
+    "./sts-activity": "./src/sts-activity.js",
+    "./native-block-membership": "./src/native-block-membership.js",
+    "./receipt-fee-breakdown": "./src/receipt-fee-breakdown.js"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

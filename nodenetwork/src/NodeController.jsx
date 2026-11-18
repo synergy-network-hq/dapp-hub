@@ -1,10 +1,21 @@
+import {CustodyStatus} from './CustodyStatus.jsx';
+import {IdentityPreflight} from './IdentityPreflight.jsx';
+import {custodyStatusObservation} from './custody-status.js';
+import {identityPreflightObservation,identityGenerationObservation} from './identity-preflight.js';
+import {recoveryPreflightObservation} from './recovery-handoff.js';
+import {targetHealthObservation,nodeServiceRegistrationObservation} from './target-health.js';
+import {targetInventoryObservation} from './removal-preflight.js';
+import {TargetInventoryEvidence} from './Offboarding.jsx';
+import {VpnStatus} from './VpnStatus.jsx';
+import {vpnStatusObservation} from './vpn-status.js';
+import {bootstrapObservation} from './bootstrap-observation.js';
 import {TreasuryFormation} from './TreasuryFormation.jsx';
 import {FleetReadiness} from './FleetReadiness.jsx';
 import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap,nodeNetworkSelectGuest,nodeNetworkConfigureGuest} from './native-services.js';
-import {Card,Detail,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
+import {Card,Detail,ErrorMessage,Table} from '@synergy-network/portal-native/dapp-sdk';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
 import {installParameters} from './nodeNetwork.js';
@@ -12,9 +23,9 @@ import {updateStageView,authorizationView,acceptedReview,approvedReviewScope,che
 
 const MUTATIONS=new Set(['network_formation_prepare','network_formation_sign','authorization_stage','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
 const PREFLIGHTS=new Set(['install_preflight','upgrade_preflight','uninstall_preflight']);
-const LABELS={bare_bootstrap_rollback:'Remove exact bare bootstrap',update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_diagnostics:'Read VPN diagnostics',vpn_reconcile:'Reconcile original VPN enrollment',vpn_revoke:'Cancel exact provider setup key',vpn_retire:'Retire exact VPN peer',vpn_status:'Read VPN status',start:'Start validator',health:'Read node health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
+const LABELS={bare_bootstrap_rollback:'Remove exact bare bootstrap',update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_diagnostics:'Read VPN diagnostics',vpn_reconcile:'Reconcile original VPN enrollment',vpn_revoke:'Cancel exact provider setup key',vpn_retire:'Retire exact VPN peer',vpn_status:'Read VPN status',start:'Start validator',health:'Read target health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
 
-export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onSelectTarget}){
+export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onSelectTarget,onOpenDiagnostics,targetScopeCurrent=()=>permitted}){
  const [operator,setOperator]=useState('');
  const [state,setState]=useState(null),[pending,setPending]=useState(null),[error,setError]=useState(''),[results,setResults]=useState({}),[latest,setLatest]=useState(null),[review,setReview]=useState(null),[confirmation,setConfirmation]=useState('');
  const [networkReview,setNetworkReview]=useState(null);
@@ -23,11 +34,18 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const active=useRef(true),locked=useRef(false);
  useEffect(()=>{active.current=true;return()=>{active.current=false;};},[]);
  const targetKey=JSON.stringify(target);
+ const scopeKey=JSON.stringify([targetKey,permitted,form.release_id,form.manifest_sha256,form.network_id,form.chain_id,form.node_name]);
+ const scopeContext=useRef({key:scopeKey});
+ if(scopeContext.current.key!==scopeKey)scopeContext.current={key:scopeKey};
+ const isCurrent=scope=>active.current&&scope===scopeContext.current&&targetScopeCurrent();
+ useEffect(()=>{setState(null);setResults({});setLatest(null);setPending(null);setReview(null);setConfirmation('');setIdentityReview(null);setFormationReview(null);setFormationRecord(null);setBindingReview(null);locked.current=false;},[scopeKey]);
  useEffect(()=>{setNetworkReview(null);},[targetKey]);
  const gateFor=operation=>workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus:results.vpn_status?.response,identityReview,formationReview,formationRecord,bindingReview,networkReview});
 
  async function perform(operation){
+  const scope=scopeContext.current;
   if(!permitted||locked.current)return;
+  if(!targetScopeCurrent()){setError('The selected target scope changed. Inspect the original target before another operation.');return;}
   let parameters={};
   try{
    if(operation==='authorization_stage'){
@@ -41,7 +59,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    }
   }catch(failure){setError(failure.message);return;}
   locked.current=true;setPending(operation);setError('');setLatest(null);
-  setResults(previous=>{const next={...previous};delete next[operation];if(MUTATIONS.has(operation)){delete next.health;delete next.diagnostics;delete next.vpn_status;if(operation==='uninstall')return {};}return next;});
+  setResults(previous=>{if(operation==='target')return {};const next={...previous};delete next[operation];if(MUTATIONS.has(operation)){delete next.health;delete next.diagnostics;delete next.vpn_status;if(operation==='uninstall')return {};}return next;});
   if(operation==='target'||MUTATIONS.has(operation)||PREFLIGHTS.has(operation)){setReview(null);setConfirmation('');}
   if(operation==='target'||operation==='identity_preflight'||MUTATIONS.has(operation))setIdentityReview(null);
   if(operation==='formation_status'||operation==='formation_prepare'){setFormationRecord(null);setBindingReview(null);}
@@ -50,7 +68,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   if(operation==='target'||MUTATIONS.has(operation))setState(null);
   try{
    const raw=operation==='network_formation_prepare'?await prepareNodeNetworkGenesis(target,formationRecord.formation_sha256):operation==='authorization_stage'?await stageNodeNetworkAuthorization(target,operator):operation==='bootstrap'?await nodeNetworkBootstrap(target,operator,parameters):operation==='genesis_stage_existing'?await stageNodeNetworkSignedGenesis(target,`network:${form.chain_id}:${form.network_id}`):operation==='genesis_stage'?await stageNodeNetworkSignedGenesis(target,formationRecord.address):await nodeNetworkController(target,operation,parameters);
-   if(!active.current)return;
+   if(!isCurrent(scope))return;
    if((operation==='bootstrap'||operation==='authorization_stage'||operation==='network_formation_prepare')&&raw===null){setError('Native review cancelled. No completed operation was reported.');return;}
    if((operation==='genesis_stage'||operation==='genesis_stage_existing')&&raw===null)return;
    if(operation==='target')setState(checkedTarget(raw,target));
@@ -58,7 +76,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     if(!acceptedReview(operation,parameters,raw,target))throw Error('The target did not return an affirmative result for this preflight. No matching review was recorded.');
     setReview({target:targetKey,scope:approvedReviewScope(operation,parameters)});
    }
-   if(operation==='bootstrap'&&(raw?.root!==target.root||raw.controllerEnrolled!==true||raw.rootDeletionGuardActive!==true||raw.stagedRelease!==parameters.release_id||raw.manifestSha256!==parameters.manifest_sha256))throw Error('The controller enrollment response did not confirm the selected target, release and removal guard. Inspect the target before attempting another operation.');
+   if(operation==='bootstrap')bootstrapObservation(raw,parameters);
    const response=operation.startsWith('network_formation_')?networkFormationView(raw,operation==='network_formation_sign'?networkReview:null):operation==='authorization_stage'||operation==='authorization_status'?authorizationView(raw):operation==='diagnostics'?diagnosticsView(raw):operation==='vpn_diagnostics'?vpnDiagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
     operation==='identity_status'?identityStatusView(raw):
     operation==='identity_preflight'||operation==='identity_generate'?identityView(raw,operation==='identity_generate'):
@@ -67,60 +85,67 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     operation==='formation_status'?formationStatusView(raw):
     operation==='genesis_stage_existing'?existingGenesisStageView(raw,form):operation==='genesis_stage'?genesisStageView(raw,formationRecord):
     operation==='genesis_binding_preflight'||operation==='genesis_bind'?genesisBindingView(raw,formationRecord,parameters.genesis_sha256??null):raw;
+   const evidence=operation==='health'?targetHealthObservation(raw):operation==='inventory'?targetInventoryObservation(raw):operation==='vpn_status'?vpnStatusObservation(raw):operation==='register'?nodeServiceRegistrationObservation(raw):operation==='identity_generate'?identityGenerationObservation(raw,{networkId:identityReview?.network_id,chainId:identityReview?.chain_id,genesisSha256:identityReview?.genesis_sha256}):['identity_status','formation_status'].includes(operation)?custodyStatusObservation(operation,raw):['genesis_binding_preflight','genesis_bind'].includes(operation)?{title:'Staged Genesis binding',networkId:response.network_id,chainId:response.chain_id,validatorAddress:response.address,genesisSha256:response.genesis_sha256,bound:response.bound,stageReceiptVerified:typeof raw.stage_request_sha256==='string'&&/^[0-9a-f]{64}$/.test(raw.stage_request_sha256)}:['identity_preflight','formation_preflight','genesis_stage_preflight'].includes(operation)?identityPreflightObservation(operation,raw):operation==='recovery_preflight'?recoveryPreflightObservation(raw):null;
    if(operation.startsWith('network_formation_'))setNetworkReview({target:targetKey,...response});
    if(operation==='identity_preflight')setIdentityReview({target:targetKey,...response});
    if(operation==='formation_preflight')setFormationReview({target:targetKey,...response});
    if(operation==='formation_prepare'||operation==='formation_status'){
-    if(operation==='formation_prepare'&&response.formation_sha256!==parameters.formation_sha256)throw Error('The prepared identity did not match the reviewed formation.');
+    if(operation==='formation_prepare'&&(!formationReview||response.formation_sha256!==parameters.formation_sha256||response.network_id!==formationReview.network_id||response.chain_id!==formationReview.chain_id||response.formation_id!==formationReview.formation_id))throw Error('The prepared identity did not match the reviewed formation.');
     setFormationRecord(response);
    }
    if(operation==='genesis_binding_preflight'||operation==='genesis_bind')setBindingReview({target:targetKey,...response});
-   const record={operation,parameters,response,receivedAt:Date.now()};
+
+   const record={operation,parameters,response,evidence,receivedAt:Date.now()};
    setResults(previous=>({...previous,[operation]:record}));setLatest(record);
-  }catch(failure){if(active.current)setError(`${String(failure?.message||failure)}${MUTATIONS.has(operation)?' Inspect the target to reconcile its state before repeating this operation.':''}`);}
-  finally{locked.current=false;if(active.current)setPending(null);}
+  }catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)}${MUTATIONS.has(operation)?' Inspect the target to reconcile its state before repeating this operation.':''}`);}
+  finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  async function nativeVpn(operation){
+  const scope=scopeContext.current;
   if(!permitted||locked.current)return;
   locked.current=true;setPending(`vpn_${operation}`);setError('');
-  try{const value=await nodeNetworkVpn(target,operation);if(!active.current||value===null)return;
+  try{const value=await nodeNetworkVpn(target,operation);if(!isCurrent(scope)||value===null)return;
    if(operation==='retire'){if(value.retired!==true||value.absence_verified!==true)throw Error('Provider retirement was not verified.');setLatest({operation:'vpn_retire',parameters:{},response:value,receivedAt:Date.now()});}
    else if(operation==='revoke'){if(value.setup_key_absent!==true)throw Error('Provider did not verify setup-key absence.');setLatest({operation:'vpn_revoke',parameters:{},response:{setup_key_absent:true},receivedAt:Date.now()});}
-   else{const response=vpnView(value);setResults(old=>({...old,vpn_status:{operation:'vpn_status',response,receivedAt:Date.now()}}));setLatest({operation:`vpn_${operation}`,parameters:{},response,receivedAt:Date.now()});}
+   else{const response=vpnView(value),evidence=vpnStatusObservation(value);setResults(old=>({...old,vpn_status:{operation:'vpn_status',response,evidence,receivedAt:Date.now()}}));setLatest({operation:`vpn_${operation}`,parameters:{},response,receivedAt:Date.now()});}
    setState(null);
-  }catch(failure){if(active.current)setError(`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
-  finally{locked.current=false;if(active.current)setPending(null);}
+  }catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
+  finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  async function rollbackBare(){
+  const scope=scopeContext.current;
   if(!permitted||locked.current||!operator)return;
   locked.current=true;setPending('bare_bootstrap_rollback');setError('');
-  try{const value=await rollbackBareNodeBootstrap(target,operator,form.release_id);if(!active.current||value===null)return;setState(null);setLatest({operation:'bare_bootstrap_rollback',parameters:{},response:value,receivedAt:Date.now()});}
-  catch(failure){if(active.current)setError(`${String(failure?.message||failure)} Do not repeat removal after an uncertain result.`);}
-  finally{locked.current=false;if(active.current)setPending(null);}
+  try{const value=await rollbackBareNodeBootstrap(target,operator,form.release_id);if(!isCurrent(scope)||value===null)return;setState(null);setLatest({operation:'bare_bootstrap_rollback',parameters:{},response:value,receivedAt:Date.now()});}
+  catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)} Do not repeat removal after an uncertain result.`);}
+  finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  async function stageUpdate(){
+  const scope=scopeContext.current;
   if(!permitted||!state||locked.current)return;
   locked.current=true;setPending('update_stage');setError('');setReview(null);
-  try{const value=await stageNodeNetworkUpdate(target);if(!active.current||value===null)return;const response=updateStageView(value);setForm(current=>({...current,release_id:response.release_id,manifest_sha256:response.manifest_sha256}));setState(null);setLatest({operation:'update_stage',parameters:{},response,receivedAt:Date.now()});}
-  catch(failure){if(active.current)setError(`${String(failure?.message||failure)} Read authorization status to reconcile before repeating.`);}
-  finally{locked.current=false;if(active.current)setPending(null);}
+  try{const value=await stageNodeNetworkUpdate(target);if(!isCurrent(scope)||value===null)return;const response=updateStageView(value);setForm(current=>({...current,release_id:response.release_id,manifest_sha256:response.manifest_sha256}));setState(null);setLatest({operation:'update_stage',parameters:{},response,receivedAt:Date.now()});}
+  catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)} Read authorization status to reconcile before repeating.`);}
+  finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  async function exportPublic(kind){
+  const scope=scopeContext.current;
   const address=formationRecord?.address;
   const operation=kind==='formation'?'formation_export':'bound_export';
   if(!permitted||!address||locked.current||(kind==='formation'?!gateFor(operation).available:!bindingReview?.bound))return;
   locked.current=true;setPending(operation);setError('');setLatest(null);
   try{
    const response=publicExportView(await exportNodeNetworkPublicArtifact(target,kind,address,kind==='formation'?formationRecord.formation_sha256:bindingReview.genesis_sha256),address);
-   if(active.current&&response)setLatest({operation,parameters:{},response,receivedAt:Date.now()});
-  }catch(failure){if(active.current)setError(String(failure?.message||failure));}
-  finally{locked.current=false;if(active.current)setPending(null);}
+   if(isCurrent(scope)&&response)setLatest({operation,parameters:{},response,receivedAt:Date.now()});
+  }catch(failure){if(isCurrent(scope))setError(String(failure?.message||failure));}
+  finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  async function exportNetwork(){
+  const scope=scopeContext.current;
   if(!permitted||locked.current||!networkReview?.signed||networkReview.target!==targetKey)return;
   locked.current=true;setPending('network_formation_export');setError('');
-  try{const response=await exportNodeNetworkGenesis(target,networkReview.review_sha256);if(active.current&&response)setLatest({operation:'network_formation_export',parameters:{},response,receivedAt:Date.now()});}
-  catch(failure){if(active.current)setError(String(failure?.message||failure));}finally{locked.current=false;if(active.current)setPending(null);}
+  try{const response=await exportNodeNetworkGenesis(target,networkReview.review_sha256);if(isCurrent(scope)&&response)setLatest({operation:'network_formation_export',parameters:{},response,receivedAt:Date.now()});}
+  catch(failure){if(isCurrent(scope))setError(String(failure?.message||failure));}finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  function action(operation){
   const gate=gateFor(operation);
@@ -131,6 +156,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const setup=['install_preflight','install'];
  const vpn=results.vpn_status?.response;
  const exportRegistration=gateFor('formation_export');
+ const newest=operations=>operations.map(op=>results[op]).filter(Boolean).sort((a,b)=>b.receivedAt-a.receivedAt)[0];
+ const custody=newest(['identity_status','formation_status','identity_generate']);
+ const preparation=newest(['identity_preflight','formation_preflight','genesis_binding_preflight','genesis_bind','genesis_stage_preflight']);
  return <div className="native-controller">
   <Card title="Selected target" action={<button type="button" disabled={!permitted||!!pending} onClick={()=>perform('target')}>{LABELS.target}</button>}>
    <p>{target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} · {target.root}</p>
@@ -157,12 +185,12 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    </Card>
    <Card title="Join an existing network">
     <p>Verify the network’s signed Genesis, then generate a fresh identity on this host. Custody preparation does not enroll the VPN or authorize consensus.</p>
-    {['genesis_stage_existing','identity_status','identity_preflight','identity_generate'].map(action)}
+    {['genesis_stage_existing','identity_generate'].map(action)}
     {identityReview&&<Detail data={{network:identityReview.network_id,chainId:identityReview.chain_id,verifiedGenesisSha256:identityReview.genesis_sha256}}/>}
    </Card>
    <Card title="Stage A · Prepare a validator before Genesis">
     <p>Read the authenticated host first. Preparation generates independent APQE keys on the selected host and keeps private material there. It does not sign Genesis or grant validator membership.</p>
-    {action('formation_status')}{action('formation_preflight')}
+
     {formationReview&&<Detail data={{network:formationReview.network_id,chainId:formationReview.chain_id,formationId:formationReview.formation_id,reviewedFormationSha256:formationReview.formation_sha256}}/>}
     {action('formation_prepare')}
     <p role="status">{formationRecord?.pending===true?'Identity generated and verified · Public registration ready to export':formationRecord?.pending===false?'No prepared identity on this target':'Formation status not verified'}</p>
@@ -182,7 +210,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    </Card>
    <Card title="Stage B · Verify signed Genesis and bind custody">
     <p>For a freshly created engineering network, Portal re-verifies the original approved formation coordinator and its exact saved signed public export. Otherwise, select the independently signed Genesis, authority manifest and public key folder. Portal checks the target’s pinned hashes before sending the files. Verify the staged result before binding custody.</p>
-    {action('genesis_stage')}{action('genesis_binding_preflight')}
+    {action('genesis_stage')}
     {bindingReview&&<Detail data={{network:bindingReview.network_id,chainId:bindingReview.chain_id,address:bindingReview.address,verifiedGenesisSha256:bindingReview.genesis_sha256}}/>}
     <p role="status">{bindingReview?.bound===true?'Existing custody bound to the verified Genesis':bindingReview?'Genesis and signed membership verified · Custody not yet bound':'Genesis authorization pending verification'}</p>
     {action('genesis_bind')}
@@ -195,14 +223,40 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
      <FleetReadiness target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
      <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
     <p>{vpn?.connected&&vpn?.server_bound?'VPN connected and server binding observed':vpn?'VPN enrollment or connection pending':'VPN status not verified'}</p>
-    {['register','vpn_status','vpn_diagnostics','commission','start','health'].map(action)}
+    {['register','vpn_diagnostics','commission','start','health'].map(action)}
     {['enroll','reconcile','revoke','retire'].map(op=><button key={op} type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn(op)}>{op==='enroll'?'Authorize provider and enroll VPN once':op==='reconcile'?'Reconcile and verify original VPN enrollment':op==='retire'?'Retire exact VPN peer for removal':'Cancel exact provider setup key'}</button>)}
     <p>{results.commission?.response?.commissioned===true?'Commissioning confirmed by the target.':'Validator commissioning not verified.'} A start response does not establish running, admitted, participating, synchronized or healthy status. Verify runtime evidence independently.</p>
    </Card>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
-   {['authorization_status','health','vpn_status','vpn_diagnostics','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
+   {['authorization_status','health','vpn_diagnostics','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
    <p>Use health to verify the result after a start or restart. Recovery remains a separately qualified operation. This workspace does not offer arbitrary shell or checkpoint access.</p>
+  </Card>}
+  {tab==='Validator setup'&&<IdentityPreflight actions={<>{['identity_preflight','formation_preflight','genesis_binding_preflight'].map(action)}</>}
+   bindingAcknowledged={preparation?.operation==='genesis_bind'} observation={preparation?.evidence} receipt={preparation&&<ControllerReceipt receivedAt={preparation.receivedAt}/>}
+   permitted={permitted} busy={!!pending} canReviewFiles={()=>permitted&&targetScopeCurrent()}/>}
+  {['Validator setup','Management'].includes(tab)&&<CustodyStatus actions={<>{['identity_status','formation_status'].map(action)}</>}
+   prepared={custody?.operation==='identity_generate'} observation={custody?.evidence} receipt={custody&&<ControllerReceipt receivedAt={custody.receivedAt}/>}/>}
+  {tab==='Management'&&results.recovery_preflight?.evidence&&<Card title="Recovery readiness"><section aria-label="Recovery preflight evidence">
+   <ControllerReceipt receivedAt={results.recovery_preflight.receivedAt}/><p>Checkpoint import is not qualified. The controller reported no change to certified state.</p>
+  </section></Card>}
+  {['Validator setup','Management'].includes(tab)&&<VpnStatus action={action('vpn_status')}
+   observation={results.vpn_status?.evidence}
+   receipt={results.vpn_status&&<ControllerReceipt receivedAt={results.vpn_status.receivedAt}/>}
+   onOpenDiagnostics={onOpenDiagnostics}/>}
+  {['Validator setup','Management'].includes(tab)&&results.register?.evidence&&<Card title="Reported contained service registration">
+   <ControllerReceipt receivedAt={results.register.receivedAt}/>
+   <ul>{results.register.evidence.services.map(service=><li key={service}>{{node:'Node service',vpn:'VPN service','canary-rpc-relay':'Canary RPC relay service'}[service]}</li>)}</ul>
+   <p>Registration did not start services or enable them at boot. Read target health and VPN status separately.</p>
+  </Card>}
+  {['Validator setup','Management'].includes(tab)&&results.health?.evidence&&<Card title="Reported service health">
+   <ControllerReceipt receivedAt={results.health.receivedAt}/>
+   <Table columns={[{key:'id',label:'Service'},{key:'state',label:'Lifecycle'},{key:'health',label:'Health'},{key:'readiness',label:'Service readiness'}]}
+    rows={results.health.evidence} empty="The controller returned no service observations."/>
+   <p>Service readiness describes each reported service. Consensus readiness and validator membership have separate checks.</p>
+  </Card>}
+  {['Management','Installation isolation'].includes(tab)&&results.inventory?.evidence&&<Card title="Node inventory">
+   <TargetInventoryEvidence report={{result:results.inventory.evidence,receivedAt:results.inventory.receivedAt}}/>
   </Card>}
   {tab==='Updates'&&<Card title="Controlled master update">
    <p>Stop the validator through Management, then inspect the authenticated target. Native review selects the new master folder and verifies its entire inventory. Only an explicitly confirmed isolated engineering target can adopt new software; production approval remains separate.</p>
@@ -227,9 +281,15 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   </Card>}
   {pending&&<p role="status">{LABELS[pending]}: waiting for native review or the target controller. Do not repeat the operation.</p>}
   <ErrorMessage error={error}/>
-  {latest&&latest.operation!=='target'&&(!(tab==='Performance'||tab==='Logs')||latest.operation!=='diagnostics')&&<Card title={`Controller result · ${LABELS[latest.operation]}`}>
+  {latest&&!['target','health','inventory','vpn_status','register','identity_status','formation_status','identity_preflight','formation_preflight','genesis_binding_preflight','genesis_bind','identity_generate','genesis_stage_preflight','recovery_preflight'].includes(latest.operation)&&(!(tab==='Performance'||tab==='Logs')||latest.operation!=='diagnostics')&&<Card title={`Controller result · ${LABELS[latest.operation]}`}>
    <p>Received {new Date(latest.receivedAt).toISOString()} from the selected target. This response is not a durable job record or proof of consensus readiness.</p>
    {!!Object.keys(latest.parameters).length&&<Detail data={{submittedPublicParameters:latest.parameters}}/>}<Detail data={latest.response}/>
   </Card>}
  </div>;
+}
+
+function ControllerReceipt({receivedAt}){
+ const [now,setNow]=useState(Date.now);
+ useEffect(()=>{setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),15000);return()=>clearInterval(timer);},[receivedAt]);
+ return <p role="status">Source: native target controller · Response received {new Date(receivedAt).toISOString()} · {now-receivedAt>=60000?'Older than one minute':'Read within the past minute'}</p>;
 }

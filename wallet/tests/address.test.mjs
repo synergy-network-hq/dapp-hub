@@ -27,6 +27,6 @@ test('legacy saved addresses remain visible and removable but cannot become new 
  const storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)};
  assert.equal(isValidSynergyAddress(address),false);
  assert.deepEqual(readContacts(storage),[saved]);
- assert.throws(()=>saveContact(storage,{name:'New',address}),/valid Synergy address/);
+ assert.throws(()=>saveContact(storage,{name:'New',address}),/current Synergy address/);
  assert.deepEqual(removeContact(storage,saved),[]);
 });

@@ -1,3 +1,66 @@
+# Main-branch reconciliation — 2026-11-17
+
+Portal and dApp Hub source is consolidated onto `main`. Pull both repositories
+before changing their shared interfaces. The canonical policy is accessible at
+`/Volumes/PortableSSD/02-Synergy-Network/AGENTS.md`; the former missing-mount
+blocker does not apply here. Other machines must use their verified mapping to
+that same file, without creating a policy copy.
+
+The newer native owner workflow remains authoritative for lowercase
+`/opt/synergy`, authenticated master/provider admission, installation guards,
+custody, Genesis, VPN, formation, guests and request-journal reconciliation.
+Rob's recovery/preference restoration, scoped Wallet readers and contacts,
+Spark receipt review and other dApp work are integrated around those controls.
+Protected addresses retain the canonical 20-byte SYNW_HEX_EIP55_V1 parser.
+Paired Chain 1266 observations remain separate from Canary operations.
+
+Integration corrections include exact native request-history scoping, preserved
+managed-guest target identity, strict current preflight/acknowledgement parsing,
+capability-kind enforcement, draft-scoped asynchronous results, and correlated
+custody/Genesis display. Historical saved artifact readers are explicitly
+labelled and cannot authorize current host operations. Native authorization,
+APQE verification, once-only confirmations and operation leases remain required.
+
+Qualification of the reconciled source:
+- Desktop: 2,017 component cases covered. The full run passed 2,016; the one
+  obsolete implicit-Canary/automatic-inspection expectation was corrected and
+  its complete 24-case file passed. No component tests were skipped.
+- Native: Portal 184/184 and NodeNetwork 191/191 passed; two explicit host tests
+  were not run. Strict NodeNetwork Clippy passed with zero warnings.
+- NodeNetwork JavaScript: 206 passed; 16 historical pinned-owner fixture checks
+  remain explicitly skipped when their external fixtures are unavailable.
+- Other dApp model checks: 54 passed. Desktop JavaScript: 25 passed. Host SDK:
+  31 passed. Registry: six passed and all 17 inert manifests validated.
+- Standard and Developer Portal builds and all nine dApp builds passed.
+- No incoming or current component-test files were deleted. These checks do not
+  qualify a newly signed native release or operate a validator.
+
+Branch accounting:
+- Portal owner checkpoint `74f26d61e123c9ec30b86f38cfb2cc3e2dac1e8a` plus
+  Rob `d982ddabcf620710f44c303477a1ed9cf8a4c699` are reconciled together.
+- Hub owner `d958908f4620bd410e1f44ed807dab0b61c755d4` plus
+  Rob `7e1f8360cd301a3dae1e19c7d95c30344f884567` are reconciled together.
+- Pre-split Portal snapshot `0cc2ccd6b973157ec02420520ef8128f1914fe25`
+  is retained in Git ancestry as migration provenance, without restoring a
+  parallel dApp tree or obsolete host broker. Incomplete historical features
+  remain recoverable by commit; they are not declared implemented.
+- Old Jarvis branch `1bdc056dbe578c3a9949acf118ac445cea57c0d0` is superseded
+  by reviewed commit-pinned external dependency
+  `9e3d531c7f8b6f8661de4bac4e1074722c9fdcc8`; its history is retained.
+- Hub existing-chain commits `ddecd37` / `ad4b4f3` were already source-preserved
+  in `f963a4e`; their ancestry is retained without replaying duplicate changes.
+- Retire non-main branch refs only after the corresponding tips are verified
+  ancestors of tested, published `main`; use exact leases for remote deletion.
+
+Historical checkpoints and test results below describe their recorded revisions.
+Current native execution state is in Portal's `CONTINUE-CODEX.txt`. No validator,
+VPN enrollment, identity, installation or mobile Wallet repository was changed
+by this reconciliation. A fresh authenticated engineering build and application
+qualification remain separate from this source merge.
+
+
+---
+
 # Saved-work migration checkpoint — 2026-11-10
 
 This branch coordinates with sibling Portal's `codex/migrate-saved-portal-work-2026-11-10`. The complete host/interface validation and pending-port checklist is in Portal's `MIGRATION-STATUS.md` and `CONTINUE-CODEX.txt`.

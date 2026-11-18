@@ -8,9 +8,9 @@ const MAX_RECORDS: usize = 256;
 const MAX_BYTES: u64 = 4096;
 static SERIAL: Mutex<()> = Mutex::new(());
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Record {
+pub(super) struct Record {
     version: u8,
     id: String,
     target_digest: String,
@@ -22,8 +22,14 @@ struct Record {
     response_ok: Option<bool>,
 }
 
+impl Record {
+    pub(super) fn request_digest(&self) -> &str { &self.request_digest }
+}
+
 fn digest(value: &Value) -> String { format!("{:x}", Sha256::digest(value.to_string().as_bytes())) }
 fn pin(value: &str) -> bool { value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
+fn journaled_operation(operation: &str) -> bool { matches!(operation, "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "guest_create" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall") }
+
 fn now() -> Result<u64, String> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok())
         .ok_or_else(|| "Request journal clock is unavailable; no mutation was dispatched.".into())
@@ -94,7 +100,7 @@ fn load(path: &Path) -> Result<Vec<Record>, String> {
         file.take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|_| failure())?;
         if bytes.len() as u64 > MAX_BYTES { return Err(failure()); }
         let record: Record = serde_json::from_slice(&bytes).map_err(|_| failure())?;
-        let operation = matches!(record.operation.as_str(), "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "guest_create" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall");
+        let operation = journaled_operation(&record.operation);
         let state = match record.state.as_str() {
             "dispatch_intent" => record.observed_at_ms.is_none() && record.response_ok.is_none(),
             "uncertain" => record.observed_at_ms.is_some() && record.response_ok.is_none(),
@@ -126,7 +132,7 @@ fn write(path: &Path, record: &Record, new: bool) -> Result<(), String> {
     fs::File::open(path).and_then(|d| d.sync_all()).map_err(|_| failure())
 }
 
-fn scoped_digest(base:&Path,target:&Value)->Result<String,String>{
+pub(super) fn scoped_digest(base:&Path,target:&Value)->Result<String,String>{
     let incarnation=crate::authorization_lifecycle::incarnation(base,target)?;
     Ok(digest(&incarnation.map(|pin|json!({"target":target,"initial_sha256":pin})).unwrap_or_else(||target.clone())))
 }
@@ -215,20 +221,27 @@ impl Dispatch {
     /// Caller must validate the typed target/request and obtain native consent first.
     pub fn begin(base: &Path, target: &Value, operation: &str, request: &Value) -> Result<Self, String> {Self::begin_checked(base,target,operation,request,None)}
     pub(super) fn begin_bootstrap(base:&Path,target:&Value,request:&Value,retry:Option<BootstrapRetry>)->Result<Self,String>{Self::begin_checked(base,target,"bootstrap",request,retry)}
+    #[cfg(test)]
+    pub(super) fn begin_digest(base:&Path,target:&Value,operation:&str,request_digest:String)->Result<Self,String>{
+        if !pin(&request_digest){return Err(failure());}
+        Self::begin_with_digest(base,target,operation,request_digest,None)
+    }
     fn begin_checked(base:&Path,target:&Value,operation:&str,request:&Value,retry:Option<BootstrapRetry>)->Result<Self,String>{
+        Self::begin_with_digest(base,target,operation,digest(request),retry)
+    }
+    fn begin_with_digest(base:&Path,target:&Value,operation:&str,request_digest:String,retry:Option<BootstrapRetry>)->Result<Self,String>{
         let _serial = SERIAL.lock().map_err(|_| failure())?;
         if !matches!(operation, "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "guest_create" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;
         let target_digest = scoped_digest(base,target)?;
-        if let Some(ticket)=retry{if operation!="bootstrap"||target_digest!=ticket.scope||digest(request)!=ticket.request||snapshot(&records,&target_digest)?!=ticket.snapshot{return Err("Reinstallation retry journal changed; no bootstrap was sent".into())}}
+        if let Some(ticket)=retry{if operation!="bootstrap"||target_digest!=ticket.scope||request_digest!=ticket.request||snapshot(&records,&target_digest)?!=ticket.snapshot{return Err("Reinstallation retry journal changed; no bootstrap was sent".into())}}
         if records.iter().any(|r| r.target_digest == target_digest && matches!(r.state.as_str(),"dispatch_intent"|"uncertain")) {
             return Err("An earlier local dispatch for this target has an uncertain outcome. Reconcile the target through a qualified procedure before another mutation; Portal will not replay or clear it automatically.".into());
         }
         if records.len() >= MAX_RECORDS { return Err("Local request journal is full. Records are retained; another mutation requires an approved retention procedure.".into()); }
         let recorded_at_ms = now()?;
-        let request_digest = digest(request);
         let id = digest(&json!([target_digest, request_digest, recorded_at_ms, std::process::id(), records.len()]));
         let record = Record { version: 1, id, target_digest, request_digest, operation: operation.into(), recorded_at_ms, observed_at_ms: None, state: "dispatch_intent".into(), response_ok: None };
         write(&directory, &record, true)?;
@@ -267,14 +280,55 @@ pub(crate) fn reconcile_verified(base:&Path,target:&Value,operation:&str,request
     Ok(true)
 }
 
-pub fn inspect(base: &Path) -> Result<Value, String> {
+fn inspect_records(base: &Path) -> Result<Vec<Record>, String> {
     let _serial = SERIAL.lock().map_err(|_| failure())?;
     let lock = base.join("nodenetwork-requests-v1.lock");
     match fs::symlink_metadata(&lock) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
         _ => return Err("Local request journal writer is busy or interrupted. History is unavailable; no empty state is inferred.".into()),
     }
-    let records = match directory(base, false)? { Some(path) => load(&path)?, None => Vec::new() };
+    match directory(base, false)? { Some(path) => load(&path), None => Ok(Vec::new()) }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum CustodyReceiptKind { GenesisStaging, GenesisBinding, Formation, Identity }
+
+impl CustodyReceiptKind {
+    pub(super) fn operation(self) -> &'static str {
+        match self { Self::GenesisStaging => "genesis_stage", Self::GenesisBinding => "genesis_bind", Self::Formation => "formation_prepare", Self::Identity => "identity_generate" }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self { Self::GenesisStaging => "Genesis staging", Self::GenesisBinding => "Genesis binding", Self::Formation => "formation preparation", Self::Identity => "identity preparation" }
+    }
+}
+
+pub(super) fn unresolved_custody_receipt(base: &Path, target: &Value, record_id: &str, kind: CustodyReceiptKind) -> Result<Record, String> {
+    unresolved_dispatch(base,target,record_id,kind.operation(),kind.label())
+}
+
+pub(super) fn unresolved_software_receipt(base: &Path, target: &Value, record_id: &str, operation: &str, request_digest: &str) -> Result<Record, String> {
+    if !matches!(operation,"install"|"upgrade") { return Err("Select a supported installation receipt review.".into()); }
+    let record=unresolved_dispatch(base,target,record_id,operation,operation)?;
+    if record.request_digest!=request_digest {
+        return Err(match operation {
+            "install"=>"The entered references and validator identity do not match this install dispatch.",
+            _=>"The entered release and manifest do not match this upgrade dispatch.",
+        }.into());
+    }
+    Ok(record)
+}
+
+fn unresolved_dispatch(base: &Path, target: &Value, record_id: &str, operation: &str, label: &str) -> Result<Record, String> {
+    if !pin(record_id) { return Err(format!("Select an exact local {label} journal entry.")); }
+    let target_digest = scoped_digest(base,target)?;
+    inspect_records(base)?.into_iter().find(|record| record.id == record_id && record.target_digest == target_digest
+        && record.operation == operation && matches!(record.state.as_str(), "dispatch_intent" | "uncertain"))
+        .ok_or_else(|| format!("The unresolved {label} entry does not match this target. Refresh local history and select it again."))
+}
+
+pub fn inspect(base: &Path) -> Result<Value, String> {
+    let records = inspect_records(base)?;
     Ok(json!({"schema":"nodenetwork-local-requests-v1", "records":records, "limit":MAX_RECORDS,
         "remoteJobRecovery":false, "automaticReplay":false}))
 }

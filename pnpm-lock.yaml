@@ -42,6 +42,8 @@ importers:
         specifier: 3.10.1
         version: 3.10.1
 
+  horizon: {}
+
   keystone:
     dependencies:
       '@synergy-network/dapp-data-view':
@@ -68,6 +70,9 @@ importers:
       '@synergy-network/dapp-forge-projects':
         specifier: link:../forge-projects
         version: link:../forge-projects
+      '@synergy-network/dapp-horizon':
+        specifier: link:../horizon
+        version: link:../horizon
       '@synergy-network/dapp-keystone':
         specifier: link:../keystone
         version: link:../keystone

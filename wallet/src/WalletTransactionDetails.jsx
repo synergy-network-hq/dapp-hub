@@ -1,8 +1,183 @@
+import {useState} from 'react';
+import {Copy, Detail, ErrorMessage, Resource, openExternal, useAction, useNative,
+  useResource} from '@synergy-network/portal-native/dapp-sdk';
+import {text} from '@synergy-network/dapp-data-view';
+import {indexedTransactionAmount, indexedTransactionTime, transactionDirection} from './WalletActivity.jsx';
 import {sourceRecords} from './source-records.js';
-import {Detail} from '@synergy-network/portal-native/dapp-sdk';
-import {amount,text} from '@synergy-network/dapp-data-view';
-import {indexedTransactionTime} from './WalletActivity.jsx';
-export function WalletTransactionDetails({data,hash}){
- const matches=sourceRecords(data?.recentTransactions,'Transaction history').records.filter(row=>row.hash===hash),row=matches.length===1?matches[0]:null,time=row?indexedTransactionTime(row):null;
- return <aside aria-label="Indexed transaction details"><h3>Indexed transaction details</h3>{row?<><Detail data={{hash:text(row.hash),indexedStatus:text(row.status),sender:text(row.sender_address??row.sender??row.from),receiver:text(row.receiver_address??row.receiver??row.to),reportedSNRG:amount(row.amount_nwei),reportedFeeSNRG:amount(row.fee_nwei),reportedNonce:typeof row.nonce==='string'&&/^\d{1,78}$/.test(row.nonce)?row.nonce:'Unavailable',reportedBlock:text(row.block_number??row.blockNumber),reportedTimeUTC:time?new Date(time.ms).toISOString():'Unavailable',timeSource:time?.source||'Unavailable'}}/><p>This is the current Atlas record, not independently verified inclusion or authoritative finality. Reorganization and chain-incarnation checks are not established by this view.</p></>:<p role="status">The selected record is absent or ambiguous in the current source response. Previous details are not shown.</p>}</aside>;
+import {canReadWalletAtlas} from './atlas-scope.js';
+import {atlasAccountKey} from './atlas-account.js';
+import {WalletReceiptObservation} from './WalletReceiptObservation.jsx';
+import {WalletRpcReceiptObservation} from './WalletRpcReceiptObservation.jsx';
+import {checkWalletAccountEndpoint, requireWalletReadScope, useWalletReadScope} from './wallet-account-read.js';
+import {blockLookupHeight, comparableTransactionHash, compareIndexedBlock, reportedBlockMembership,
+  transactionObservation} from './transaction-observation.js';
+
+const observations = {
+  notFound: 'Selected RPC returned no transaction',
+  pending: 'Pending in the selected RPC pool',
+  inBlock: 'Reported in a block by the selected RPC',
+};
+
+const blockMessages = {
+  listed: 'Transaction listed in the selected RPC block.',
+  notListed: 'The selected RPC block did not list this transaction.',
+  unavailable: 'The selected RPC did not return the reported block.',
+  unsupported: 'This block response does not provide a supported transaction hash list.',
+  ambiguous: 'The selected RPC block listed the transaction more than once.',
+};
+
+function BlockLookup({height, hash, endpoint, readRpc, canRead, statusChain}) {
+  const [revision, setRevision] = useState(0);
+  const refresh = () => setRevision(previous => previous + 1);
+  const allowed = useWalletReadScope(revision, canRead);
+  const result = useResource(async signal => {
+    const chain = await checkWalletAccountEndpoint(readRpc, endpoint, signal, allowed);
+    if (statusChain && (chain?.network !== statusChain.network || chain?.incarnation !== statusChain.incarnation)) {
+      throw Error('The RPC chain context changed. Recheck the transaction status before checking its block.');
+    }
+    requireWalletReadScope(signal, allowed);
+    const options = {endpoint: endpoint.rpc, signal};
+    let value;
+    try {
+      value = await readRpc('synergy_getBlockByNumber', [height], options);
+    } catch {
+      requireWalletReadScope(signal, allowed);
+      throw Error('The selected RPC block check failed. Try again.');
+    }
+    requireWalletReadScope(signal, allowed);
+    return {...reportedBlockMembership(value, height, hash), checkedAt: new Date().toISOString()};
+  }, revision);
+  return <section aria-label="Selected RPC block observation">
+    <h5>Reported block check</h5>
+    <Resource value={{...result, reload: refresh}}>{value => <>
+      <p role="status">{blockMessages[value.state]}</p>
+      {value.hash && <p>RPC block hash: {value.hash}</p>}
+      <p>Block checked: <time dateTime={value.checkedAt}>{value.checkedAt}</time></p>
+      <button onClick={refresh}>Check block again</button>
+    </>}</Resource>
+  </section>;
+}
+
+function ReportedBlock({block, hash, endpoint, readRpc, canRead, statusChain}) {
+  const [checking, setChecking] = useState(false);
+  const height = blockLookupHeight(block);
+  if (height === null) return <p>The reported block height cannot be sent as an exact RPC integer.</p>;
+  return checking
+    ? <BlockLookup {...{height, hash, endpoint, readRpc, canRead, statusChain}}/>
+    : <button onClick={() => setChecking(true)}>Check reported block on RPC</button>;
+}
+
+function TransactionLookup({hash, account, endpoint, readRpc, indexedBlock, canRead}) {
+  const [revision, setRevision] = useState(0);
+  const refresh = () => setRevision(previous => previous + 1);
+  const allowed = useWalletReadScope(revision, canRead);
+  const result = useResource(async signal => {
+    const chain = await checkWalletAccountEndpoint(readRpc, endpoint, signal, allowed);
+    requireWalletReadScope(signal, allowed);
+    let payload;
+    try {
+      payload = await readRpc('synergy_getTransactionByHash', [hash], {endpoint: endpoint.rpc, signal});
+    } catch {
+      requireWalletReadScope(signal, allowed);
+      throw Error('The selected RPC transaction check failed. Try again.');
+    }
+    requireWalletReadScope(signal, allowed);
+    return {...transactionObservation(payload, hash, account), chain, receivedAt: Date.now()};
+  }, revision);
+
+  return <section aria-label="Selected RPC transaction observation">
+    <h4>Selected RPC observation</h4>
+    <Resource value={{...result, reload: refresh}}>{value => {
+      const difference = compareIndexedBlock(indexedBlock, value);
+      const checkedAt = new Date(value.receivedAt).toISOString();
+      return <>
+        <p role="status">{observations[value.state]}</p>
+        {value.block !== null && <p>Reported block: {value.block}</p>}
+        {difference && <p>{difference}</p>}
+        <p>Last checked: <time dateTime={checkedAt}>{checkedAt}</time></p>
+        <button onClick={refresh}>Check RPC again</button>
+        {value.state === 'inBlock' && <ReportedBlock key={revision} block={value.block} statusChain={value.chain}
+          {...{hash, endpoint, readRpc, canRead}}/>}
+      </>;
+    }}</Resource>
+    <p>The RPC observation can change. Finality and reorganization status remain unavailable.</p>
+  </section>;
+}
+
+function AtlasExplorerAction({hash, account, endpoint}) {
+  const n = useNative();
+  const action = useAction();
+  const accountKey = atlasAccountKey(account);
+  if (!canReadWalletAtlas(n, endpoint) || !accountKey || atlasAccountKey(n.wallet.connection.address) !== accountKey) return null;
+  if (!n.permit('wallet', 'externalLinks')) return <p>Allow Wallet external links in Security &amp; permissions to open Atlas.</p>;
+
+  function openTransaction() {
+    return action.run(async () => {
+      if (!canReadWalletAtlas(n, endpoint) || !n.permit('wallet', 'externalLinks')) {
+        throw Error('Wallet external links are unavailable in this Portal context.');
+      }
+      try {
+        await openExternal(`https://atlas.synergy-network.io/transactions/${encodeURIComponent(hash)}`);
+      } catch {
+        throw Error('Portal could not open the Atlas transaction. Try again.');
+      }
+    });
+  }
+
+  return <>
+    <button disabled={action.busy} onClick={openTransaction}>Open in Atlas explorer</button>
+    <ErrorMessage error={action.error}/>
+  </>;
+}
+
+function IndexedDetails({row, account, endpoint, readRpc, canRead}) {
+  const [checking, setChecking] = useState(false);
+  const time = indexedTransactionTime(row);
+  const block = row.block_number ?? row.blockNumber;
+  const hashSupported = !!comparableTransactionHash(row.hash);
+  const supportedTransaction = hashSupported && typeof account === 'string' && !!account &&
+    transactionDirection(row, account) !== 'Unclassified' && Number(endpoint?.chainId) === 1266;
+  const canCheck = supportedTransaction && typeof readRpc === 'function' && canRead();
+
+  return <>
+    <Detail data={{
+      hash: text(row.hash),
+      indexedStatus: text(row.status),
+      sender: text(row.sender_address ?? row.sender ?? row.from),
+      receiver: text(row.receiver_address ?? row.receiver ?? row.to),
+      reportedSNRG: indexedTransactionAmount(row.amount_nwei),
+      reportedFeeSNRG: indexedTransactionAmount(row.fee_nwei),
+      reportedNonce: typeof row.nonce === 'string' && /^\d{1,78}$/.test(row.nonce) ? row.nonce : 'Unavailable',
+      reportedBlock: text(block),
+      reportedTimeUTC: time ? new Date(time.ms).toISOString() : 'Unavailable',
+      timeSource: time?.source || 'Unavailable',
+    }}/>
+    {hashSupported && <Copy value={row.hash} label="Copy transaction hash"/>}
+    {supportedTransaction && <AtlasExplorerAction hash={row.hash} account={account} endpoint={endpoint}/>}
+    <p>This is the current Atlas record. Finality requires independent chain evidence.</p>
+    {supportedTransaction && <WalletReceiptObservation hash={row.hash} account={account} endpoint={endpoint} block={block}/>}
+    {canCheck && <WalletRpcReceiptObservation {...{row, account, endpoint, readRpc}}/>}
+    {canCheck && (checking
+      ? <TransactionLookup hash={row.hash} indexedBlock={block} {...{account, endpoint, readRpc, canRead}}/>
+      : <button onClick={() => setChecking(true)}>Check status on selected RPC</button>)}
+  </>;
+}
+
+export function WalletTransactionDetails({data, hash, account, endpoint, readRpc}) {
+  const native = useNative();
+  const accountKey = atlasAccountKey(account);
+  const canRead = () => !!accountKey && canReadWalletAtlas(native, endpoint) &&
+    atlasAccountKey(native.wallet.connection.address) === accountKey;
+  const matches = sourceRecords(data?.recentTransactions, 'Transaction history').records.filter(row => row.hash === hash);
+  const row = matches.length === 1 ? matches[0] : null;
+  const scope = JSON.stringify([hash, account, endpoint?.id, endpoint?.rpc, endpoint?.chainId, endpoint?.networkKey,
+    endpoint?.genesisHash, native?.walletConsentSession, row?.block_number ?? row?.blockNumber,
+    row?.sender_address ?? row?.sender ?? row?.from, row?.receiver_address ?? row?.receiver ?? row?.to, canRead()]);
+
+  return <aside aria-label="Indexed transaction details">
+    <h3>Indexed transaction details</h3>
+    {row
+      ? <IndexedDetails key={scope} {...{row, account, endpoint, readRpc, canRead}}/>
+      : <p role="status">The selected record is absent or ambiguous in the current source response. Previous details are not shown.</p>}
+  </aside>;
 }

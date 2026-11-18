@@ -18,7 +18,7 @@ test('selection uses only dedicated native review and never flattens guest endpo
  let calls=0;globalThis.__nnSelect={native:true,invoke:async(command,args)=>{calls++;assert.equal(command,'portal_nodenetwork_select_guest');assert.deepEqual(args,{target:{kind:'remote',host:'host.example'},guestId:'validator-guest'});return null;}};
  try{
  const source=(await readFile(new URL('../src/native-services.js',import.meta.url),'utf8')).replace('import {isTauri,invoke} from "@tauri-apps/api/core";','const isTauri=()=>globalThis.__nnSelect.native;const invoke=(...args)=>globalThis.__nnSelect.invoke(...args);');
- const {nodeNetworkSelectGuest}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+ const {nodeNetworkSelectGuest}=await import(`data:text/javascript;base64,${Buffer.from(source.replace(/from (['"])(\.\/[^'"]+)\1/g,(_,quote,path)=>`from ${quote}${new URL(`../src/${path.slice(2)}`,import.meta.url).href}${quote}`)).toString('base64')}`);
  assert.equal(await nodeNetworkSelectGuest({kind:'remote',host:'host.example'},'validator-guest'),null);assert.equal(calls,1);
  await assert.rejects(nodeNetworkSelectGuest({guest:{}},'validator-guest'),/physical host/);assert.equal(calls,1);
  globalThis.__nnSelect.native=false;await assert.rejects(nodeNetworkSelectGuest({},'validator-guest'),/native Portal/);

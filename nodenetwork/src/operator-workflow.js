@@ -1,3 +1,6 @@
+import {installPreflightObservation} from './install-preflight.js';
+import {upgradePreflightObservation} from './upgrade-preflight.js';
+import {removalPreflightObservation} from './removal-preflight.js';
 import {controllerOperation,installParameters,provisioningChecks} from './nodeNetwork.js';
 
 export const NODE_ROLES=Object.freeze([
@@ -34,18 +37,29 @@ export function checkedTarget(value,target){
 // These checks bind a UI review to this target and the exact current inputs. The
 // native engine separately authenticates the request, policy and one-time grant.
 export function acceptedReview(operation,parameters,response,target){
- if(operation==='install_preflight')return response?.packageVerified===true&&response.networkSelectionApproved===true&&response.release===parameters.release_id&&response.root===target.root;
- if(operation==='upgrade_preflight')return response?.packageVerified===true&&response.release===parameters.release_id&&response.automaticRestart===false;
- if(operation==='uninstall_preflight')return response?.destructive===true&&response.root===target.root&&response.inventory?.root===target.root&&Array.isArray(response.inventory?.members);
+ try{
+  if(operation==='install_preflight'){installPreflightObservation(response,parameters,target);return true;}
+  if(operation==='upgrade_preflight'){upgradePreflightObservation(response,parameters);return true;}
+  if(operation==='uninstall_preflight'){removalPreflightObservation(response);return response.root===target.root;}
+ }catch{return false;}
  return false;
 }
+
+
+// Mirror the canonical controller operation kinds; declarations cannot reclassify a read as a mutation.
+const READS=new Set(["treasury_preflight", "treasury_status", "treasury_export", "commissioning_observation", "network_transport_status", "network_transport_export", "guest_resources", "guest_preflight", "guest_status", "target", "inventory", "health", "install_preflight", "upgrade_preflight", "recovery_preflight", "uninstall_preflight", "vpn_status", "vpn_diagnostics", "diagnostics", "identity_preflight", "identity_status", "formation_preflight", "formation_status", "formation_export", "genesis_stage_preflight", "genesis_binding_preflight", "authorization_status", "network_formation_status", "network_formation_export"]);
+const MUTATIONS=new Set(["treasury_prepare", "network_transport_prepare", "network_transport_sign", "guest_create", "guest_stop", "guest_remove", "install", "commission", "register", "vpn_enroll", "vpn_bind", "vpn_retire", "start", "stop", "restart", "upgrade", "uninstall", "identity_generate", "formation_prepare", "genesis_stage", "genesis_bind", "network_formation_prepare", "network_formation_sign"]);
 
 export function workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus,identityReview,formationReview,formationRecord,bindingReview,networkReview}){
  const unavailable=blocker=>({available:false,blocker});
  if(!permitted)return unavailable('Allow NodeNetwork inspection in Security & permissions.');
  if(!state)return unavailable('Inspect the selected target first.');
- const capability=controllerOperation(state,operation==='genesis_stage_existing'?'genesis_stage':operation);
+ const canonicalOperation=operation==='genesis_stage_existing'?'genesis_stage':operation;
+ const capability=controllerOperation(state,canonicalOperation);
  if(!capability.available)return capability;
+ const expectedKind=READS.has(canonicalOperation)?'read':MUTATIONS.has(canonicalOperation)?'mutation':null;
+ const declarations=state.operations.filter(entry=>entry?.operation===canonicalOperation);
+ if(!expectedKind||declarations.length!==1||declarations[0].kind!==expectedKind)return unavailable('The controller capability kind differs from the supported operation. Inspect the selected target again.');
  if((operation==='install'||operation==='install_preflight')&&state.installed)return unavailable('A node is already installed. Use Updates for a qualified replacement.');
  if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_diagnostics','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
  if(operation==='network_formation_prepare'&&(!state.installed||!formationRecord?.pending||networkReview?.pending))return unavailable('Read the prepared formation identity and reconcile any existing network before preparing another.');

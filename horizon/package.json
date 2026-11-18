@@ -1,0 +1,17 @@
+{
+  "name": "@synergy-network/dapp-horizon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.jsx"
+  },
+  "scripts": {
+    "build": "vite build --config ../build.vite.mjs",
+    "test": "node --test tests/artifact.test.mjs"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  }
+}

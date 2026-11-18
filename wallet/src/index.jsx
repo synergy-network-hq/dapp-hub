@@ -1,26 +1,176 @@
 import {CanaryWallet} from './CanaryWallet.jsx';
+import {matchesPairedIndexProfile} from './paired-index-profile.js';
+import {useCallback, useState} from 'react';
+import {
+  useNative, rpc, openWallet, Card, Resource, useResource,
+  useAction, ErrorMessage, Detail, Copy,
+} from '@synergy-network/portal-native/dapp-sdk';
+import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {WalletFeeMarket} from './WalletFeeMarket.jsx';
-import {chainIdNumber} from '@synergy-network/portal-native/dapp-sdk';
+import {WalletEtdagTransferStatus} from './WalletEtdagTransferStatus.jsx';
 import {WalletConnections} from './WalletConnections.jsx';
 import {WalletHistory} from './WalletHistory.jsx';
-import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
+import {WalletStsActivity} from './WalletStsActivity.jsx';
+import {WalletReceiptHashLookup} from './WalletRpcReceiptObservation.jsx';
 import {WalletBalances} from './WalletBalances.jsx';
-import {useState} from 'react';
-import {useNative,atlas,rpc,openWallet,Card,Resource,useResource,useAction,ErrorMessage,Detail,Copy} from '@synergy-network/portal-native/dapp-sdk';
 import {WalletTokens} from './WalletTokens.jsx';
+import {WalletOwnerTokens} from './WalletOwnerTokens.jsx';
+import {readAtlasTokenBalances} from './token-balance-inventory.js';
+import {readAtlasAddress} from './atlas-account.js';
 import {Receive} from './WalletReceive.jsx';
 import {WalletContacts} from './WalletContacts.jsx';
-import {matchesPairedIndexProfile} from './paired-index-profile.js';
+import {WalletCollectibles, WalletOwnerCollectibles} from './WalletCollectibles.jsx';
+import {WalletMultiAssetInventory} from './WalletMultiAssetInventory.jsx';
+import {WalletOverview} from './WalletOverview.jsx';
+import {WalletOneTimeDraft, WalletRecipientDraft} from './WalletRecipientDraft.jsx';
+import {WalletSparkDraftReview} from './WalletSparkDraftReview.jsx';
+import {atlasEndpointRequired, canReadWalletAtlas, readScopedWalletAtlas} from './atlas-scope.js';
+import {checkWalletAccountEndpoint, requireWalletReadScope, useWalletReadScope} from './wallet-account-read.js';
 import './wallet.css';
-export function WalletApp(){
- const n=useNative(),c=n.wallet.connection,[tab,setTab]=useState('Assets'),[selected,setSelected]=useState(null),[revision,setRevision]=useState(0),action=useAction();
- const permitted=n.permit('wallet','readWallet'),[canary,setCanary]=useState(false),ready=!canary&&permitted&&matchesPairedIndexProfile(c,n.endpoint);
- const tokens=useResource(async signal=>{if(!ready)throw Error('Connect a chain 1266 account and allow Wallet reads.');if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');const value=await atlas(`wallets/${encodeURIComponent(c.address)}/token-balances`,{signal});if(!Array.isArray(value)&&!Array.isArray(value?.items)&&!Array.isArray(value?.tokens)&&!Array.isArray(value?.balances))throw Error('Token balance response is unavailable or unsupported; no empty inventory is inferred.');return {value,receivedAt:Date.now()};},`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`);
- const account=useResource(async signal=>{if(!ready)throw Error('Wallet reads unavailable.');if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:n.endpoint.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Wallet chain 1266.');const value=await atlas(`address/${encodeURIComponent(c.address)}`,{signal});if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Account response is unavailable or unsupported; no empty account history or zero balance is inferred.');return {...value,portalReceivedAt:Date.now()};},`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`);
- if(canary)return <div className="wallet-migrated"><button onClick={()=>setCanary(false)}>Back to paired Wallet</button>{permitted?<CanaryWallet/>:<Card title="Canary reads unavailable"><p>Allow Wallet reads in Security & permissions.</p></Card>}</div>;
- const data=ready&&!account.loading&&!account.error?account.data:null;
- const selectionScope=`${c?.address}:${n.endpointId}:${n.endpoint.rpc}:${ready}`;
- const currentSelection=selected?.scope===selectionScope?selected:null;
- const select=value=>setSelected({...value,scope:selectionScope});
- return <div className="wallet-migrated"><div className="native-actions"><p>Synergy Wallet · {c?.walletName||'Not connected'}</p><button onClick={()=>action.run(openWallet)}>Open Synergy Wallet app</button><button onClick={()=>n.navigate('wallet-connection')}>Manage connection</button><button onClick={()=>setCanary(true)}>PoSy Canary</button><button disabled={!ready||account.loading||tokens.loading} onClick={()=>{setSelected(null);account.reload();tokens.reload();setRevision(value=>value+1);}}>Refresh Wallet observations</button></div><ErrorMessage error={action.error}/>{!c?<Card title="Connect once across Portal"><p>Pair Synergy Wallet using Connect Wallet in the header.</p></Card>:!ready?<Card title="Wallet reads unavailable"><p>Allow Wallet reads in Security & permissions and select the canonical Synergy Testnet v3 endpoint for this paired account.</p></Card>:<div key={`${c.address}:${n.endpointId}`}><Card title="Account"><Copy value={c.address} label="Copy address"/><Detail data={{address:c.address,chain:c.chainId}}/><ErrorMessage error={account.error}/></Card><WalletBalances key={`${selectionScope}:${revision}`} account={c.address} endpoint={n.endpoint} index={data} indexReceivedAt={data?.portalReceivedAt}/><div className="native-tabs">{['Assets','Collectibles','Activity','Receive','Send','Address book','Connections'].map(t=><button key={t} aria-pressed={tab===t} onClick={()=>{setTab(t);setSelected(null);}}>{t}</button>)}</div>{tab==='Assets'?<Card title="Live assets"><Resource value={tokens}>{result=><><SourceAge updatedAt={result.receivedAt}/><WalletTokens data={result.value}/></>}</Resource></Card>:tab==='Collectibles'?<Card title="Collectible availability"><p>No supported collectible ownership or metadata service is connected for this account and network. Inventory is unavailable; this does not mean the account owns zero collectibles.</p><p>Unverified external media and metadata are not loaded.</p></Card>:tab==='Activity'?<Card title="Indexed transactions"><WalletHistory key={`${selectionScope}:${n.endpoint.networkKey||n.endpoint.id}:${revision}`} account={c.address} endpoint={n.endpoint} recent={data} recentAt={data?.portalReceivedAt}/></Card>:tab==='Receive'?<Receive account={c.address}/>:tab==='Address book'?<><WalletContacts onSelect={address=>select({address})}/>{currentSelection&&<Card title="Selected contact"><Copy value={currentSelection.address}/></Card>}{!!n.profile.contacts?.length&&<Card title="Legacy contacts"><p>Existing profile contacts are retained. Review and add them to this network-specific address book when needed.</p><Detail data={{contacts:n.profile.contacts}}/></Card>}</>:tab==='Connections'?<WalletConnections/>:<Card title="Send requires a supported transaction contract"><p>Transfers remain unavailable until the network’s authoritative ETDAG transaction preparation and mobile signing contracts are integrated. No nonce, fees, signature algorithm or transaction envelope is guessed.</p><WalletFeeMarket endpoint={n.endpoint}/><button onClick={()=>action.run(openWallet)}>Open Synergy Wallet app</button></Card>}</div>}</div>;
+
+const tabs = ['Assets', 'Collectibles', 'Activity', 'Receive', 'Send', 'Address book', 'Connections'];
+// Portal can remount this app when Wallet consent or the selected endpoint changes.
+const receiveConflicts = new Map();
+
+export function WalletApp() {
+  const n = useNative();
+  const connection = n.wallet.connection;
+  const [tab, setTab] = useState('Assets');
+  const [canary, setCanary] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const [recipientDraft, setRecipientDraft] = useState(null);
+  const invalidateRecipient = useCallback(contact => setRecipientDraft(current =>
+    current?.contact === contact ? {...current, contact: null} : current), []);
+  const action = useAction();
+  const ready = !canary && !n.recoverySuspended && n.permit('wallet', 'readWallet') &&
+    connection?.chainId === 'synergy:1266' && Number(n.endpoint.chainId) === 1266;
+  const atlasReady = ready && matchesPairedIndexProfile(connection, n.endpoint) && canReadWalletAtlas(n);
+  const readAtlas = (path, options) => readScopedWalletAtlas(n, path, options);
+  const currentTab = ready ? tab : 'Connections';
+  const scope = JSON.stringify([connection?.walletId, connection?.address, n.endpointId, n.endpoint.rpc, n.endpoint.networkKey, ready]);
+  const atlasScope = JSON.stringify([scope, atlasReady, n.endpoint.genesisHash, n.walletConsentSession]);
+  const atlasKey = `${atlasScope}:${revision}`;
+  const draftScope = JSON.stringify([scope, n.endpoint.chainId, n.endpoint.genesisHash, n.walletConsentSession]);
+  const canReadWallet = () => !canary && !n.recoverySuspended && n.permit('wallet', 'readWallet');
+  const canReadWalletNfts = useWalletReadScope(draftScope, canReadWallet);
+  const canReadAtlasAccount = useWalletReadScope(atlasKey, () => canReadWalletAtlas(n));
+  if (recipientDraft && recipientDraft.scope !== draftScope) setRecipientDraft(null);
+
+  const tokens = useResource(async signal => {
+    if (!canReadAtlasAccount()) return null;
+    await checkWalletAccountEndpoint(rpc, n.endpoint, signal, canReadAtlasAccount);
+    requireWalletReadScope(signal, canReadAtlasAccount);
+    const inventory = await readAtlasTokenBalances(readAtlas, connection.address, {signal});
+    requireWalletReadScope(signal, canReadAtlasAccount);
+    return {inventory, receivedAt: Date.now()};
+  }, atlasKey);
+
+  const account = useResource(async signal => {
+    if (!canReadAtlasAccount()) return null;
+    await checkWalletAccountEndpoint(rpc, n.endpoint, signal, canReadAtlasAccount);
+    requireWalletReadScope(signal, canReadAtlasAccount);
+    const value = await readAtlasAddress(readAtlas, connection.address, {signal});
+    requireWalletReadScope(signal, canReadAtlasAccount);
+    return {...value, portalReceivedAt: Date.now()};
+  }, atlasKey);
+  const data = atlasReady && !account.loading && !account.error ? account.data : null;
+
+  function tabContent() {
+    if (currentTab === 'Connections') return <WalletConnections canRead={ready} indexedIdentity={atlasReady ? account : null}/>;
+    switch (currentTab) {
+      case 'Assets':
+        return <>
+          {atlasReady ? <>
+            <WalletOverview key={atlasScope} account={connection.address} endpoint={n.endpoint} revision={revision} observation={account} readAtlas={readAtlas}
+              onActivity={() => setTab('Activity')} onCollectibles={() => setTab('Collectibles')}/>
+            <Card title="Live assets"><Resource value={tokens}>{result => <>
+              <SourceAge updatedAt={result.receivedAt}/><WalletTokens inventory={result.inventory}/>
+            </>}</Resource></Card>
+          </> : <Card title="Live assets"><p>{atlasEndpointRequired}</p></Card>}
+          <WalletOwnerTokens key={`owner-tokens:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+        </>;
+      case 'Collectibles':
+        return <>
+          {atlasReady ? <WalletCollectibles key={atlasKey} account={connection.address} endpoint={n.endpoint} readAtlas={readAtlas}/>
+            : <Card title="Collectibles"><p>{atlasEndpointRequired}</p></Card>}
+          <WalletOwnerCollectibles key={`owner-nfts:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWalletNfts}/>
+          <WalletMultiAssetInventory key={`owner-multi-assets:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+        </>;
+      case 'Activity':
+        return <>
+          <Card title="Indexed transactions">{atlasReady ? <WalletHistory key={atlasKey} account={connection.address}
+            endpoint={n.endpoint} readAtlas={readAtlas} recent={data} recentAt={data?.portalReceivedAt}/> : <p>{atlasEndpointRequired}</p>}</Card>
+          <WalletStsActivity key={`sts-activity:${draftScope}`} account={connection.address} endpoint={n.endpoint} canRead={canReadWallet}/>
+          <WalletReceiptHashLookup key={`receipt-hash:${draftScope}`} account={connection.address} endpoint={n.endpoint} readRpc={rpc}/>
+        </>;
+      case 'Receive': {
+        const {id, rpc: url, networkKey, chainId, genesisHash} = n.endpoint;
+        const endpointKey = JSON.stringify([n.endpointId, id, url, networkKey, Number(chainId),
+          typeof genesisHash === 'string' ? genesisHash.toLowerCase() : genesisHash]);
+        function recordConflict(message) {
+          if (message === null) receiveConflicts.delete(endpointKey);
+          else receiveConflicts.set(endpointKey, message);
+        }
+        return <Receive account={connection.address} endpoint={n.endpoint} consentSession={n.walletConsentSession}
+          endpointKey={endpointKey} readConflict={() => receiveConflicts.get(endpointKey)} onConflictChange={recordConflict}
+          readRpc={rpc} canUse={canReadWallet}/>;
+      }
+      case 'Address book':
+        return <><WalletContacts key={draftScope} canWrite={() => !n.recoverySuspended && n.permit('wallet', 'readWallet')} onDraftRecipient={contact => {
+          if (!n.permit('wallet', 'readWallet')) return false;
+          setRecipientDraft({scope: draftScope, contact});
+          return true;
+        }}/>{!!n.profile.contacts?.length && <Card title="Legacy contacts">
+          <p>Existing profile contacts are retained. Review and add them to this network-specific address book when needed.</p>
+          <Detail data={{contacts: n.profile.contacts}}/>
+        </Card>}</>;
+      default:
+        return <Card title="Send requires a supported transaction contract">
+          <p>Transfers remain unavailable until the network’s authoritative ETDAG transaction preparation and mobile signing contracts are integrated. No nonce, fees, signature algorithm or transaction envelope is guessed.</p>
+          <WalletEtdagTransferStatus key={`transfer-status:${draftScope}`} endpoint={n.endpoint} canCheck={canReadWallet}/>
+          {recipientDraft?.scope === draftScope ? <WalletRecipientDraft contact={recipientDraft.contact} account={connection.address} endpoint={n.endpoint}
+            onClear={() => setRecipientDraft(null)} onInvalidate={invalidateRecipient}
+            canReview={canReadWallet}/> : <WalletOneTimeDraft key={draftScope} account={connection.address} endpoint={n.endpoint}
+            canReview={canReadWallet}/>}
+          <WalletFeeMarket key={`fee:${draftScope}`} endpoint={n.endpoint} canRead={canReadWallet}/>
+          <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
+        </Card>;
+    }
+  }
+
+  if (canary) return <div className="wallet-migrated"><button onClick={() => setCanary(false)}>Back to paired Wallet</button>{!n.recoverySuspended && n.permit('wallet', 'readWallet') ? <CanaryWallet/> : <Card title="Canary reads unavailable"><p>Allow Wallet reads in Security &amp; permissions.</p></Card>}</div>;
+
+  let headerStatus = 'Not connected';
+  if (connection) headerStatus = ready ? connection.walletName || 'Connected' : 'Read access unavailable';
+  return <div className="wallet-migrated">
+    <div className="native-actions">
+      <p>Synergy Wallet · {headerStatus}</p>
+      <button onClick={() => setCanary(true)}>Canary Wallet</button>
+      <button onClick={() => action.run(openWallet)}>Open Synergy Wallet app</button>
+      {currentTab !== 'Connections' && <button onClick={() => n.navigate('wallet-connection')}>Manage connection</button>}
+      <button disabled={!ready || (atlasReady && (account.loading || tokens.loading))} onClick={() => setRevision(value => value + 1)}>
+        Refresh Wallet observations
+      </button>
+    </div>
+    <ErrorMessage error={action.error}/>
+    {!connection && <Card title="Connect once across Portal"><p>Pair Synergy Wallet using Connect Wallet in the header.</p></Card>}
+    {connection && !ready && <Card title="Wallet reads unavailable">
+      <p>Allow Wallet reads in Security &amp; permissions and select the connected Synergy Testnet account on chain 1266.</p>
+    </Card>}
+    <div key={scope}>
+      {ready && <>
+        <Card title="Account">
+          <Copy value={connection.address} label="Copy address"/>
+          <Detail data={{address: connection.address, chain: connection.chainId}}/>
+          {atlasReady && <ErrorMessage error={account.error}/>}
+        </Card>
+        <WalletBalances key={revision} account={connection.address} endpoint={n.endpoint} index={data}
+          indexReceivedAt={data?.portalReceivedAt} consentSession={n.walletConsentSession} canRead={canReadWallet}/>
+      </>}
+      <div className="native-tabs">{tabs.map(name => <button key={name} aria-pressed={currentTab === name}
+        disabled={!ready && name !== 'Connections'} onClick={() => setTab(name)}>{name}</button>)}</div>
+      {tabContent()}
+      {(currentTab === 'Connections' || currentTab === 'Send') && <WalletSparkDraftReview key={currentTab}/>}
+    </div>
+  </div>;
 }

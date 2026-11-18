@@ -14,7 +14,25 @@ export function lessonContent(value,expectedSlug){
   if(!object(block)||!text(block.type,80))fail();
   for(const field of ['text','title','question'])if(block[field]!=null&&!text(block[field],16000))fail();
   if(['heading','paragraph'].includes(block.type)&&!text(block.text,16000))fail();
-  if(block.type==='quiz-checkpoint'&&!text(block.question??block.text,16000))fail();
+  if(block.type==='quiz-checkpoint'){
+   const question=block.prompt??block.question??block.text;
+   if(!text(question,16000)||!question.trim())fail();
+   return {type:'quiz-checkpoint',question};
+  }
+  if(block.type==='source-note'){
+   if(!text(block.source,2000)||!text(block.text,16000))fail();
+   return {type:block.type,title:block.title,source:block.source,text:block.text};
+  }
+  if(block.type==='concept-map'){
+   if([block.nodes,block.edges].some(rows=>!Array.isArray(rows)||rows.length>100||rows.some(row=>!text(row,4000))))fail();
+   return {type:block.type,title:block.title,nodes:block.nodes,edges:block.edges};
+  }
+  if(block.type==='manifest'){
+   if(!object(block.fields))fail();
+   const entries=Object.entries(block.fields);
+   if(entries.length>50||entries.some(([key,value])=>!text(key,120)||!text(value,4000)))fail();
+   return {type:block.type,title:block.title,fields:Object.fromEntries(entries)};
+  }
   if(block.type==='code'){if(!text(block.code,64000))fail();return {type:block.type,code:block.code};}
   if(block.type==='checklist'){if(!Array.isArray(block.items)||block.items.length>200||block.items.some(item=>!text(item,4000)))fail();return {type:block.type,items:block.items};}
   if(block.type==='comparison-table'){if(!Array.isArray(block.columns)||block.columns.length>20||block.columns.some(c=>!text(c,1000))||!Array.isArray(block.rows)||block.rows.length>200||block.rows.some(row=>!Array.isArray(row)||row.length!==block.columns.length||row.some(c=>!text(c,4000))))fail();return {type:block.type,title:block.title,columns:block.columns,rows:block.rows};}
