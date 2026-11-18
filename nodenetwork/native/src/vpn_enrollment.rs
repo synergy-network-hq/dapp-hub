@@ -88,6 +88,16 @@ except Exception:
  }).await.map_err(|_|"Provider operation timed out; preserve intent and reconcile, never reissue")?;
  result.map_err(String::from)
 }
+fn enrollment_controller_refusal(reply:&Value)->String{
+ // Only fixed public codes/messages produced by the sealed controller survive.
+ // Arbitrary remote error strings can contain secrets and are never reflected.
+ match reply["error"]["code"].as_str(){
+  Some("vpn_reconciliation_required")=>"vpn_reconciliation_required: VPN enrollment did not return a verified receipt. Read VPN diagnostics and reconcile the original intent; never issue another key.".into(),
+  Some("authorization_required")=>"authorization_required: Controller refused the original VPN authorization. Read target authorization and diagnostics; never reissue a key.".into(),
+  _=>"Enrollment outcome uncertain; read VPN diagnostics and reconcile provider and target, never issue another key".into(),
+ }
+}
+
 fn state_directory(base:&Path,target:&Target)->Result<std::path::PathBuf,String>{
  let physical=hash(target.journal_identity().to_string().as_bytes());
  let name=if let Some(pin)=lifecycle::incarnation(base,&target.journal_identity())?{format!("{physical}-{pin}")}else{physical};
@@ -144,7 +154,7 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
   lifecycle::vpn_grant(base,&target,&request,control,crate::operator_authorization::NativeVpnArtifact{name:"vpn-enrollment.json",bytes:&data,ca:Some(config.ca.as_slice()),provider:Some(config.raw.as_bytes())}).await?;
   use zeroize::Zeroize;data.zeroize();
   result=lifecycle::execute(base,target.clone(),request,control).await?;
-  if result["ok"]!=true{return Err("Enrollment outcome uncertain; reconcile provider and target, never issue another key".into())}
+  if result["ok"]!=true{return Err(enrollment_controller_refusal(&result))}
  }
  if operation=="reconcile"&&result["result"]["enrollment_recorded"]==false&&result["result"]["enrollment_staged"]==true&&result["result"]["reconciliation_required"]==false{
   // The target's durable attempt fence is absent: enrollment never dispatched.
@@ -174,6 +184,12 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
   let status=json!({"schema":"nodenetwork-engineering-authorization-status-v1","target":doc["target"],"initial_sha256":pin,"selection":selection,"formation_sha256":"b".repeat(64)});(t,doc,status,pin)
  }
  fn upgrade(s:&mut Value){let origin=s["selection"].clone();s["initial_selection"]=origin;s["selection"]["release_id"]=json!("upgraded");s["selection"]["manifest_sha256"]=json!("c".repeat(64));s["update"]=json!({"initial_sha256":s["initial_sha256"],"formation_sha256":s["formation_sha256"],"previous_selection":s["initial_selection"],"selection":s["selection"]});}
+ #[test]fn controller_enrollment_refusal_preserves_only_public_categories(){
+  let error=json!({"error":{"code":"vpn_reconciliation_required","message":"secret-token-not-public"}});
+  let public=enrollment_controller_refusal(&error);assert!(public.starts_with("vpn_reconciliation_required:"));assert!(!public.contains("secret-token"));
+  assert!(enrollment_controller_refusal(&json!({"error":{"code":"authorization_required"}})).starts_with("authorization_required:"));
+  let error=json!({"error":{"code":"untrusted-secret-code","message":"untrusted-secret-message"}});assert!(!enrollment_controller_refusal(&error).contains("untrusted-secret"));
+ }
  #[test]fn authenticated_upgrade_preserves_exact_original_provider_intent_binding(){
   let(t,doc,mut status,pin)=fixture();let original=binding(&t,&status,&doc,&pin).unwrap();upgrade(&mut status);assert_eq!(binding(&t,&status,&doc,&pin).unwrap(),original);assert_eq!(original["manifest_sha256"],doc["manifest_sha256"]);
   let mut mixed_case=doc.clone();mixed_case["target"]["host"]=json!("GUEST.EXAMPLE");let mut same=status.clone();same["target"]=mixed_case["target"].clone();assert_eq!(binding(&t,&same,&mixed_case,&pin).unwrap(),original);

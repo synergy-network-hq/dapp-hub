@@ -53,7 +53,7 @@ impl Request {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_preflight"|"guest_resources"|"commissioning_observation"|"treasury_preflight"|"treasury_status"|"treasury_export" => false,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"vpn_diagnostics"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_preflight"|"guest_resources"|"commissioning_observation"|"treasury_preflight"|"treasury_status"|"treasury_export" => false,
             "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_remove"|"treasury_prepare" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
@@ -343,6 +343,10 @@ pub(super) async fn execute_pinned(target: Target, request: Request, control_dir
             r.operation=operation.into();r.parameters=json!({"guest_id":"validator-a"});assert_eq!(r.validate(),Ok(matches!(operation,"guest_stop"|"guest_remove")));
             r.parameters["ssh_host"]=json!("localhost");assert!(r.validate().is_err());
         }
+    }
+    #[test] fn vpn_diagnostics_is_parameterless_and_read_only() {
+        let mut request=Request{version:1,operation:"vpn_diagnostics".into(),parameters:json!({})};
+        assert!(!request.validate().unwrap());request.parameters=json!({"path":"/private","command":"up"});assert!(request.validate().is_err());
     }
     #[test] fn vpn_enrollment_never_accepts_credentials_from_the_renderer() {
         let mut request=Request{version:1,operation:"vpn_enroll".into(),parameters:json!({})};
