@@ -243,6 +243,20 @@ pub(super) async fn remember_export(base:&Path,target:&Target,export:&Value,cont
 /// Stored public JSON alone is never accepted as an authority or a fresh proof.
 pub(super) struct SignedSource{pub target:Target,pub export:Value,pub receipt:Value}
 pub(super) fn original_document(base:&Path,target:&Target)->Result<Value,String>{initial(base,target).map(|(_,doc)|doc)}
+pub(super) fn runtime_probe_scope(base:&Path,target:&Target,status:&Value)->Result<Value,String>{
+ let(record,doc)=initial(base,target)?;
+ runtime_probe_origin_scope(&doc,&hash(record.document.as_bytes()),status)
+}
+fn runtime_probe_origin_scope(doc:&Value,initial_sha:&str,status:&Value)->Result<Value,String>{
+ if status["schema"]!="nodenetwork-engineering-authorization-status-v1"||status["initial_sha256"]!=initial_sha||status["target"]!=doc["target"]
+  ||["network_id","chain_id"].iter().any(|k|status["selection"][*k]!=doc[*k])||doc["chain_id"]!=99999{return Err("Candidate probe requires the exact independently approved target/network origin".into())}
+ let mut pins=status["genesis_pins"].as_object().cloned().ok_or("Candidate probe needs independently approved Genesis pins")?;
+ for name in ["genesis.json","authority.json","authority-root.pub","transport-registry.json","transport-root.pub","network-manifest.json"]{
+  for(map,path) in [(&doc["artifacts"],format!("commissioning/network/{name}")),(&status["commissioning_file_sha256"],format!("network/{name}"))]{if let Some(pin)=map.get(&path){if pins.get(name).is_some_and(|old|old!=pin){return Err("Candidate probe origin approval conflicts".into())}pins.insert(name.into(),pin.clone());}}
+ }
+ Ok(json!({"network_id":doc["network_id"],"chain_id":"99999","origin_pins":pins}))
+}
+
 pub(super) async fn signed_source(base:&Path,target:&Target,control:&Path)->Result<Option<SignedSource>,String>{
  if !cfg!(debug_assertions)||!initial_path(base,target)?.exists(){return Ok(None)}
  let(_,doc)=initial(base,target)?;
@@ -852,5 +866,17 @@ pub(super) fn remember_unused_upgrade(base:&Path,target:&Target,wire:&Value,proo
   let mut bad=proof.clone();bad["not_applied"]=json!(false);assert!(remember_unused_upgrade(&base,&target,&wire,&bad).is_err());let mut foreign=target.clone();foreign.host=Some("foreign".into());assert!(remember_unused_upgrade(&base,&foreign,&wire,&proof).is_err());
   remember_unused_upgrade(&base,&target,&wire,&proof).unwrap();remember_unused_upgrade(&base,&target,&wire,&proof).unwrap();
   let records:Vec<_>=std::fs::read_dir(folder(&base).unwrap()).unwrap().collect();assert_eq!(records.len(),1);let saved:Value=serde_json::from_slice(&read(&records[0].as_ref().unwrap().path(),100*1024).unwrap()).unwrap();assert_eq!(saved["state"],"not_applied");assert_eq!(saved["upgrade_dispatched"],false);assert_eq!(saved["request"],request);
+ }
+}
+
+#[cfg(test)]mod runtime_probe_scope_tests{
+ use super::*;
+ #[test]fn runtime_probe_scope_binds_initial_target_network_and_existing_pins(){
+  let pin="a".repeat(64);let mut doc=json!({"target":{"host":"approved"},"network_id":"synergy-posy-canary-test","chain_id":99999,"artifacts":{"commissioning/network/transport-registry.json":pin}});
+  let status=json!({"schema":"nodenetwork-engineering-authorization-status-v1","initial_sha256":pin,"target":doc["target"],"selection":{"network_id":doc["network_id"],"chain_id":99999},"genesis_pins":{"genesis.json":pin,"authority.json":pin,"authority-root.pub":pin},"commissioning_file_sha256":{"network/transport-registry.json":pin,"network/transport-root.pub":pin,"network/network-manifest.json":pin}});
+  assert_eq!(runtime_probe_origin_scope(&doc,&pin,&status).unwrap()["origin_pins"]["transport-registry.json"],pin);
+  for field in ["initial_sha256","target","selection","genesis_pins"]{let mut bad=status.clone();bad[field]=Value::Null;assert!(runtime_probe_origin_scope(&doc,&pin,&bad).is_err())}
+  let scope=runtime_probe_origin_scope(&doc,&pin,&status).unwrap();assert_eq!(scope["origin_pins"]["transport-root.pub"],pin);assert_eq!(scope["origin_pins"]["network-manifest.json"],pin);
+  doc["artifacts"]["commissioning/network/transport-registry.json"]=json!("b".repeat(64));assert!(runtime_probe_origin_scope(&doc,&pin,&status).is_err());
  }
 }

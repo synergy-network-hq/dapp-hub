@@ -348,6 +348,18 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
   return Ok(serde_json::json!({"version":1,"ok":true,"result":crate::operator_auth::status(&target,&directory).await?}));
  }
+ if request.operation=="upgrade_native_preflight"{
+  if !node_bootstrap::matches_builtin_release(request.parameters["release_id"].as_str().ok_or("Candidate release required")?,request.parameters["manifest_sha256"].as_str().ok_or("Candidate manifest required")?){return Err("Candidate probe needs an independently compiled package approval".into())}
+  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+  let base=app.path().app_local_data_dir().map_err(|_|"Native approval unavailable")?;
+  let _transaction=crate::authorization_lifecycle::continuation_lock(&base,&target)?;
+  let authorization=controller(&app,target.clone(),node_controller::Request{version:1,operation:"authorization_status".into(),parameters:serde_json::json!({})},&directory).await?;
+  if authorization["ok"]!=true{return Err("Candidate probe could not authenticate current origin approval".into())}
+  let scope=crate::authorization_lifecycle::runtime_probe_scope(&base,&target,&authorization["result"])?;
+  let reply=controller(&app,target,request.clone(),&directory).await?;
+  if !crate::gateway_admission::exact(&reply,&["version","ok","result"])||reply["version"]!=1||reply["ok"]!=true{return Err("Candidate Linux origin/crypto smoke refused; no software or authority was changed".into())}
+  return Ok(serde_json::json!({"version":1,"ok":true,"result":crate::runtime_probe::review(&request,&reply["result"],&scope)?}));
+ }
  if request.operation=="boot_policy"&&request.parameters["enabled"]==true&&target.guest.is_some(){return Err("Managed guest boot enablement is unavailable; no grant or mutation was sent".into())}
  let gateway_query=|request:&node_controller::Request|node_controller::Request{version:1,operation:if request.operation=="gateway_admission_prepare"{"gateway_admission_preflight".into()}else{"gateway_admission_status".into()},parameters:if request.operation=="gateway_admission_prepare"{request.parameters.clone()}else{serde_json::json!({})}};
  let gateway_review=if matches!(request.operation.as_str(),"gateway_admission_prepare"|"gateway_admission_sign"){

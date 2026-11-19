@@ -43,3 +43,5 @@ mod gateway_admission;
 mod gateway_target;
 
 mod operator_auth;
+
+mod runtime_probe;
