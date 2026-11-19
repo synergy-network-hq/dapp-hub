@@ -47,7 +47,7 @@ import {OffboardingChecklist} from './Offboarding.jsx';
 import {TargetSettings, useTargetSelection} from './TargetSettings.jsx';
 import {hostCompatibility,hostTargetSupported} from './host-compatibility.js';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
-import {readNodeNetwork,provisioningChecks} from './nodeNetwork.js';
+import {readNodeNetwork,provisioningChecks,nodeNetworkObservationScope} from './nodeNetwork.js';
 
 function HistoricalArtifactReview({children}) {
  return <section aria-label="Historical saved artifact review"><p className="native-source">Historical artifact reader: this saved profile is separate from the current lowercase Synergy installation. Unsupported artifacts remain unavailable; use the authenticated native controller for current installation state. These file reviews grant no operation authority.</p>{children}</section>;
@@ -93,7 +93,7 @@ export function NodeNetworkApp(){
  const live=useResource(signal=>{
   if(!permitted)throw new Error('Allow NodeNetwork to read public network data in Security & permissions.');
   return readNodeNetwork(rpc,profile,signal);
- },`${profile.id}:${profile.rpc}:${profile.chainId}:${permitted}`);
+ },nodeNetworkObservationScope(profile,permitted));
  const validators=useResource(async signal=>{
   if(!indexAvailable)return null;
   const data=await readAtlasValidators('validators?limit=100',signal);

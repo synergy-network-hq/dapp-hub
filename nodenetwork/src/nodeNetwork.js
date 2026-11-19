@@ -1,4 +1,6 @@
 // Public observations never grant enrollment, installation or signing authority.
+import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
+import {confirmReportedGenesis,genesisDigest} from './genesis-pin.js';
 export const CANARY_PROFILE = Object.freeze({
  id:'posy-canary', name:'PoSy Canary', chainId:99999,
  rpc:'https://canary-rpc.synergy-network.io',
@@ -24,25 +26,42 @@ export function nodeNetworkTarget(value) {
  return target;
 }
 
+export function nodeNetworkObservationScope(profile,permitted) {
+ return JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,profile.genesisHash??null,permitted]);
+}
+
 export async function readNodeNetwork(request, profile, signal) {
+ const expected=Number(profile.chainId),pin=genesisDigest(profile.genesisHash);
+ if(profile.genesisHash!=null&&!pin)throw Error('The configured observation Genesis pin is invalid.');
+ signal?.throwIfAborted();
  const options={endpoint:profile.rpc,signal};
  const chain=await request('synergy_chainStatus',[],options);
- if (!Number.isSafeInteger(chain?.chain_id) || chain.chain_id!==Number(profile.chainId)) {
-  throw new Error(`Network mismatch: expected chain ${profile.chainId}. No node operations are authorized.`);
+ signal?.throwIfAborted();
+ if (!Number.isSafeInteger(chain?.chain_id) || chain.chain_id!==expected) {
+  throw new Error(`Network mismatch: expected chain ${expected}. No node operations are authorized.`);
  }
  const chainReceivedAt=Date.now();
+ let reportedNetwork=null;
+ if(pin){
+  const readiness=await request('synergy_getReadiness',[],options);
+  signal?.throwIfAborted();
+  const report=rpcReadinessObservation(readiness,expected);
+  confirmReportedGenesis(report.chain.genesis,pin);
+  reportedNetwork=report.chain;
+ }
  const names=['node','posy','sync'];
  const results=await Promise.allSettled(names.map(async name=>{
   const value=await request(`synergy_${name}Status`,[],options);
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error(`${name} status response is unavailable or unsupported; no healthy or empty state is inferred.`);
   return {value,receivedAt:Date.now()};
  }));
+ signal?.throwIfAborted();
  const observations={}, errors={},receivedAt={};
  results.forEach((result,index)=>{
   if(result.status==='fulfilled'){observations[names[index]]=result.value.value;receivedAt[names[index]]=result.value.receivedAt;}
   else errors[names[index]]=String(result.reason?.message||result.reason);
  });
- return {chain,chainReceivedAt,observations,receivedAt,errors,checkedAt:Date.now()};
+ return {chain,chainReceivedAt,configuredGenesis:pin,reportedNetwork,observations,receivedAt,errors,checkedAt:Date.now()};
 }
 
 export const R5_BASELINE=Object.freeze({release_id:'synergy-linux-389c509e47e55219',manifest_sha256:'43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b'});
