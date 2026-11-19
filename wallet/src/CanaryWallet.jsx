@@ -1,10 +1,11 @@
 import {isValidSynergyAddress} from './wallet-address.js';
 import {useState} from 'react';
-import {CANARY_PROFILE,canaryRead,canaryProcessingStatus,canaryAccountStatus,Card,Detail,Resource,useResource,openWallet,useAction,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
+import {canaryAccountObservation} from './canary-account-observation.js';
+import {CANARY_PROFILE,canaryRead,canaryProcessingStatus,Card,Detail,Resource,useResource,openWallet,useAction,ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 
 function AccountObservation({address}){
- const observation=useResource(async signal=>canaryAccountStatus(await canaryRead('synergy_getAccount',{address,at_height:null},{signal}),address),address);
- return <Resource value={observation}>{value=><Detail data={{address:value.address,finalizedBalanceNwei:value.balanceNwei}}/>}</Resource>;
+ const observation=useResource(async signal=>canaryAccountObservation(await canaryRead('synergy_getAccount',{address,at_height:null},{signal}),address),address);
+ return <Resource value={observation}>{value=>value.kind==='not_observed'?<p>No finalized account observed for this address.</p>:<><Detail data={{address:value.address,finalizedBalanceNwei:value.balanceNwei,nonce:value.nonce,finalizedHeight:value.finalizedHeight,finalizedBlockHash:value.finalizedBlockHash,stateRoot:value.stateRoot}}/><p>Gateway account observations; not independently verified state proofs.</p></>}</Resource>;
 }
 
 export function CanaryWallet(){
