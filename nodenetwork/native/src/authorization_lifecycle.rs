@@ -160,6 +160,13 @@ pub(super) async fn grant(base:&Path,target:&Target,request:&Request,control:&Pa
  grant_locked(base,target,request,control,pins,&transaction).await
 }
 pub(super) async fn grant_locked(base:&Path,target:&Target,request:&Request,control:&Path,pins:Option<&Value>,_transaction:&ContinuationLock)->Result<(),String>{
+ grant_with_gateway_purpose(base,target,request,control,pins,_transaction,false).await
+}
+pub(super) async fn gateway_grant_locked(base:&Path,target:&Target,request:&Request,control:&Path,transaction:&ContinuationLock)->Result<(),String>{
+ if !cfg!(debug_assertions)||!initial_path(base,target)?.exists(){return Err("Gateway admission requires an independently pinned engineering target".into())}
+ grant_with_gateway_purpose(base,target,request,control,None,transaction,request.operation=="gateway_admission_prepare").await
+}
+async fn grant_with_gateway_purpose(base:&Path,target:&Target,request:&Request,control:&Path,pins:Option<&Value>,_transaction:&ContinuationLock,gateway_purpose:bool)->Result<(),String>{
  if !cfg!(debug_assertions){return Ok(())}
  let path=initial_path(base,target)?;if !path.exists(){return Ok(())}
  let(record,doc)=initial(base,target)?;
@@ -174,9 +181,11 @@ pub(super) async fn grant_locked(base:&Path,target:&Target,request:&Request,cont
  if status["pending_grants"].as_array().is_some_and(|a|a.iter().any(|v|v.as_str()==Some(request.approval_id().as_str()))){return Ok(())}
  let now=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs();
  let next=continuation_document(&doc,status,request,pins,now)?;
- save(&intent,&next)?;
- let expected=hash(next.to_string().as_bytes());
- let prepared=authorization::continuation(next,target,&hash(record.document.as_bytes()),status["authorization"]["sha256"].as_str().ok_or("No authorization parent")?,status["formation_sha256"].as_str().ok_or("No approved formation")?)?;
+ let parent=status["authorization"]["sha256"].as_str().ok_or("No authorization parent")?;let formation=status["formation_sha256"].as_str().ok_or("No approved formation")?;
+ let prepared=if gateway_purpose{authorization::gateway_continuation(next,target,&hash(record.document.as_bytes()),parent,formation,request)?}else{authorization::continuation(next,target,&hash(record.document.as_bytes()),parent,formation)?};
+ let saved:Value=serde_json::from_str(&prepared.document).map_err(|_|"Invalid exact continuation document")?;
+ save(&intent,&saved)?;
+ let expected=prepared.sha256.clone();
  let result=authorization::execute(target.clone(),record.operator,prepared,control).await?;
  if result["ok"]!=true||result["result"]["sha256"]!=expected||result["result"]["applied"]!=true||result["result"]["grants_recreated"]!=false{return Err("Exact continuation outcome uncertain or refused; read authorization status, never replay".into())}
  std::fs::remove_file(&intent).map_err(|_|"Continuation succeeded but local confirmation is interrupted; reconcile status")?;Ok(())

@@ -28,7 +28,7 @@ impl Record {
 
 fn digest(value: &Value) -> String { format!("{:x}", Sha256::digest(value.to_string().as_bytes())) }
 fn pin(value: &str) -> bool { value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
-fn journaled_operation(operation: &str) -> bool { matches!(operation, "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "vpn_stop" | "vpn_resume" | "boot_policy" | "start" | "stop" | "restart" | "upgrade" | "uninstall") }
+fn journaled_operation(operation: &str) -> bool { matches!(operation, "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "vpn_stop" | "vpn_resume" | "boot_policy" | "gateway_admission_prepare" | "gateway_admission_sign" | "start" | "stop" | "restart" | "upgrade" | "uninstall") }
 
 fn now() -> Result<u64, String> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok())
@@ -111,7 +111,7 @@ fn load(path: &Path) -> Result<Vec<Record>, String> {
             "verified_commission_not_applied" => record.operation=="commission"&&record.observed_at_ms.is_some_and(|at|at>=record.recorded_at_ms)&&record.response_ok==Some(false),
             "verified_upgrade_not_applied" => record.operation=="upgrade"&&record.observed_at_ms.is_some_and(|at|at>=record.recorded_at_ms)&&record.response_ok==Some(false),
             "verified_bootstrap_absence" => record.operation=="bootstrap" && record.observed_at_ms.is_some_and(|at|at>=record.recorded_at_ms) && record.response_ok.is_none(),
-            "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"vpn_stop"|"vpn_resume"|"boot_policy"|"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "formation_prepare"|"genesis_stage"|"genesis_bind"),
+            "verified_target_outcome" => record.observed_at_ms.is_some() && record.response_ok==Some(true) && matches!(record.operation.as_str(),"vpn_stop"|"vpn_resume"|"boot_policy"|"gateway_admission_prepare"|"gateway_admission_sign"|"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "formation_prepare"|"genesis_stage"|"genesis_bind"),
             _ => false,
         };
         if record.version != 1 || name != format!("{}.json", record.id) || !pin(&record.id) || !pin(&record.target_digest) || !pin(&record.request_digest) || !operation || !state { return Err(failure()); }
@@ -362,7 +362,7 @@ impl Dispatch {
     }
     fn begin_with_digest(base:&Path,target:&Value,operation:&str,request_digest:String,retry:Option<BootstrapRetry>,guest_stop:Option<&str>,replacement:Option<UpdateReplacement>)->Result<Self,String>{
         let _serial = SERIAL.lock().map_err(|_| failure())?;
-        if !matches!(operation, "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "vpn_stop" | "vpn_resume" | "boot_policy" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
+        if !matches!(operation, "authorization_stage" | "update_stage" | "bare_bootstrap_rollback" | "bootstrap" | "install" | "identity_generate" | "network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "guest_remove" | "formation_prepare" | "genesis_stage" | "genesis_bind" | "commission" | "register" | "vpn_enroll" | "vpn_stop" | "vpn_resume" | "boot_policy" | "gateway_admission_prepare" | "gateway_admission_sign" | "start" | "stop" | "restart" | "upgrade" | "uninstall") { return Err(failure()); }
         let directory = directory(base, true)?.ok_or_else(failure)?;
         let _writer = WriterLock::acquire(&directory)?;
         let records = load(&directory)?;
@@ -410,7 +410,7 @@ impl Dispatch {
 /// No retries, clearing, or inferred failure. A target status can reconcile
 /// only the matching original custody preparation, Genesis staging or Genesis bind.
 pub(crate) fn reconcile_verified(base:&Path,target:&Value,operation:&str,request_digest:&str)->Result<bool,String>{
-    if !matches!(operation,"vpn_stop"|"vpn_resume"|"boot_policy"|"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(request_digest){return Err(failure());}
+    if !matches!(operation,"vpn_stop"|"vpn_resume"|"boot_policy"|"gateway_admission_prepare"|"gateway_admission_sign"|"authorization_stage"|"update_stage"|"identity_generate"|"network_formation_prepare" | "network_formation_sign" | "network_transport_prepare" | "network_transport_sign" | "treasury_prepare" | "treasury_send_prepare" | "treasury_send_submit" | "guest_create" | "guest_resume" | "guest_stop" | "formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(request_digest){return Err(failure());}
     let _serial=SERIAL.lock().map_err(|_|failure())?;
     let Some(directory)=directory(base,false)? else{return Ok(false);};
     let _writer=WriterLock::acquire(&directory)?;
@@ -750,6 +750,15 @@ pub(crate) fn reconcile_guest_stopped(base:&Path,target:&Value,resume:&str,stop:
   assert!(!reconcile_verified(&c.0,&t,"boot_policy",&digest(&other)).unwrap());assert!(require_resumable_scope(&c.0,&t).is_err());
   assert!(reconcile_verified(&c.0,&t,"boot_policy",&digest(&q)).unwrap());require_resumable_scope(&c.0,&t).unwrap();
   Dispatch::begin(&c.0,&t,"boot_policy",&q).unwrap().finish(&Ok(json!({"version":1,"ok":true}))).unwrap();
+ }
+ #[test]fn gateway_admission_lost_reply_requires_exact_owner_observation_before_new_grant(){
+  for operation in ["gateway_admission_prepare","gateway_admission_sign"]{
+   let c=scratch();let t=json!({"kind":"remote","host":"issuer.example","port":22,"root":"/opt/synergy"});let q=json!({"version":1,"operation":operation,"parameters":{"review_sha256":"a".repeat(64)}});
+   Dispatch::begin(&c.0,&t,operation,&q).unwrap().finish(&Err("reply lost".into())).unwrap();
+   let mut grants=0;if require_resumable_scope(&c.0,&t).is_ok(){grants+=1}assert_eq!(grants,0);
+   let foreign=json!({"kind":"remote","host":"other.example","port":22,"root":"/opt/synergy"});assert!(!reconcile_verified(&c.0,&foreign,operation,&digest(&q)).unwrap());assert!(!reconcile_verified(&c.0,&t,operation,&"b".repeat(64)).unwrap());assert!(require_resumable_scope(&c.0,&t).is_err());
+   assert!(reconcile_verified(&c.0,&t,operation,&digest(&q)).unwrap());require_resumable_scope(&c.0,&t).unwrap();assert!(!reconcile_verified(&c.0,&t,operation,&digest(&q)).unwrap());
+  }
  }
  #[test]fn vpn_resume_uncertainty_cannot_be_blindly_replayed(){
   let c=scratch();let t=json!({"kind":"remote","host":"same.example","port":22,"root":"/opt/synergy"});

@@ -185,6 +185,7 @@ impl Target {
 impl Request {
     pub fn validate(&self) -> Result<bool, String> {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
+        if self.operation.starts_with("gateway_"){return crate::gateway_admission::validate(self)}
         if self.operation.starts_with("treasury_send_"){return crate::treasury_send::validate(self)}
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
@@ -1283,6 +1284,7 @@ pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Val
    if reply["ok"]==true&&reply["result"]==json!({"schema":"nodenetwork-boot-policy-v1","service":request.parameters["service"],"enabled":request.parameters["enabled"],"runtime_changed":false}){Ok(reply.clone())}
    else{Err("Boot policy outcome uncertain; read boot policy status before another change.")}
   },
+  "gateway_admission_prepare"|"gateway_admission_sign"=>crate::gateway_admission::acknowledgement(request,&reply).map_err(|_|"Gateway admission outcome uncertain; reconcile the exact original request before another change."),
   "commission"=>commissioning_reply(&reply),
   "start"|"stop"|"restart"=>node_service_reply(&request.operation,&reply),
   "identity_generate"=>identity_generation_reply(request,&reply),
@@ -1308,7 +1310,7 @@ pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Val
 pub(super) async fn execute_pinned(target:Target,request:Request,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
     target.validate()?;request.validate()?;
     let wire=request.canonical().to_string();
-    let input_limit=if request.operation=="genesis_stage"{12*1024*1024}else if matches!(request.operation.as_str(),"network_formation_prepare"|"network_transport_prepare"|"treasury_send_prepare"){2*1024*1024}else{REQUEST_LIMIT};
+    let input_limit=if request.operation=="genesis_stage"{12*1024*1024}else if matches!(request.operation.as_str(),"network_formation_prepare"|"network_transport_prepare"|"treasury_send_prepare"|"gateway_admission_prepare"|"gateway_admission_preflight"){2*1024*1024}else{REQUEST_LIMIT};
     let output_limit=if request.operation=="network_transport_export"{4*1024*1024+16384}else if matches!(request.operation.as_str(),"network_formation_export"|"treasury_send_preflight"){2*1024*1024}else{LIMIT};
     if wire.len()>=input_limit{return Err("Controller request exceeds the operation's safe wire limit.".into())}
     let _serial=SERIAL.lock().await;

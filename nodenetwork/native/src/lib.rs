@@ -39,3 +39,4 @@ pub mod treasury_send;
 mod vpn_credential;
 
 pub mod consensus_observation;
+mod gateway_admission;
