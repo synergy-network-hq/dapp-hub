@@ -11,6 +11,7 @@ function transactionEvidence(e,finalized){
  if(t===null)return a===null;
  if(!exact(t,['transaction_id','block_height','block_hash','finality_certificate_id','status'])||t.transaction_id!==q.transaction_id||t.block_height!==q.height||t.block_height>finalized||!pin(t.block_hash)||!pin(t.finality_certificate_id)||!['applied','reverted'].includes(t.status))return false;
  if(t.status==='reverted')return a===null;
+ if(a===null)return true; // Receipt retained; exact-height account evidence unavailable.
  if(!exact(a,['sender','receiver']))return false;
  for(const role of ['sender','receiver']){const v=a[role];if(!exact(v,['address','balance_nwei','nonce','finalized_height','finalized_block_hash','state_root'])||v.address!==q[role]||typeof v.balance_nwei!=='string'||!/^(0|[1-9][0-9]{0,38})$/.test(v.balance_nwei)||BigInt(v.balance_nwei)>340282366920938463463374607431768211455n||!num(v.nonce)||v.finalized_height!==q.height||v.finalized_block_hash!==t.block_hash||!pin(v.state_root))return false;}
  return a.sender.state_root===a.receiver.state_root;

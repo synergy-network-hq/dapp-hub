@@ -18,15 +18,39 @@ def observation_identity(value,scope,genesis,pid):
         and type(value.get('chain_id')) is int and value['chain_id']==int(scope['chain_id'])
         and value.get('genesis_hash')==genesis and type(value.get('process_id')) is int and value['process_id']==pid,'RPC identity differs')
 
-def finality_telemetry(rpc,scope,genesis,height):
+def finality_telemetry(rpc,scope,genesis,height,read_block=None):
+    import re
     # Use the existing fixed telemetry method and its selected-height contract.
     # A current tip is not a commitment to the requested historical block.
     require(type(height) is int and 0<height<2**53,'Invalid finality height')
     value=rpc.call('synergy_chainTelemetry',{'at_height':height})
     observation_identity(value,scope,genesis,rpc.pid)
+    require('common_finalized_commitment' in value,'Selected commitment field unavailable')
     commitment=value.get('common_finalized_commitment')
-    require(isinstance(commitment,dict) and type(commitment.get('height')) is int
-        and commitment['height']==height,'Selected finalized commitment unavailable')
+    if commitment is None:
+        # The durable compact receipt batch can outlive the full World needed
+        # by telemetry. This is still only a node observation until the
+        # complete existing witness passes the native three-QC verifier below.
+        require(callable(read_block) and type(value.get('finalized_height')) is int
+            and height<=value['finalized_height']<2**53,'Selected finalized commitment unavailable')
+        block=read_block(height)
+        keys={'height','block_hash','parent_block_hash','protected_execution_root','state_root',
+              'finality_certificate_id','transactions','receipts','representation','payloads_available'}
+        require(isinstance(block,dict) and set(block)==keys and type(block['height']) is int
+            and block['height']==height and block['representation']=='compact_public_v1'
+            and block['payloads_available'] is False
+            and isinstance(block['transactions'],list) and isinstance(block['receipts'],list)
+            and len(block['transactions'])==len(block['receipts'])
+            and all(isinstance(block[k],str) and re.fullmatch('[a-f0-9]{64}',block[k])
+                for k in ('block_hash','parent_block_hash','protected_execution_root','state_root','finality_certificate_id')),
+            'Exact compact finalized block unavailable')
+        commitment={'height':height,'block_id':block['block_hash'],'state_root':block['state_root'],
+            'finality_certificate_id':block['finality_certificate_id'],'protected_execution_root':block['protected_execution_root']}
+        value={**value,'common_finalized_commitment':commitment}
+    require(isinstance(commitment,dict) and set(commitment)=={'height','block_id','state_root','finality_certificate_id','protected_execution_root'}
+        and type(commitment['height']) is int and commitment['height']==height
+        and all(isinstance(commitment[k],str) and re.fullmatch('[a-f0-9]{64}',commitment[k])
+            for k in ('block_id','state_root','finality_certificate_id','protected_execution_root')),'Selected finalized commitment unavailable')
     return value
 
 def finality_document(fetch,height):
@@ -112,6 +136,9 @@ def transaction_observation(rpc,selector):
     views={}
     for role in ('sender','receiver'):
         value=rpc.call('synergy_getAccount',{'address':selector[role],'at_height':selector['height']})
+        # A retained receipt can outlive its historical World. Explicit null
+        # cannot establish account absence; validate every other present view.
+        if value is None:continue
         require(isinstance(value,dict) and value.get('address')==selector[role]
             and type(value.get('finalized_height')) is int and value['finalized_height']==selector['height']
             and value.get('finalized_block_hash')==raw['block_hash'] and pin(value.get('state_root'))
@@ -119,6 +146,7 @@ def transaction_observation(rpc,selector):
             and isinstance(value.get('balance_nwei'),str) and re.fullmatch('0|[1-9][0-9]{0,38}',value['balance_nwei'])
             and int(value['balance_nwei'])<2**128,'Same-block account observation unavailable')
         views[role]={k:value[k] for k in ('address','balance_nwei','nonce','finalized_height','finalized_block_hash','state_root')}
+    if len(views)!=2:return result
     require(views['sender']['state_root']==views['receiver']['state_root'],'Account state roots differ')
     result['accounts']=views
     return result
@@ -165,12 +193,13 @@ def consensus_observation(wire):
             # LocalRpc's spending allowlist is deliberately unchanged. These two
             # fixed read methods use the SAME listener/PID checks and envelope.
             deadline=time.monotonic()+30
-            def fetch(params):
+            def fetch(params,read_method=method):
+                require(read_method==method or op=='finality' and read_method=='synergy_getBlock','Unsupported evidence read')
                 require(time.monotonic()<deadline,'Evidence deadline exceeded')
                 require(listener(root,c.public_json(root/'config/node.json',True))==(rpc.pid,rpc.port),'RPC ownership changed')
                 conn=http.client.HTTPConnection('127.0.0.1',rpc.port,timeout=min(10,deadline-time.monotonic()))
                 try:
-                    conn.request('POST','/rpc',body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params},separators=(',',':')),headers={'Content-Type':'application/json','Connection':'close'})
+                    conn.request('POST','/rpc',body=json.dumps({'jsonrpc':'2.0','id':1,'method':read_method,'params':params},separators=(',',':')),headers={'Content-Type':'application/json','Connection':'close'})
                     response=conn.getresponse();raw=response.read(4*1024*1024+1)
                     require(response.status==200 and len(raw)<=4*1024*1024,'Evidence response exceeds bound')
                     envelope=json.loads(raw);require(isinstance(envelope,dict) and set(envelope)=={'jsonrpc','id','result'} and envelope['jsonrpc']=='2.0' and type(envelope['id']) is int and envelope['id']==1,'Evidence unavailable')
@@ -180,7 +209,8 @@ def consensus_observation(wire):
             evidence=fetch({'epoch':value}) if op=='epoch' else None
             if document is not None:
                 raw,digest,pages=document
-                selected=finality_telemetry(rpc,scope,genesis,value)
+                selected=finality_telemetry(rpc,scope,genesis,value,
+                    lambda height:fetch({'height':height,'hash':None},'synergy_getBlock'))
                 verified=verify_finality_document(c,root,raw,scope,genesis,selected['common_finalized_commitment'])
                 import base64
                 evidence={'schema':'nodenetwork-finality-document-v1','height':value,'sha256':digest,'bytes_base64':base64.b64encode(raw).decode(),'pages':pages,'verification':verified}

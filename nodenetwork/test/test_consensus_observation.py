@@ -19,7 +19,8 @@ class ObservationBoundary(unittest.TestCase):
         from copy import deepcopy
         scope={'network_id':'fresh','chain_id':'99999'}
         value={'schema_version':1,'network_identity':'fresh','chain_id':99999,'genesis_hash':'a'*64,
-            'process_id':123,'finalized_height':112,'common_finalized_commitment':{'height':100}}
+            'process_id':123,'finalized_height':112,'common_finalized_commitment':{'height':100,
+                'block_id':'b'*64,'state_root':'c'*64,'finality_certificate_id':'d'*64,'protected_execution_root':'e'*64}}
         calls=[]
         class Rpc:
             pid=123
@@ -36,6 +37,78 @@ class ObservationBoundary(unittest.TestCase):
         for height in (0,True,2**53):
             with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,height)
         self.assertEqual(len(calls),before)
+    def test_pruned_telemetry_uses_only_exact_compact_block_and_projects_no_payload(self):
+        from copy import deepcopy
+        scope={'network_id':'fresh','chain_id':'99999'}
+        telemetry={'schema_version':1,'network_identity':'fresh','chain_id':99999,'genesis_hash':'a'*64,
+            'process_id':123,'finalized_height':200,'common_finalized_commitment':None}
+        block={'height':100,'block_hash':'b'*64,'parent_block_hash':'c'*64,'state_root':'d'*64,
+            'finality_certificate_id':'e'*64,'protected_execution_root':'f'*64,'transactions':['SECRET'],
+            'receipts':['SECRET'],'representation':'compact_public_v1','payloads_available':False}
+        calls=[]
+        class Rpc:
+            pid=123
+            def call(self,method,params):calls.append((method,params));return deepcopy(telemetry)
+        def read(height):calls.append(('synergy_getBlock',{'height':height,'hash':None}));return deepcopy(block)
+        observed=self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,read)
+        self.assertEqual(calls,[('synergy_chainTelemetry',{'at_height':100}),('synergy_getBlock',{'height':100,'hash':None})])
+        self.assertEqual(observed['common_finalized_commitment'],{'height':100,'block_id':'b'*64,'state_root':'d'*64,'finality_certificate_id':'e'*64,'protected_execution_root':'f'*64})
+        self.assertNotIn('SECRET',str(observed));self.assertIsNone(telemetry['common_finalized_commitment'])
+        for key,val in [('height',101),('height',True),('block_hash','bad'),('state_root','bad'),('finality_certificate_id','bad'),('protected_execution_root','bad'),('parent_block_hash','bad'),('representation','full'),('payloads_available',True),('transactions',{}),('receipts',[]),('network_id','foreign')]:
+            bad={**block,key:val}
+            with self.subTest(key=key),self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,lambda height:bad)
+        for missing in ('representation','payloads_available'):
+            bad=deepcopy(block);del bad[missing]
+            with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,lambda height:bad)
+        for bad in (None,{},False,[]):
+            with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,lambda height:bad)
+        def refused(height):raise RuntimeError('Exact block refused')
+        with self.assertRaisesRegex(RuntimeError,'Exact block refused'):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,refused)
+        for key,val in [('network_identity','foreign'),('chain_id',1266),('genesis_hash','f'*64),('process_id',456)]:
+            original=deepcopy(telemetry);telemetry[key]=val;calls.clear()
+            with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,read)
+            self.assertEqual(len(calls),1);telemetry.clear();telemetry.update(original)
+        for commitment in ({},{'height':101}):
+            telemetry['common_finalized_commitment']=commitment;calls.clear()
+            with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,read)
+            self.assertEqual(len(calls),1)
+        del telemetry['common_finalized_commitment'];calls.clear()
+        with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100,read)
+        self.assertEqual(len(calls),1)
+    def test_fixed_block_fetch_keeps_owned_listener_envelope_and_method_boundary(self):
+        import ast,copy,json,types
+        source=Path(__file__).parents[1]/'native/src/consensus_observation.py'
+        fetch=next(node for node in ast.walk(ast.parse(source.read_text())) if isinstance(node,ast.FunctionDef) and node.name=='fetch')
+        requests=[];body={'jsonrpc':'2.0','id':1,'result':None}
+        class Response:
+            status=200
+            def read(self,limit):
+                self_limit=4*1024*1024+1
+                if limit!=self_limit:raise AssertionError('Read bound changed')
+                return json.dumps(body).encode()
+        class Connection:
+            def __init__(self,host,port,timeout):
+                if (host,port,timeout)!=('127.0.0.1',1234,10):raise AssertionError('RPC endpoint changed')
+            def request(self,verb,path,**kwargs):requests.append((verb,path,json.loads(kwargs['body'])))
+            def getresponse(self):return Response()
+            def close(self):pass
+        namespace={'require':self.m['finality_telemetry'].__globals__['require'],'op':'finality',
+            'method':'synergy_getFinalizedProofPageV1','deadline':30,'time':types.SimpleNamespace(monotonic=lambda:0),
+            'root':Path('/fixture'),'c':types.SimpleNamespace(public_json=lambda *args:{}),
+            'rpc':types.SimpleNamespace(pid=123,port=1234),'listener':lambda *args:(123,1234),
+            'http':types.SimpleNamespace(client=types.SimpleNamespace(HTTPConnection=Connection)),'json':json}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[copy.deepcopy(fetch)],type_ignores=[])),'<fixed-observation-fetch>','exec'),namespace)
+        call=namespace['fetch'];params={'height':100,'hash':None}
+        self.assertIsNone(call(params,'synergy_getBlock'))
+        self.assertEqual(requests,[('POST','/rpc',{'jsonrpc':'2.0','id':1,'method':'synergy_getBlock','params':params})])
+        for method in ('synergy_submitProcessingTransactionV1','arbitrary', 'synergy_getAccount'):
+            with self.assertRaises(ValueError):call(params,method)
+        self.assertEqual(len(requests),1)
+        namespace['listener']=lambda *args:(456,1234)
+        with self.assertRaises(ValueError):call(params,'synergy_getBlock')
+        self.assertEqual(len(requests),1);namespace['listener']=lambda *args:(123,1234)
+        body.clear();body.update({'jsonrpc':'2.0','id':1,'error':{'message':'SECRET'}})
+        with self.assertRaisesRegex(ValueError,'Evidence unavailable'):call(params,'synergy_getBlock')
 class TransactionObservation(unittest.TestCase):
     def setUp(self):
         def require(ok,message):
@@ -69,7 +142,29 @@ class TransactionObservation(unittest.TestCase):
     def test_null_reverted_and_unavailable_never_fabricate_accounts(self):
         value,calls=self.observe(use_null=True);self.assertIsNone(value['transaction']);self.assertIsNone(value['accounts']);self.assertEqual(len(calls),1)
         value,calls=self.observe(tx={**self.tx,'status':'reverted'});self.assertIsNone(value['accounts']);self.assertEqual(len(calls),1)
-        with self.assertRaises(ValueError):self.observe(accounts={'sender':None,'receiver':None})
+        value,calls=self.observe(accounts={'sender':None,'receiver':None})
+        self.assertEqual(value['transaction']['transaction_id'],self.selector['transaction_id'])
+        self.assertIsNone(value['accounts']);self.assertEqual(len(calls),3)
+    def test_null_historical_account_retains_receipt_but_never_masks_malformed_other(self):
+        from copy import deepcopy
+        for missing,present in [('sender','receiver'),('receiver','sender')]:
+            accounts=deepcopy(self.accounts);accounts[missing]=None
+            value,calls=self.observe(accounts=accounts)
+            self.assertIsNone(value['accounts']);self.assertEqual(value['transaction']['status'],'applied');self.assertEqual(len(calls),3)
+            for key,val in [('address','syna1foreignaccount'),('finalized_height',1662),('finalized_block_hash','f'*64),('state_root','bad'),('balance_nwei','01'),('nonce',True)]:
+                bad=deepcopy(accounts);bad[present][key]=val
+                with self.subTest(missing=missing,key=key),self.assertRaises(ValueError):self.observe(accounts=bad)
+        for malformed in ({},[],False,0,'unavailable'):
+            with self.subTest(malformed=malformed),self.assertRaises(ValueError):self.observe(accounts={'sender':None,'receiver':malformed})
+    def test_account_rpc_failure_is_not_treated_as_explicit_null(self):
+        outer=self
+        class Rpc:
+            def call(self,method,params):
+                if method=='synergy_getTransaction':return outer.tx
+                if params['address']==outer.selector['sender']:return None
+                raise RuntimeError('RPC refused the second account read')
+        with self.assertRaisesRegex(RuntimeError,'second account read'):
+            self.m['transaction_observation'](Rpc(),self.selector)
     def test_selector_closed_and_bounded(self):
         for key,val in [('height',True),('height',0),('height',2**53),('transaction_id','A'*64),('sender','http://foreign'),('extra',1)]:
             with self.subTest(key=key),self.assertRaises(ValueError):self.m['observation_query']({'operation':'transaction','value':{**self.selector,key:val}})
@@ -130,7 +225,7 @@ class FinalityContinuation(unittest.TestCase):
             scope={'network_id':'fresh','chain_id':'99999'};commit={'height':100,'block_id':'b'*64,'finality_certificate_id':'c'*64,'protected_execution_root':'d'*64}
             result={'version':1,'verified':True,'chain_id':99999,'network_id':'fresh','genesis_hash':'a'*64,'finalized':commit}
             self.m['verify_finality_document'].__globals__.update({'os':os,'stat':stat,'json':json,'hashlib':self.hashlib})
-            outcomes=[result,{**result,'genesis_hash':'f'*64},{**result,'finalized':{**commit,'height':101}},TimeoutError(),SystemExit()]
+            outcomes=[result,{**result,'verified':False},{**result,'genesis_hash':'f'*64},{**result,'finalized':{**commit,'height':101}},{**result,'finalized':{**commit,'protected_execution_root':'f'*64}},TimeoutError(),SystemExit()]
             for outcome in outcomes:
                 def native(argv,**kwargs):
                     proof=Path(argv[-1]);self.assertEqual(proof.parent,root/'tmp');self.assertEqual(stat.S_IMODE(proof.stat().st_mode),0o600);self.assertEqual(proof.read_bytes(),self.raw)
