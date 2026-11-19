@@ -41,3 +41,5 @@ mod vpn_credential;
 pub mod consensus_observation;
 mod gateway_admission;
 mod gateway_target;
+
+mod operator_auth;

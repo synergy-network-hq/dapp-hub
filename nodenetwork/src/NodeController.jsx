@@ -1,3 +1,4 @@
+import {operatorAuthView,operatorAuthMessage} from './operator-auth.js';
 import {ConsensusObservation} from './ConsensusObservation.jsx';
 import {CurrentFleetConsensus} from './CurrentFleetConsensus.jsx';
 import {GatewayAdmission} from './GatewayAdmission.jsx';
@@ -57,7 +58,9 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   if(!targetScopeCurrent()){setError('The selected target scope changed. Inspect the original target before another operation.');return;}
   let parameters={};
   try{
-   if(operation==='authorization_stage'){
+   if(operation==='operator_auth_status'){
+    if(target.kind!=='remote'||target.guest)throw Error('Select a physical remote target for local operator readiness.');
+   }else if(operation==='authorization_stage'){
     if(!state||!operator||!(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operator)))throw Error('Inspect the target and enter its existing administrative account.');
    }else if(operation==='bootstrap'){
     if(state||!operator||!(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operator))||(target.kind==='local'&&!localSupported))throw Error('Select a supported clean host and enter its existing administrative account.');
@@ -92,7 +95,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     setReview({target:targetKey,scope:approvedReviewScope(operation,parameters)});
    }
    if(operation==='bootstrap')bootstrapObservation(raw,parameters);
-   const response=operation==='gateway_install_status'?gatewayInstallStatusView(raw,parameters):operation.startsWith('gateway_target_')?await gatewayTargetView(raw,operation,parameters):operation==='gateway_install'||operation==='gateway_install_preflight'?gatewayInstallView(raw,operation,parameters):operation.startsWith('gateway_admission_')?gatewayAdmissionView(raw,operation,parameters):operation.startsWith('network_formation_')?networkFormationView(raw,operation==='network_formation_sign'?networkReview:null):operation==='authorization_stage'||operation==='authorization_status'?authorizationView(raw):operation==='diagnostics'?diagnosticsView(raw):operation==='boot_policy'?bootPolicyView(raw,parameters):operation==='boot_policy_status'?bootPolicyStatusView(raw):operation==='vpn_resume'?vpnResumeView(raw):operation==='vpn_resume_status'?vpnResumeStatusView(raw):operation==='vpn_stop_status'?vpnStopStatusView(raw):operation==='vpn_stop'?vpnStopView(raw):operation==='vpn_diagnostics'?vpnDiagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
+   const response=operation==='operator_auth_status'?operatorAuthView(raw):operation==='gateway_install_status'?gatewayInstallStatusView(raw,parameters):operation.startsWith('gateway_target_')?await gatewayTargetView(raw,operation,parameters):operation==='gateway_install'||operation==='gateway_install_preflight'?gatewayInstallView(raw,operation,parameters):operation.startsWith('gateway_admission_')?gatewayAdmissionView(raw,operation,parameters):operation.startsWith('network_formation_')?networkFormationView(raw,operation==='network_formation_sign'?networkReview:null):operation==='authorization_stage'||operation==='authorization_status'?authorizationView(raw):operation==='diagnostics'?diagnosticsView(raw):operation==='boot_policy'?bootPolicyView(raw,parameters):operation==='boot_policy_status'?bootPolicyStatusView(raw):operation==='vpn_resume'?vpnResumeView(raw):operation==='vpn_resume_status'?vpnResumeStatusView(raw):operation==='vpn_stop_status'?vpnStopStatusView(raw):operation==='vpn_stop'?vpnStopView(raw):operation==='vpn_diagnostics'?vpnDiagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
     operation==='identity_status'?identityStatusView(raw):
     operation==='identity_preflight'||operation==='identity_generate'?identityView(raw,operation==='identity_generate'):
     operation==='formation_preflight'?formationView(raw):
@@ -188,6 +191,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  return <div className="native-controller">
   <Card title="Selected target" action={<button type="button" disabled={!permitted||!!pending} onClick={()=>perform('target')}>{LABELS.target}</button>}>
    <p>{target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} · {target.root}</p>
+   {target.kind==='remote'&&!target.guest&&<button type="button" disabled={!permitted||!!pending} onClick={()=>perform('operator_auth_status')}>Read local operator authentication</button>}
+   {results.operator_auth_status&&<p>{operatorAuthMessage(results.operator_auth_status.response)}</p>}
    {state?<Detail data={{platform:state.platform,architecture:state.architecture,installed:state.installed,controllerVersion:state.controllerVersion,communityEnrollment:state.communityEnrollment}}/>:<p>{permitted?'Inspect the enrolled controller to see which operations are available.':'Allow NodeNetwork inspection in Security & permissions.'}</p>}
   </Card>
   {tab==='Validator setup'&&<div className="native-grid">

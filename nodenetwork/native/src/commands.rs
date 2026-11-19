@@ -344,6 +344,10 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   return Err("Use the native signed Genesis folder review.".into());
  }
  let mutation=request.validate()?;
+ if request.operation=="operator_auth_status"{
+  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+  return Ok(serde_json::json!({"version":1,"ok":true,"result":crate::operator_auth::status(&target,&directory).await?}));
+ }
  if request.operation=="boot_policy"&&request.parameters["enabled"]==true&&target.guest.is_some(){return Err("Managed guest boot enablement is unavailable; no grant or mutation was sent".into())}
  let gateway_query=|request:&node_controller::Request|node_controller::Request{version:1,operation:if request.operation=="gateway_admission_prepare"{"gateway_admission_preflight".into()}else{"gateway_admission_status".into()},parameters:if request.operation=="gateway_admission_prepare"{request.parameters.clone()}else{serde_json::json!({})}};
  let gateway_review=if matches!(request.operation.as_str(),"gateway_admission_prepare"|"gateway_admission_sign"){
