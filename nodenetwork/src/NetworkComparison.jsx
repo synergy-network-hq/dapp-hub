@@ -1,14 +1,13 @@
 import {useState} from 'react';
 import {Card, Detail, Resource, rpc, useResource} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
-import {canCompareEndpoint, readNetworkComparison} from './network-comparison.js';
+import {canCompareEndpoint, readNetworkComparison,networkComparisonScope} from './network-comparison.js';
 
-const endpointContext = endpoint => [endpoint.id, endpoint.rpc, endpoint.chainId, endpoint.networkKey, endpoint.name];
 const fieldNames = {chainId: 'chain ID', network: 'network ID', incarnation: 'incarnation', genesis: 'genesis hash'};
 
 export function NetworkComparison({profile, profiles, permitted, onOpenEndpoints}) {
  const references = profiles.filter(candidate => canCompareEndpoint(profile, candidate));
- const scope = JSON.stringify([endpointContext(profile), references.map(endpointContext), permitted]);
+ const scope = networkComparisonScope(profile,references,permitted);
  return <NetworkComparisonView key={scope} profile={profile} references={references}
   permitted={permitted} onOpenEndpoints={onOpenEndpoints}/>;
 }
@@ -38,7 +37,7 @@ function NetworkComparisonView({profile, references, permitted, onOpenEndpoints}
  }
 
  return <Card title="Compare public network identity">
-  <p>Compare the reported network ID, incarnation and genesis hash before preparing an installation plan. Matching reports describe agreement between RPC responses. Managed-host verification and release approval are separate.</p>
+  <p>Compare the reported network ID, incarnation and genesis hash before preparing an installation plan. Configured Genesis pins must match each endpoint's report. Matching reports describe agreement between RPC responses. Managed-host verification and release approval are separate.</p>
   {!permitted ? <p>Allow NodeNetwork reads in Security & permissions to compare endpoints.</p> : !references.length ? <>
    <p>Add a second RPC for chain {profile.chainId} to compare with {profile.name}.</p>
    <button onClick={onOpenEndpoints}>Open Portal endpoint settings</button>
