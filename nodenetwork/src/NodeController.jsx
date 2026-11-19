@@ -1,5 +1,5 @@
 import {runtimeProbeView} from './runtime-probe.js';
-import {operatorAuthView,operatorAuthMessage,operatorCredentialView,operatorCredentialMessage} from './operator-auth.js';
+import {operatorAuthView,operatorAuthMessage,operatorCredentialView,operatorCredentialMessage,localOperatorResult} from './operator-auth.js';
 import {ConsensusObservation} from './ConsensusObservation.jsx';
 import {CurrentFleetConsensus} from './CurrentFleetConsensus.jsx';
 import {GatewayAdmission} from './GatewayAdmission.jsx';
@@ -11,7 +11,7 @@ import {IdentityPreflight} from './IdentityPreflight.jsx';
 import {custodyStatusObservation} from './custody-status.js';
 import {identityPreflightObservation,identityGenerationObservation} from './identity-preflight.js';
 import {recoveryPreflightObservation} from './recovery-handoff.js';
-import {targetHealthObservation,nodeServiceRegistrationObservation} from './target-health.js';
+import {targetHealthObservation,nodeServiceRegistrationObservation,serviceActionLabel} from './target-health.js';
 import {targetInventoryObservation} from './removal-preflight.js';
 import {TargetInventoryEvidence} from './Offboarding.jsx';
 import {VpnStatus} from './VpnStatus.jsx';
@@ -33,7 +33,7 @@ import {updateStageView,authorizationView,acceptedReview,approvedReviewScope,che
 
 const MUTATIONS=new Set(['gateway_install','gateway_target_generate','gateway_target_commission','gateway_admission_prepare','gateway_admission_sign','network_formation_prepare','network_formation_sign','authorization_stage','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_stop','vpn_resume','boot_policy','vpn_enroll','start','stop','restart','upgrade','uninstall']);
 const PREFLIGHTS=new Set(['install_preflight','upgrade_preflight','uninstall_preflight']);
-const LABELS={upgrade_native_preflight:'Verify candidate Linux origin and crypto smoke',gateway_install_status:'Verify original gateway installation',gateway_install_preflight:'Verify staged gateway software',gateway_install:'Install gateway software',gateway_target_preflight:'Verify signed gateway origin',gateway_target_status:'Read gateway custody',gateway_target_generate:'Generate fresh local gateway custody',gateway_target_export:'Read public gateway enrollment',gateway_target_commission:'Commission gateway custody',gateway_target_reconcile:'Reconcile original gateway request',gateway_admission_status:'Read gateway admission',gateway_admission_prepare:'Prepare exact gateway admission',gateway_admission_sign:'Sign exact gateway admission once',gateway_admission_export:'Read public gateway admission export',gateway_admission_reconcile:'Reconcile exact gateway request',boot_policy:'Change exact service boot policy',boot_policy_status:'Read or reconcile boot policy',bare_bootstrap_rollback:'Remove exact bare bootstrap',update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_resume:'Resume existing VPN only',vpn_resume_status:'Read or reconcile VPN resume',vpn_stop_status:'Read or reconcile VPN stop',vpn_stop:'Stop node VPN only',vpn_diagnostics:'Read VPN diagnostics',vpn_reconcile:'Reconcile original VPN enrollment',vpn_revoke:'Cancel exact provider setup key',vpn_cancel_unused:'Verify and cancel unused VPN attempt',vpn_retire:'Retire exact VPN peer',vpn_status:'Read VPN status',start:'Start validator',health:'Read target health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
+const LABELS={operator_auth_status:'Read local operator authentication',operator_auth_load:'Load selected existing SSH credential',upgrade_native_preflight:'Verify candidate Linux origin and crypto smoke',gateway_install_status:'Verify original gateway installation',gateway_install_preflight:'Verify staged gateway software',gateway_install:'Install gateway software',gateway_target_preflight:'Verify signed gateway origin',gateway_target_status:'Read gateway custody',gateway_target_generate:'Generate fresh local gateway custody',gateway_target_export:'Read public gateway enrollment',gateway_target_commission:'Commission gateway custody',gateway_target_reconcile:'Reconcile original gateway request',gateway_admission_status:'Read gateway admission',gateway_admission_prepare:'Prepare exact gateway admission',gateway_admission_sign:'Sign exact gateway admission once',gateway_admission_export:'Read public gateway admission export',gateway_admission_reconcile:'Reconcile exact gateway request',boot_policy:'Change exact service boot policy',boot_policy_status:'Read or reconcile boot policy',bare_bootstrap_rollback:'Remove exact bare bootstrap',update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_resume:'Resume existing VPN only',vpn_resume_status:'Read or reconcile VPN resume',vpn_stop_status:'Read or reconcile VPN stop',vpn_stop:'Stop node VPN only',vpn_diagnostics:'Read VPN diagnostics',vpn_reconcile:'Reconcile original VPN enrollment',vpn_revoke:'Cancel exact provider setup key',vpn_cancel_unused:'Verify and cancel unused VPN attempt',vpn_retire:'Retire exact VPN peer',vpn_status:'Read VPN status',start:'Start validator',health:'Read target health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported,operatorCredentialSupported=false,onSelectTarget,onOpenDiagnostics,targetScopeCurrent=()=>permitted}){
  const [operator,setOperator]=useState('');
@@ -51,6 +51,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const isCurrent=scope=>active.current&&scope===scopeContext.current&&targetScopeCurrent();
  useEffect(()=>{const retained=retainedUpdateStageReceipt(stagedAdoption.current,resetScope.current,scopeKey);stagedAdoption.current=null;resetScope.current=scopeKey;setState(null);setResults({});setLatest(retained);setPending(null);setReview(null);setConfirmation('');setIdentityReview(null);setFormationReview(null);setFormationRecord(null);setBindingReview(null);locked.current=false;},[scopeKey]);
  useEffect(()=>{setNetworkReview(null);},[targetKey]);
+ const localResult=latest?localOperatorResult(latest.operation,latest.response):null;
+ const labelFor=operation=>serviceActionLabel(operation,{installed_role:state?.installed_role??results.target?.response?.installed_role})??LABELS[operation];
  const gateFor=operation=>workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus:results.vpn_status?.response,identityReview,formationReview,formationRecord,bindingReview,networkReview});
 
  async function perform(operation,parameterOverride){
@@ -180,7 +182,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  }
  function action(operation){
   const gate=gateFor(operation);
-  return <div className="native-controller-action" key={operation}><button type="button" disabled={!!pending||!gate.available} onClick={()=>perform(operation)}>{LABELS[operation]}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
+  return <div className="native-controller-action" key={operation}><button type="button" disabled={!!pending||!gate.available} onClick={()=>perform(operation)}>{labelFor(operation)}</button>{!gate.available&&<small>{gate.blocker}</small>}</div>;
  }
  const field=(key,label)=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={!!pending} onChange={event=>setForm({...form,[key]:event.target.value})}/></label>;
  const sample=results.diagnostics?.response;
@@ -300,14 +302,17 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    onOpenDiagnostics={onOpenDiagnostics}/>}
   {['Validator setup','Management'].includes(tab)&&results.register?.evidence&&<Card title="Reported contained service registration">
    <ControllerReceipt receivedAt={results.register.receivedAt}/>
-   <ul>{results.register.evidence.services.map(service=><li key={service}>{{node:'Node service',vpn:'VPN service','canary-rpc-relay':'Canary RPC relay service'}[service]}</li>)}</ul>
+   <ul>{results.register.evidence.services.map(service=><li key={service}>{{node:'Tracked node unit',vpn:'VPN service','canary-rpc-relay':'Canary RPC relay service'}[service]}</li>)}</ul>
    <p>Registration did not start services or enable them at boot. Read target health and VPN status separately.</p>
   </Card>}
   {['Validator setup','Management'].includes(tab)&&results.health?.evidence&&<Card title="Reported service health">
    <ControllerReceipt receivedAt={results.health.receivedAt}/>
-   <Table columns={[{key:'id',label:'Service'},{key:'state',label:'Lifecycle'},{key:'health',label:'Health'},{key:'readiness',label:'Service readiness'}]}
+   {results.health.evidence?.schema==='nodenetwork-gateway-health-v1'?<>
+    <Detail data={{role:'RPC gateway',observedAt:results.health.evidence.observed_at_ms,relayState:results.health.evidence.relay.state,relayPid:results.health.evidence.relay.pid,vpnConnected:results.health.evidence.vpn.connected,admissionCustodyVerified:true,configuredListener:'Loopback only'}}/>
+    <p>These are relay service and VPN observations. Gateway reachability, validator participation and production qualification have not been established.</p>
+   </>:<><Table columns={[{key:'id',label:'Service'},{key:'state',label:'Lifecycle'},{key:'health',label:'Health'},{key:'readiness',label:'Service readiness'}]}
     rows={results.health.evidence} empty="The controller returned no service observations."/>
-   <p>Consensus not observed. This service-health response supplies no authenticated roster, online peer count, quorum or cluster assignment; service readiness does not establish consensus participation.</p>
+   <p>Consensus not observed. This service-health response supplies no authenticated roster, online peer count, quorum or cluster assignment; service readiness does not establish consensus participation.</p></>}
   </Card>}
   {['Management','Installation isolation'].includes(tab)&&results.inventory?.evidence&&<Card title="Node inventory">
    <TargetInventoryEvidence report={{result:results.inventory.evidence,receivedAt:results.inventory.receivedAt}}/>
@@ -334,10 +339,10 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    </>}
    {tab==='Logs'&&<p>Only aggregate counts from the bounded window are shown. Raw log messages are unavailable.</p>}
   </Card>}
-  {pending&&<p role="status">{LABELS[pending]}: waiting for native review or the target controller. Do not repeat the operation.</p>}
+  {pending&&<p role="status">{labelFor(pending)}: waiting for native review or the target controller. Do not repeat the operation.</p>}
   <ErrorMessage error={error}/>
-  {latest&&!['target','health','inventory','vpn_status','register','identity_status','formation_status','identity_preflight','formation_preflight','genesis_binding_preflight','genesis_bind','identity_generate','genesis_stage_preflight','recovery_preflight'].includes(latest.operation)&&(!(tab==='Performance'||tab==='Logs')||latest.operation!=='diagnostics')&&<Card title={`Controller result · ${LABELS[latest.operation]}`}>
-   <p>Received {new Date(latest.receivedAt).toISOString()} from the selected target. This response is not a durable job record or proof of consensus readiness.</p>
+  {latest&&!['target','health','inventory','vpn_status','register','identity_status','formation_status','identity_preflight','formation_preflight','genesis_binding_preflight','genesis_bind','identity_generate','genesis_stage_preflight','recovery_preflight'].includes(latest.operation)&&(!(tab==='Performance'||tab==='Logs')||latest.operation!=='diagnostics')&&<Card title={`${localResult?'Local result':'Controller result'} · ${localResult?.label??labelFor(latest.operation)}`}>
+   <p>Received {new Date(latest.receivedAt).toISOString()} from {localResult?.source??'the selected target'}. {localResult?'No host was contacted. This is not remote authentication or node health evidence.':'This response is not a durable job record or proof of consensus readiness.'}</p>
    {!!Object.keys(latest.parameters).length&&!latest.operation.startsWith('gateway_admission_')&&!latest.operation.startsWith('gateway_target_')&&<Detail data={{submittedPublicParameters:latest.parameters}}/>}<Detail data={latest.response}/>
   </Card>}
  </div>;

@@ -13,7 +13,25 @@ export function nodeServiceActionObservation(operation,value) {
  return {requested:operation,healthNotInferred:true};
 }
 
+export function serviceActionLabel(operation,state) {
+ const verb={start:'Start',stop:'Stop',restart:'Restart'}[operation];
+ if(!verb)return null;
+ return `${verb} ${state?.installed_role==='rpc_gateway'?'gateway relay':state?.installed_role==='validator'?'validator':'selected service'}`;
+}
+
+export function gatewayHealthObservation(v){
+ const keys=['schema','observed_at_ms','role','relay','vpn','admission_custody_verified','consensus_participant','configured_loopback','production_qualified'];
+ const exact=(v,k)=>fieldCount(v,k.length)&&k.every(key=>Object.hasOwn(v,key));
+ const u53=n=>Number.isSafeInteger(n)&&n>=0;
+ const error=()=>{throw Error('Unsupported gateway relay observations. Reachability and consensus were not inferred.');};
+ if(!exact(v,keys)||v.schema!=='nodenetwork-gateway-health-v1'||v.role!=='rpc_gateway'||!u53(v.observed_at_ms)||v.observed_at_ms===0||v.admission_custody_verified!==true||v.consensus_participant!==false||v.configured_loopback!==true||v.production_qualified!==false)error();
+ if(!exact(v.relay,['unit','state','pid'])||v.relay.unit!=='synergy-canary-rpc-relay.service'||!['unregistered','active','inactive','failed','activating','deactivating','reloading','maintenance','refreshing'].includes(v.relay.state)||(v.relay.state==='unregistered'?v.relay.pid!==null:!u53(v.relay.pid)))error();
+ if(!exact(v.vpn,['registered','enrollment_recorded','server_bound','connected'])||!Object.values(v.vpn).every(x=>typeof x==='boolean')||(v.vpn.connected&&(!v.vpn.registered||!v.vpn.enrollment_recorded)))error();
+ return {...v,relay:{...v.relay},vpn:{...v.vpn}};
+}
+
 export function nodeServiceRegistrationObservation(value) {
+ if(fieldCount(value,4)&&value.schema==='nodenetwork-service-registration-v1'&&value.services_started===false&&value.boot_enabled===false&&Array.isArray(value.services)&&[['node','vpn'],['node','vpn','canary-rpc-relay']].some(ids=>JSON.stringify(ids)===JSON.stringify(value.services)))return {services:[...value.services]};
  const registered=value?.registered;
  const expected=['/etc/systemd/system/synergy-node.service','/etc/systemd/system/synergy-vpn.service'];
  if (!fieldCount(value,3) || value.services_started !== false || value.boot_enabled !== false
@@ -28,6 +46,7 @@ export function nodeServiceRegistrationObservation(value) {
 // The native health projection contains service observations only. Never interpret
 // service count/readiness or additional caller fields as a validator denominator.
 export function targetHealthObservation(value) {
+ if(value?.schema==='nodenetwork-gateway-health-v1')return gatewayHealthObservation(value);
  const unsupported = 'The selected controller returned unsupported service health evidence.';
  if (!fieldCount(value, 2) || value.schema_version !== 1
   || !Array.isArray(value.services) || value.services.length > 128) {

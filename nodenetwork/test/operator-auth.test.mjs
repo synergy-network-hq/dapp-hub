@@ -20,3 +20,10 @@ test('credential load distinguishes bounded load from unchanged already-loaded i
 test('credential load rejects invented readiness, unbounded TTL, credential creation, retry and arbitrary fields',()=>{
  for(const v of [{...loaded(),lifetime_seconds:0},{...loaded(),outcome:'unavailable'},{...loaded(),outcome:'already_loaded'},{...loaded(),remote_contacted:true},{...loaded(),credentials_created:true},{...loaded(),automatic_retry:true},{...loaded(),path:'private'},{...loaded(),selected_identity_sha256:null}])assert.throws(()=>operatorCredentialView(v));
 });
+import {localOperatorResult} from '../src/operator-auth.js';
+test('known local auth results name local sources and never selected target or consensus evidence',()=>{
+ assert.deepEqual(localOperatorResult('operator_auth_status',ready()),{label:'Local operator authentication',source:'this app’s local OS agent'});
+ assert.deepEqual(localOperatorResult('operator_auth_load',loaded()),{label:'Selected local credential activation',source:'this app’s local OS credential workflow'});
+ assert.equal(localOperatorResult('health',{}),null);
+ assert.throws(()=>localOperatorResult('operator_auth_load',{...loaded(),remote_contacted:true}));
+});

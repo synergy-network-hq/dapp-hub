@@ -29,3 +29,15 @@ export function operatorCredentialMessage(v){
  if(v.outcome==='changed')return 'Local credential metadata changed during activation. The result is unverified. Read local operator authentication; no automatic retry occurs.';
  return 'The OS did not confirm the selected credential load. An unavailable or locked existing Keychain item requires the normal OS credential workflow. No passphrase was collected and no automatic retry occurs.';
 }
+
+export function localOperatorResult(operation,value){
+ if(operation==='operator_auth_status'){
+  operatorAuthView(value);
+  return {label:'Local operator authentication',source:'this app’s local OS agent'};
+ }
+ if(operation==='operator_auth_load'){
+  operatorCredentialView(value);
+  return {label:'Selected local credential activation',source:'this app’s local OS credential workflow'};
+ }
+ return null;
+}

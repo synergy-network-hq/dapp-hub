@@ -184,12 +184,21 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
  let _serial=SERIAL.lock().await;
  if !matches!(operation,"enroll"|"reconcile"|"revoke"|"retire"|"cancel_unused"){return Err("Unsupported native VPN workflow".into())}
  let config=config(config_directory)?;
- let credential=crate::vpn_credential::load(read(credential_path,16384,true)?,&config.pin,config.policy["profile"]=="nodenetwork-controlled-canary-v1",control).await?;
+
  let original=lifecycle::bare_initial(base,&target)?.ok_or("VPN target requires its original native authorization receipt")?;
  let doc=crate::operator_authorization::verify_initial(&original,&target)?;
  let status=lifecycle::execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
  if status["ok"]!=true{return Err("VPN target authorization is unavailable".into())}
  let mut context=binding(&target,&status["result"],&doc,&hash(original.as_bytes()))?;
+ let gateway_tcp=crate::gateway_vpn::selection(&config.policy,&doc,&context)?;
+ if let Some(tcp)=&gateway_tcp{
+  let selected=lifecycle::execute(base,target.clone(),Request{version:1,operation:"gateway_target_status".into(),parameters:json!({})},control).await?;
+  if selected["ok"]!=true{return Err("Gateway VPN requires verified commissioned gateway custody before provider access".into())}
+  let selected=crate::gateway_target::review(&selected["result"],false)?;
+  let preflight=lifecycle::execute(base,target.clone(),Request{version:1,operation:"gateway_vpn_preflight".into(),parameters:json!({"required_gateway_tcp":tcp})},control).await?;
+  crate::gateway_vpn::preflight(&preflight,&selected,tcp,&doc["genesis_pins"]["genesis.json"])?;
+ }
+ let credential=crate::vpn_credential::load(read(credential_path,16384,true)?,&config.pin,matches!(config.policy["profile"].as_str(),Some("nodenetwork-controlled-canary-v1"|crate::gateway_vpn::PROFILE)),control).await?;
  let app=base.join("nodenetwork-vpn-v1");if !app.exists(){#[cfg(unix)]{use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().mode(0o700).create(&app).map_err(|_|"Cannot protect native VPN state")?;}}
  let mut directory=state_directory(base,&target)?;
  let mut result=lifecycle::execute(base,target.clone(),Request{version:1,operation:"vpn_status".into(),parameters:json!({})},control).await?;
@@ -236,8 +245,7 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
   let current=&result["result"];
   if current["service_registered"]!=true||current["enrollment_recorded"]!=false||current["reconciliation_required"]!=false||current["enrollment_staged"]!=false{return Err("Register a fresh VPN service and reconcile any prior enrollment before issuing one key".into())}
   let(public,secret)=provider(&config,&credential,&directory,"prepare",&context,&Value::Null).await?;
-  #[derive(serde::Serialize)]struct Enrollment<'a>{setup_key:&'a str,management_url:&'a Value,hostname:&'a Value,required_peer_ips:&'a Value}
-  let mut data=Zeroizing::new(serde_json::to_vec(&Enrollment{setup_key:secret.as_str(),management_url:&config.policy["management_origin"],hostname:&public["name"],required_peer_ips:&config.policy["required_peer_ips"]}).map_err(|_|"Cannot encode private enrollment")?);
+  let mut data=Zeroizing::new(crate::gateway_vpn::enrollment(&config.policy,&public["name"],secret.as_str(),gateway_tcp.as_ref())?);
   let request=Request{version:1,operation:"vpn_enroll".into(),parameters:context.get("attempt_sha256").map_or_else(||json!({}),|pin|json!({"attempt_sha256":pin}))};
   lifecycle::vpn_grant(base,&target,&request,control,crate::operator_authorization::NativeVpnArtifact{name:"vpn-enrollment.json",bytes:&data,ca:Some(config.ca.as_slice()),provider:Some(config.raw.as_bytes())}).await?;
   use zeroize::Zeroize;data.zeroize();

@@ -185,6 +185,7 @@ impl Target {
 impl Request {
     pub fn validate(&self) -> Result<bool, String> {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
+        if self.operation=="gateway_vpn_preflight"{return crate::gateway_vpn::validate(self)}
         if self.operation.starts_with("gateway_target_")||matches!(self.operation.as_str(),"gateway_install"|"gateway_install_preflight"|"gateway_install_status"){return crate::gateway_target::validate(self)}
         if self.operation.starts_with("gateway_"){return crate::gateway_admission::validate(self)}
         if self.operation.starts_with("treasury_send_"){return crate::treasury_send::validate(self)}
@@ -1179,6 +1180,7 @@ fn formation_preparation_reply(request: &Request, reply: &Value) -> Result<Value
 }
 
 fn health_reply(reply: &Value) -> Result<Value, &'static str> {
+    if reply["result"]["schema"]=="nodenetwork-gateway-health-v1"{return crate::gateway_health::reply(reply)}
     use std::collections::HashSet;
     const UNSUPPORTED: &str = "The selected controller returned unsupported service health evidence.";
     if reply["ok"] != true {

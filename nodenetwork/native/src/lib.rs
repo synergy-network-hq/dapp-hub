@@ -43,6 +43,8 @@ mod gateway_admission;
 mod gateway_target;
 
 mod operator_auth;
+mod gateway_health;
+mod gateway_vpn;
 #[cfg(target_os="macos")]
 mod operator_credential;
 

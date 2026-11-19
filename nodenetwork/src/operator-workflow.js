@@ -5,7 +5,7 @@ import {controllerOperation,installParameters,provisioningChecks} from './nodeNe
 
 export const NODE_ROLES=Object.freeze([
  Object.freeze({id:'validator',label:'Validator',description:'Run PoSy consensus on an admitted host with its own APQE custody.'}),
- Object.freeze({id:'rpc_gateway',label:'RPC gateway',description:'A public RPC entry point. Provisioning is unavailable through this controller.'}),
+ Object.freeze({id:'rpc_gateway',label:'RPC gateway',description:'A relay with separately approved gateway custody. Public exposure remains unavailable.'}),
  Object.freeze({id:'observer_light',label:'Light observer',description:'A non-voting node. Provisioning is unavailable through this controller.'}),
 ]);
 
@@ -47,7 +47,7 @@ export function acceptedReview(operation,parameters,response,target){
 
 
 // Mirror the canonical controller operation kinds; declarations cannot reclassify a read as a mutation.
-const READS=new Set(["upgrade_native_preflight","treasury_preflight", "treasury_status", "treasury_export", "commissioning_observation", "network_transport_status", "network_transport_export", "guest_resources", "guest_preflight", "guest_status", "target", "inventory", "health", "install_preflight", "upgrade_preflight", "recovery_preflight", "uninstall_preflight", "vpn_status", "vpn_diagnostics", "vpn_stop_status", "vpn_resume_status", "boot_policy_status", "diagnostics", "identity_preflight", "identity_status", "formation_preflight", "formation_status", "formation_export", "genesis_stage_preflight", "genesis_binding_preflight", "authorization_status", "network_formation_status", "network_formation_export"]);
+const READS=new Set(["gateway_vpn_preflight","upgrade_native_preflight","treasury_preflight", "treasury_status", "treasury_export", "commissioning_observation", "network_transport_status", "network_transport_export", "guest_resources", "guest_preflight", "guest_status", "target", "inventory", "health", "install_preflight", "upgrade_preflight", "recovery_preflight", "uninstall_preflight", "vpn_status", "vpn_diagnostics", "vpn_stop_status", "vpn_resume_status", "boot_policy_status", "diagnostics", "identity_preflight", "identity_status", "formation_preflight", "formation_status", "formation_export", "genesis_stage_preflight", "genesis_binding_preflight", "authorization_status", "network_formation_status", "network_formation_export"]);
 const MUTATIONS=new Set(["treasury_send_prepare", "treasury_send_submit", "treasury_prepare", "network_transport_prepare", "network_transport_sign", "guest_create", "guest_stop", "guest_remove", "install", "commission", "register", "vpn_enroll", "vpn_bind", "vpn_retire", "vpn_stop", "vpn_resume", "boot_policy", "start", "stop", "restart", "upgrade", "uninstall", "identity_generate", "formation_prepare", "genesis_stage", "genesis_bind", "network_formation_prepare", "network_formation_sign"]);
 
 export function workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus,identityReview,formationReview,formationRecord,bindingReview,networkReview}){
