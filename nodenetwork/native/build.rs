@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}",source.display());
     println!("cargo:rustc-env=SYNERGY_NODE_ENGINE_ROOT={}",engine);
     println!("cargo:rerun-if-changed={}",std::path::Path::new(&engine).join("vpn_authorization.py").display());
+    println!("cargo:rerun-if-changed={}",std::path::Path::new(&engine).join("conformance.py").display());
     println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256");
     if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256"){
         assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"VPN engineering authority is forbidden in production");
