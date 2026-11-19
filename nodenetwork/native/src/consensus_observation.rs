@@ -50,9 +50,10 @@ fn project(v:&Value,context:&Value,operation:&str,selector:&Value)->Result<Value
   let raw=e["artifact_json"].as_str().ok_or_else(fail)?;use sha2::{Digest,Sha256};if raw.len()>4*1024*1024||format!("{:x}",Sha256::digest(raw.as_bytes()))!=e["sha256"]{return Err(fail())}
   json!({"kind":"epoch","selector":selector,"sha256":e["sha256"],"epoch_context_root":e["epoch_context_root"],"bytes":raw.len()})
  }else{
-  if !exact(e,&["version","height","kind","encoding","bytes_base64","sha256","total_bytes","offset","next_offset","authentication"])||e["version"]!=1||e["height"]!=*selector||e["kind"]!="finality"||e["encoding"]!="base64"||e["offset"]!=0||!pin(&e["sha256"])||e["total_bytes"].as_u64().is_none_or(|n|n==0||n>1024*1024)||selector.as_u64()>t["finalized_height"].as_u64(){return Err(fail())}
+  if !exact(e,&["version","height","kind","encoding","bytes_base64","sha256","total_bytes","offset","next_offset","authentication"])||e["version"]!=1||e["height"]!=*selector||e["kind"]!="finality"||e["encoding"]!="base64"||e["offset"]!=0||!pin(&e["sha256"])||e["total_bytes"].as_u64().is_none_or(|n|n==0||n>1024*1024)||selector.as_u64()>t["finalized_height"].as_u64()||c.is_null()||c["height"]!=*selector{return Err(fail())}
   use base64::Engine;let bytes=base64::engine::general_purpose::STANDARD.decode(e["bytes_base64"].as_str().ok_or_else(fail)?).map_err(|_|fail())?;
   let total=e["total_bytes"].as_u64().unwrap()as usize;if bytes.len()!=total.min(65536)||e["next_offset"]!=if total>bytes.len(){json!(bytes.len())}else{Value::Null}{return Err(fail())}
+  if total==bytes.len(){use sha2::{Digest,Sha256};if format!("{:x}",Sha256::digest(&bytes))!=e["sha256"]{return Err(fail())}}
   json!({"kind":"finality","selector":selector,"sha256":e["sha256"],"bytes":total,"complete":total==bytes.len()})
  };
  Ok(json!({"schema":"nodenetwork-consensus-view-v1","scope":s,"process_id":t["process_id"],"observed_at_unix_ms":t["observed_at_unix_ms"],"epoch":t["epoch"],"epoch_context_root":t["epoch_context_root"],"finalized_height":t["finalized_height"],"commitment":c,"transport":transport,"evidence":evidence}))
@@ -97,4 +98,15 @@ pub async fn portal_nodenetwork_consensus(window:tauri::WebviewWindow,app:tauri:
  }
  #[test]fn consensus_observation_projects_real_absence_and_rejects_foreign_identity(){let(v,c)=fixture();let view=project(&v,&c,"telemetry",&Value::Null).unwrap();assert_eq!(view["finalized_height"],0);assert!(view["commitment"].is_null());assert_eq!(view["transport"]["peers"][0]["session_id"],u64::MAX.to_string());assert!(view.get("quorum").is_none());for(key,bad)in[("genesis_hash",json!("b".repeat(64))),("network_identity",json!("foreign")),("chain_id",json!(1266)),("process_id",json!(0))]{let mut changed=v.clone();changed["telemetry"][key]=bad;assert!(project(&changed,&c,"telemetry",&Value::Null).is_err())}let mut changed=v;changed["scope"]["manifest_sha256"]=json!("b".repeat(64));assert!(project(&changed,&c,"telemetry",&Value::Null).is_err())}
  #[test]fn consensus_observation_has_no_arbitrary_rpc_or_unproven_evidence(){for(op,value)in[("submit",Value::Null),("epoch",json!(true)),("finality",json!(0)),("telemetry",json!({"url":"http://foreign"}))]{assert!(query(op,&value).is_err())}let(mut v,c)=fixture();v["evidence"]=json!({"verified":true});assert!(project(&v,&c,"telemetry",&Value::Null).is_err());v["evidence"]=Value::Null;v["telemetry"]["transport"]["authenticated_peer_count"]=json!(5);assert!(project(&v,&c,"telemetry",&Value::Null).is_err())}
+ #[test]fn finality_projects_only_the_selected_commitment_and_checks_complete_document_digest(){
+  use base64::Engine;use sha2::{Digest,Sha256};
+  let(mut v,context)=fixture();let h="a".repeat(64);let bytes=b"public finality document";
+  v["operation"]=json!("finality");v["selector"]=json!(100);v["telemetry"]["finalized_height"]=json!(112);
+  v["telemetry"]["common_finalized_commitment"]=json!({"height":100,"block_id":h,"state_root":h,"finality_certificate_id":h,"protected_execution_root":h});
+  v["evidence"]=json!({"version":1,"height":100,"kind":"finality","encoding":"base64","bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes),"sha256":format!("{:x}",Sha256::digest(bytes)),"total_bytes":bytes.len(),"offset":0,"next_offset":null,"authentication":{}});
+  let result=project(&v,&context,"finality",&json!(100)).unwrap();assert_eq!(result["commitment"]["height"],100);assert_eq!(result["finalized_height"],112);assert_eq!(result["evidence"]["complete"],true);
+  for height in [json!(112),Value::Null]{let mut bad=v.clone();bad["telemetry"]["common_finalized_commitment"]["height"]=height;assert!(project(&bad,&context,"finality",&json!(100)).is_err())}
+  let mut bad=v.clone();bad["telemetry"]["common_finalized_commitment"]=Value::Null;assert!(project(&bad,&context,"finality",&json!(100)).is_err());
+  let mut bad=v;bad["evidence"]["sha256"]=json!(h);assert!(project(&bad,&context,"finality",&json!(100)).is_err());
+ }
 }

@@ -15,6 +15,27 @@ class ObservationBoundary(unittest.TestCase):
         for key,value in [('network_identity','old'),('genesis_hash','b'*64),('chain_id',1266),('process_id',456),('process_id',True)]:
             bad={**good,key:value}
             with self.assertRaises(ValueError):self.m['observation_identity'](bad,scope,'a'*64,123)
+    def test_finality_reads_the_exact_height_not_the_advancing_tip(self):
+        from copy import deepcopy
+        scope={'network_id':'fresh','chain_id':'99999'}
+        value={'schema_version':1,'network_identity':'fresh','chain_id':99999,'genesis_hash':'a'*64,
+            'process_id':123,'finalized_height':112,'common_finalized_commitment':{'height':100}}
+        calls=[]
+        class Rpc:
+            pid=123
+            def call(self,method,params):
+                calls.append((method,params));return deepcopy(value)
+        self.assertEqual(self.m['finality_telemetry'](Rpc(),scope,'a'*64,100),value)
+        self.assertEqual(calls,[('synergy_chainTelemetry',{'at_height':100})])
+        for commitment in (None,{}, {'height':101},{'height':True}):
+            value['common_finalized_commitment']=commitment
+            with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100)
+        value['common_finalized_commitment']={'height':100};value['process_id']=456
+        with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,100)
+        before=len(calls)
+        for height in (0,True,2**53):
+            with self.assertRaises(ValueError):self.m['finality_telemetry'](Rpc(),scope,'a'*64,height)
+        self.assertEqual(len(calls),before)
 class TransactionObservation(unittest.TestCase):
     def setUp(self):
         def require(ok,message):

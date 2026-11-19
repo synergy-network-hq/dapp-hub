@@ -18,6 +18,17 @@ def observation_identity(value,scope,genesis,pid):
         and type(value.get('chain_id')) is int and value['chain_id']==int(scope['chain_id'])
         and value.get('genesis_hash')==genesis and type(value.get('process_id')) is int and value['process_id']==pid,'RPC identity differs')
 
+def finality_telemetry(rpc,scope,genesis,height):
+    # Use the existing fixed telemetry method and its selected-height contract.
+    # A current tip is not a commitment to the requested historical block.
+    require(type(height) is int and 0<height<2**53,'Invalid finality height')
+    value=rpc.call('synergy_chainTelemetry',{'at_height':height})
+    observation_identity(value,scope,genesis,rpc.pid)
+    commitment=value.get('common_finalized_commitment')
+    require(isinstance(commitment,dict) and type(commitment.get('height')) is int
+        and commitment['height']==height,'Selected finalized commitment unavailable')
+    return value
+
 def transaction_observation(rpc,selector):
     import re
     pin=lambda v:isinstance(v,str) and re.fullmatch('[a-f0-9]{64}',v)
@@ -88,7 +99,7 @@ def consensus_observation(wire):
         genesis=c.public_json(root/'network/genesis.json',True)['genesis_hash']
         require(isinstance(genesis,str) and re.fullmatch('[a-f0-9]{64}',genesis),'Logical Genesis required')
         rpc=LocalRpc(c,scope,genesis);telemetry=rpc.verify();observation_identity(telemetry,scope,genesis,rpc.pid)
-        evidence=None
+        evidence=None;selected=None
         if op=='transaction':
             evidence=transaction_observation(rpc,value)
         elif op!='telemetry':
@@ -104,6 +115,11 @@ def consensus_observation(wire):
                 envelope=json.loads(raw);require(isinstance(envelope,dict) and set(envelope)=={'jsonrpc','id','result'} and envelope['jsonrpc']=='2.0' and type(envelope['id']) is int and envelope['id']==1,'Evidence unavailable')
                 evidence=envelope['result']
             finally:conn.close()
+            if op=='finality' and evidence is not None:
+                selected=finality_telemetry(rpc,scope,genesis,value)
         after=rpc.verify();observation_identity(after,scope,genesis,rpc.pid)
+        if selected is not None:
+            require(type(selected.get('finalized_height')) is int and type(after.get('finalized_height')) is int
+                and value<=selected['finalized_height']<=after['finalized_height'],'Finalized observation regressed')
         require(c.policy()==policy,'Observation policy changed')
-        return {'schema':'nodenetwork-consensus-observation-v1','scope':{'network_id':scope['network_id'],'chain_id':scope['chain_id'],'genesis_hash':genesis,'formation_sha256':scope['formation_sha256'],'manifest_sha256':receipt['package_sha256']},'operation':op,'selector':value,'telemetry':after,'evidence':evidence}
+        return {'schema':'nodenetwork-consensus-observation-v1','scope':{'network_id':scope['network_id'],'chain_id':scope['chain_id'],'genesis_hash':genesis,'formation_sha256':scope['formation_sha256'],'manifest_sha256':receipt['package_sha256']},'operation':op,'selector':value,'telemetry':selected if selected is not None else after,'evidence':evidence}
