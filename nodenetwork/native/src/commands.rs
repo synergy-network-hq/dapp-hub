@@ -11,6 +11,27 @@ use tauri::Manager;
 use crate::{formation,node_network,node_controller,node_bootstrap,request_journal};
 use crate::genesis_stage::{GenesisStageReview, PreparedGenesisStage, INPUTS as GENESIS_INPUTS};
 use crate::request_journal::CustodyReceiptKind;
+fn runtime_probe_refusal(reply:&Value)->String{
+ const GENERIC:&str="Candidate Linux origin/crypto smoke refused; no software or authority was changed";
+ const FAILURES:&[(&str,&str)]=&[
+  ("runtime_probe_not_executable","Authenticated candidate node is not executable"),
+  ("runtime_probe_scope_refused","Installed runtime probe scope refused"),
+  ("runtime_probe_package_refused","Authenticated candidate inventory refused"),
+  ("runtime_probe_origin_refused","Approved public origin refused"),
+  ("runtime_probe_execution_refused","Candidate native origin verifier execution refused"),
+  ("runtime_probe_response_refused","Candidate native origin response refused"),
+  ("runtime_probe_changed","Runtime probe scope changed during verification"),
+ ];
+ if crate::gateway_admission::exact(reply,&["version","ok","error"])&&reply["version"]==1&&reply["ok"]==false
+  &&crate::gateway_admission::exact(&reply["error"],&["code","message"]){
+  for (code,message) in FAILURES{
+   if reply["error"]["code"]==*code&&reply["error"]["message"]==*message{
+    return format!("{code}: {message}; no software or authority was changed")
+   }
+  }
+ }
+ GENERIC.into()
+}
 #[cfg(test)]use crate::genesis_stage::GENESIS_STAGE_UNCERTAIN;
 #[tauri::command]
 pub fn portal_nodenetwork_request_scope(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target)->Result<Value,String>{
@@ -371,7 +392,7 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if authorization["ok"]!=true{return Err("Candidate probe could not authenticate current origin approval".into())}
   let scope=crate::authorization_lifecycle::runtime_probe_scope(&base,&target,&authorization["result"])?;
   let reply=controller(&app,target,request.clone(),&directory).await?;
-  if !crate::gateway_admission::exact(&reply,&["version","ok","result"])||reply["version"]!=1||reply["ok"]!=true{return Err("Candidate Linux origin/crypto smoke refused; no software or authority was changed".into())}
+  if !crate::gateway_admission::exact(&reply,&["version","ok","result"])||reply["version"]!=1||reply["ok"]!=true{return Err(runtime_probe_refusal(&reply))}
   return Ok(serde_json::json!({"version":1,"ok":true,"result":crate::runtime_probe::review(&request,&reply["result"],&scope)?}));
  }
  if request.operation=="boot_policy"&&request.parameters["enabled"]==true&&target.guest.is_some(){return Err("Managed guest boot enablement is unavailable; no grant or mutation was sent".into())}
@@ -905,6 +926,41 @@ mod tests {
  use crate::node_controller::{GenesisBindingReview,Request,Target,ROOT};
  use serde_json::json;
  use std::sync::atomic::{AtomicU64,Ordering};
+
+ #[test]
+ fn runtime_probe_refusal_exposes_only_exact_fixed_controller_failures(){
+  let generic=runtime_probe_refusal(&Value::Null);
+  let pairs=[
+   ("runtime_probe_not_executable","Authenticated candidate node is not executable"),
+   ("runtime_probe_scope_refused","Installed runtime probe scope refused"),
+   ("runtime_probe_package_refused","Authenticated candidate inventory refused"),
+   ("runtime_probe_origin_refused","Approved public origin refused"),
+   ("runtime_probe_execution_refused","Candidate native origin verifier execution refused"),
+   ("runtime_probe_response_refused","Candidate native origin response refused"),
+   ("runtime_probe_changed","Runtime probe scope changed during verification"),
+  ];
+  for (code,message) in pairs{
+   let reply=json!({"version":1,"ok":false,"error":{"code":code,"message":message}});
+   assert_eq!(runtime_probe_refusal(&reply),format!("{code}: {message}; no software or authority was changed"));
+   for field in ["code","message"]{
+    let mut bad=reply.clone();bad["error"][field]=json!("private stderr\n/path/custody");
+    assert_eq!(runtime_probe_refusal(&bad),generic);
+   }
+   let mut extra=reply.clone();extra["error"]["stderr"]=json!("private detail");
+   assert_eq!(runtime_probe_refusal(&extra),generic);
+   extra=reply.clone();extra["result"]=json!({});assert_eq!(runtime_probe_refusal(&extra),generic);
+   for (key,value) in [("version",json!(2)),("version",json!("1")),("ok",json!(true)),("ok",json!(0))]{
+    let mut bad=reply.clone();bad[key]=value;assert_eq!(runtime_probe_refusal(&bad),generic);
+   }
+   for field in ["code","message"]{
+    let mut bad=reply.clone();bad["error"][field]=Value::Null;assert_eq!(runtime_probe_refusal(&bad),generic);
+    bad["error"].as_object_mut().unwrap().remove(field);assert_eq!(runtime_probe_refusal(&bad),generic);
+   }
+  }
+  for unsupported in [json!({"version":1,"ok":false,"error":{"code":"operation_refused","message":"Controller validation or lifecycle operation failed"}}),json!({"version":1,"ok":true,"result":{}}),json!([])]{
+   assert_eq!(runtime_probe_refusal(&unsupported),generic);
+  }
+ }
 
  fn genesis_bind_scope_fixture() -> (Target,Request,GenesisBindingReview,PathBuf) {
   static NEXT_FIXTURE:AtomicU64=AtomicU64::new(0);
