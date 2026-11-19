@@ -17,3 +17,15 @@ export function operatorAuthMessage(v){
  if(v.blocker==='selected_identity_unavailable')return 'Select the existing public operator identity for this physical target first. No host was contacted.';
  return 'This app’s SSH agent is unavailable. No host was contacted.';
 }
+
+export function operatorCredentialView(v){
+ const keys=['schema','selected_identity_sha256','outcome','ready','lifetime_seconds','load_attempted','remote_contacted','credentials_created','automatic_retry'];
+ if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).length!==keys.length||!keys.every(k=>Object.hasOwn(v,k))||v.schema!=='nodenetwork-operator-credential-load-v1'||!/^[a-f0-9]{64}$/.test(v.selected_identity_sha256)||!['already_loaded','loaded','unavailable','changed'].includes(v.outcome)||v.ready!==['loaded','already_loaded'].includes(v.outcome)||v.lifetime_seconds!==(v.outcome==='loaded'?3600:null)||v.load_attempted!==(v.outcome!=='already_loaded')||v.remote_contacted!==false||v.credentials_created!==false||v.automatic_retry!==false)throw Error('Unsupported selected credential load result. Read local operator authentication before another action.');
+ return {...v};
+}
+export function operatorCredentialMessage(v){
+ if(v.outcome==='already_loaded')return 'The selected credential was already loaded. Its lifetime was not extended. No host was contacted.';
+ if(v.outcome==='loaded')return 'The selected credential is now observed in this app’s OS agent with a maximum one-hour lifetime. No host was contacted; remote authentication remains unverified.';
+ if(v.outcome==='changed')return 'Local credential metadata changed during activation. The result is unverified. Read local operator authentication; no automatic retry occurs.';
+ return 'The OS did not confirm the selected credential load. An unavailable or locked existing Keychain item requires the normal OS credential workflow. No passphrase was collected and no automatic retry occurs.';
+}

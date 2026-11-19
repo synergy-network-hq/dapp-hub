@@ -196,7 +196,7 @@ export function NodeNetworkApp(){
   {['Management','Validator setup'].includes(tab)&&!target&&<VpnStatus onOpenDiagnostics={()=>setSection('logs')}/>}
   {tab==='Management'&&!target&&<CustodyStatus onOpenHistory={()=>setSection('logs')}/>}
   {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted} target={target} targetScopeCurrent={targetScopeCurrent}/>}
-  {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} onOpenDiagnostics={()=>setSection('logs')}
+  {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} operatorCredentialSupported={local.data?.platform==='macos'} onOpenDiagnostics={()=>setSection('logs')}
    onSelectTarget={targetSettings.selectTarget} targetScopeCurrent={targetScopeCurrent}/>}
  </NodeNetworkPanelFrame>;
 }

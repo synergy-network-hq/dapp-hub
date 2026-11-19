@@ -344,6 +344,20 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   return Err("Use the native signed Genesis folder review.".into());
  }
  let mutation=request.validate()?;
+ if request.operation=="operator_auth_load"{
+  #[cfg(target_os="macos")]{
+   let home=app.path().home_dir().map_err(|_|"Operator home unavailable")?;
+   let directory=node_controller::control_directory(&home)?;
+   if let Some(v)=crate::operator_credential::already_loaded(&target,&directory).await?{return Ok(serde_json::json!({"version":1,"ok":true,"result":v}))}
+   let reviewed=crate::operator_credential::review(&home,&target,&directory)?;
+   let prompt=window.clone();let message=format!("Load only the existing selected SSH credential into this app's existing OS agent for at most one hour?\nTarget: {}\nSelected public identity SHA256: {}\nApple's OS loader alone handles the existing file and Keychain. No passphrase entry, new credential, remote connection or automatic renewal. An already loaded identity is left unchanged.",target.label(),reviewed.public_sha());
+   let accepted=tauri::async_runtime::spawn_blocking(move||prompt.dialog().message(message).parent(&prompt).title("Load selected existing SSH credential").buttons(MessageDialogButtons::OkCancelCustom("Load selected credential for one hour".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Local credential review interrupted")?;
+   if !accepted{return Err("Local credential load cancelled; no credential was loaded".into())}
+   let _serial=node_controller::SERIAL.lock().await;
+   return Ok(serde_json::json!({"version":1,"ok":true,"result":crate::operator_credential::load(reviewed,&home,&target,&directory).await?}));
+  }
+  #[cfg(not(target_os="macos"))]return Err("Existing Keychain credential activation is available only on macOS; no credential was loaded".into());
+ }
  if request.operation=="operator_auth_status"{
   let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
   return Ok(serde_json::json!({"version":1,"ok":true,"result":crate::operator_auth::status(&target,&directory).await?}));
