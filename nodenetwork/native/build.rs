@@ -13,6 +13,13 @@ fn main() {
         assert!(pin.len()==64&&pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),"Invalid VPN provider policy pin");
         println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256={pin}");
     }
+    println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_GATEWAY_VPN_PROVIDER_SHA256");
+    if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_GATEWAY_VPN_PROVIDER_SHA256"){
+        assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Gateway VPN engineering authority is forbidden in production");
+        let validator=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256").expect("Gateway profile requires the retained validator provider pin");
+        assert!(pin.len()==64&&pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))&&pin!=validator,"Distinct exact gateway VPN provider policy pin required");
+        println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_GATEWAY_VPN_PROVIDER_SHA256={pin}");
+    }
     println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256");
     if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256"){
         assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Remote VPN credential authority is forbidden in production");
@@ -43,7 +50,7 @@ fn main() {
         assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Engineering authorization set is forbidden in production");
         let values:std::collections::BTreeSet<_>=pins.split(',').collect();
         if let Ok(single)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_AUTHORIZATION_SHA256"){assert!(values.contains(single.as_str()),"Single authorization pin must belong to the bounded set");}
-        assert!(!values.is_empty()&&values.len()<=5&&values.len()==pins.split(',').count()&&values.iter().all(|p|p.len()==64&&p.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))),"At most five distinct exact engineering document pins required");
+        assert!(!values.is_empty()&&values.len()<=6&&values.len()==pins.split(',').count()&&values.iter().all(|p|p.len()==64&&p.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))),"At most six distinct exact engineering document pins required");
         println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_AUTHORIZATION_SHA256S={}",pins);
     }
     println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN");

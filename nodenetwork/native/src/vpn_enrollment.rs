@@ -22,11 +22,10 @@ fn read(path:&Path,limit:usize,private:bool)->Result<Zeroizing<Vec<u8>>,String>{
 struct Config{raw:String,ca:Zeroizing<Vec<u8>>,policy:Value,pin:String}
 fn config(directory:&Path)->Result<Config,String>{
  if !cfg!(all(debug_assertions,unix)){return Err("Native VPN issuer remains unavailable in production".into())}
- let pin=option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256").ok_or("This native build has no independently approved isolated VPN provider")?;
  let raw=read(&directory.join("provider.json"),16384,false)?;
- if hash(&raw)!=pin{return Err("Selected VPN provider differs from the compiled independent approval".into())}
  let raw=String::from_utf8(raw.to_vec()).map_err(|_|"Provider approval must be UTF8")?;
  let policy:Value=serde_json::from_str(&raw).map_err(|_|"Invalid provider approval")?;
+ let pin=crate::gateway_vpn::verified_provider_pin(&raw,policy["profile"].as_str().ok_or("Exact VPN provider profile required")?,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_GATEWAY_VPN_PROVIDER_SHA256"),cfg!(debug_assertions))?;
  let ca=read(&directory.join("ca.pem"),128*1024,false)?;
  if policy["ca_sha256"]!=hash(&ca){return Err("VPN CA bytes differ from the independently approved provider".into())}
  Ok(Config{raw,ca,policy,pin:pin.into()})

@@ -3,6 +3,17 @@ use crate::node_controller::Request;
 use serde_json::Value;
 use std::net::IpAddr;
 pub(super) const PROFILE:&str="nodenetwork-controlled-gateway-v1";
+// Engineering artifact capacity only: profile pins do not confer provider or
+// network membership approval. A gateway never falls back to the validator pin.
+pub(super) fn provider_pin<'a>(profile:&str,validator:Option<&'a str>,gateway:Option<&'a str>,debug:bool)->Result<&'a str,String>{
+ let pin=|v:&str|v.len()==64&&v.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b));
+ if !debug||validator.is_none_or(|v|!pin(v))||gateway.is_some_and(|g|!pin(g)||Some(g)==validator){return Err("This native build has no distinct independently approved VPN profile pins".into())}
+ match profile{PROFILE=>gateway.ok_or_else(||"This native build has no independently approved gateway VPN profile".into()),"nodenetwork-controlled-canary-v1"|"nodenetwork-debug-vpn-provider-v1"=>Ok(validator.unwrap()),_=>Err("Unsupported independently approved VPN profile".into())}
+}
+pub(super) fn verified_provider_pin<'a>(raw:&str,profile:&str,validator:Option<&'a str>,gateway:Option<&'a str>,debug:bool)->Result<&'a str,String>{
+ use sha2::{Digest,Sha256};let pin=provider_pin(profile,validator,gateway,debug)?;
+ if format!("{:x}",Sha256::digest(raw.as_bytes()))!=pin{return Err("Selected VPN provider differs from its role-specific compiled independent approval".into())}Ok(pin)
+}
 const ERROR:&str="Gateway VPN requires its own independently approved TCP 8551 profile and exact signed target scope";
 fn exact(v:&Value,keys:&[&str])->bool{v.as_object().is_some_and(|m|m.len()==keys.len()&&keys.iter().all(|k|m.contains_key(*k)))}
 fn tcp(v:&Value)->bool{if !exact(v,&["ip","port"])||v["port"].as_u64()!=Some(8551){return false}let Some(s)=v["ip"].as_str()else{return false};let Ok(ip)=s.parse::<IpAddr>()else{return false};s==ip.to_string()&&!ip.is_unspecified()&&!ip.is_loopback()&&!ip.is_multicast()&&match ip{IpAddr::V4(v)=>!v.is_link_local()&&!v.is_broadcast(),IpAddr::V6(v)=>!v.is_unicast_link_local()}}
@@ -24,6 +35,8 @@ pub(super) fn enrollment(policy:&Value,hostname:&Value,key:&str,tcp:Option<&Valu
  serde_json::to_vec(&Enrollment{setup_key:key,management_url:&policy["management_origin"],hostname,required_peer_ips:if tcp.is_none(){Some(&policy["required_peer_ips"])}else{None},required_gateway_tcp:tcp}).map_err(|_|"Cannot encode exact private VPN enrollment".into())
 }
 #[cfg(test)]mod tests{use super::*;use serde_json::json;
+ #[test]fn gateway_vpn_separate_compiled_profile_pins_never_fallback_or_cross_roles(){let a="a".repeat(64);let b="b".repeat(64);assert_eq!(provider_pin("nodenetwork-controlled-canary-v1",Some(&a),Some(&b),true).unwrap(),a);assert_eq!(provider_pin(PROFILE,Some(&a),Some(&b),true).unwrap(),b);assert!(provider_pin(PROFILE,Some(&a),None,true).is_err());for(profile,v,g,debug)in[(PROFILE,None,Some(b.as_str()),true),(PROFILE,Some(a.as_str()),Some(a.as_str()),true),(PROFILE,Some(a.as_str()),Some("bad"),true),(PROFILE,Some(a.as_str()),Some(b.as_str()),false),("unknown",Some(a.as_str()),Some(b.as_str()),true)]{assert!(provider_pin(profile,v,g,debug).is_err())}}
+ #[test]fn gateway_vpn_role_swapped_profile_bytes_are_not_independently_approved(){use sha2::{Digest,Sha256};let validator="validator public profile";let gateway="gateway public profile";let a=format!("{:x}",Sha256::digest(validator));let b=format!("{:x}",Sha256::digest(gateway));assert!(verified_provider_pin(validator,"nodenetwork-controlled-canary-v1",Some(&a),Some(&b),true).is_ok());assert!(verified_provider_pin(gateway,PROFILE,Some(&a),Some(&b),true).is_ok());assert!(verified_provider_pin(validator,PROFILE,Some(&a),Some(&b),true).is_err());assert!(verified_provider_pin(gateway,"nodenetwork-controlled-canary-v1",Some(&a),Some(&b),true).is_err());assert!(verified_provider_pin(gateway,PROFILE,Some(&a),None,true).is_err())}
  #[test]fn gateway_vpn_fixed_tcp_read_rejects_unrestricted_or_renderer_options(){let mut r=Request{version:1,operation:"gateway_vpn_preflight".into(),parameters:json!({"required_gateway_tcp":{"ip":"10.69.1.2","port":8551}})};assert_eq!(r.validate(),Ok(false));for v in [json!({"ip":"10.69.1.2","port":443}),json!({"ip":"127.0.0.1","port":8551}),json!({"ip":"10.69.1.2","port":"8551"}),json!({"ip":"10.69.1.2","port":8551,"icmp":true})]{r.parameters= json!({"required_gateway_tcp":v});assert!(r.validate().is_err())}}
  #[test]fn gateway_vpn_profiles_cannot_cross_validator_and_gateway_initials(){
  let mut artifacts=serde_json::Map::new();for n in ["formation-context.json","commissioning/network/genesis.json","commissioning/network/authority.json","commissioning/network/authority-root.pub","commissioning/network/network-manifest.json","commissioning/network/transport-registry.json","commissioning/network/transport-root.pub"]{artifacts.insert(n.into(),json!("a".repeat(64)));}

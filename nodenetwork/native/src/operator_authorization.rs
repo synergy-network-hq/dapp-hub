@@ -145,7 +145,9 @@ fn approved_initial(candidate:&str,single:Option<&str>,set:Option<&str>,debug:bo
  let mut values=std::collections::BTreeSet::new();
  if let Some(set)=set{for p in set.split(','){if !pin(p)||!values.insert(p){return false}}}
  if let Some(single)=single{if !pin(single)||(set.is_some()&&!values.contains(single)){return false}values.insert(single);}
- debug&&!values.is_empty()&&values.len()<=5&&values.contains(candidate)
+ // Six independently pinned engineering documents permit five retained
+ // validator origins plus a gateway; this is not a consensus roster bound.
+ debug&&!values.is_empty()&&values.len()<=6&&values.contains(candidate)
 }
 pub(super) fn initial_pin_allowed(candidate:&str)->bool{
  approved_initial(candidate,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_AUTHORIZATION_SHA256"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_AUTHORIZATION_SHA256S"),cfg!(debug_assertions))
@@ -266,6 +268,7 @@ pub(super) fn transport_continuation(mut doc:Value,target:&Target,initial:&str,p
   assert!(validate(&raw,&t,&"f".repeat(64),1000).is_err());
   let mut other=t.clone();other.port=Some(22282);assert!(validate(&raw,&other,&digest(raw.as_bytes()),1000).is_err());
  }
- #[test]fn initial_document_set_is_bounded_exact_and_debug_only(){let pins=(0..5).map(|i|format!("{i:064x}")).collect::<Vec<_>>();let five=pins.join(",");assert!(approved_initial(&pins[0],None,Some(&five),true));assert!(!approved_initial(&pins[0],None,Some(&five),false));assert!(!approved_initial(&"f".repeat(64),None,Some(&five),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{five},{}","f".repeat(64))),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{five},{}",pins[0])),true));assert!(!approved_initial(&pins[0],Some(&"e".repeat(64)),Some(&five),true));}
+ #[test]fn initial_document_set_is_bounded_exact_and_debug_only(){let pins=(0..6).map(|i|format!("{i:064x}")).collect::<Vec<_>>();let six=pins.join(",");for pin in &pins{assert!(approved_initial(pin,None,Some(&six),true))}assert!(!approved_initial(&pins[0],None,Some(&six),false));assert!(!approved_initial(&"f".repeat(64),None,Some(&six),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{six},{}","f".repeat(64))),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{six},{}",pins[0])),true));assert!(!approved_initial(&pins[0],Some(&"e".repeat(64)),Some(&six),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{six},")),true));}
+
  #[test]fn exact_native_pin_target_expiry_and_request_validation_precede_input_access(){let(t,d)=fixture();let raw=d.to_string();assert!(validate(&raw,&t,&digest(raw.as_bytes()),1000).is_ok());assert!(validate(&raw,&t,&"0".repeat(64),1000).is_err());let other=Target{port:Some(22282),..t.clone()};assert!(validate(&raw,&other,&digest(raw.as_bytes()),1000).is_err());assert!(validate(&raw,&t,&digest(raw.as_bytes()),1060).is_err());for (key,value)in[("artifacts",json!({"../../private-key":"b".repeat(64)})),("requests",json!([{"operation":"shell","request_sha256":"c".repeat(64)}])),("sequence",json!(0))]{let mut bad=d.clone();bad[key]=value;let bytes=bad.to_string();assert!(validate(&bytes,&t,&digest(bytes.as_bytes()),1000).is_err());}}
 }
