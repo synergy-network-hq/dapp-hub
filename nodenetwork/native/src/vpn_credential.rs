@@ -56,6 +56,11 @@ fn decode(raw: &[u8], pin: Option<&str>, provider: &str, debug: bool) -> Result<
     Ok(value)
 }
 
+pub(super) fn public_review(raw:&[u8],provider:&str)->Result<serde_json::Value,String>{
+ let locator=decode(raw,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256"),provider,cfg!(all(debug_assertions,unix)))?;
+ Ok(serde_json::json!({"host":locator.host,"port":locator.port,"account":locator.account,"locator_sha256":digest(raw)}))
+}
+
 // This fixed read-only program never installs a provider or issues credentials.
 // The selected path is independently compiled into the authenticated locator pin.
 const READ_PRIVATE: &str = r#"import os,stat,sys
