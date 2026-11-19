@@ -29,6 +29,64 @@ def finality_telemetry(rpc,scope,genesis,height):
         and commitment['height']==height,'Selected finalized commitment unavailable')
     return value
 
+def finality_document(fetch,height):
+    import base64,hashlib,re,time
+    keys={'version','height','kind','encoding','bytes_base64','sha256','total_bytes','offset','next_offset','authentication'}
+    data=bytearray();digest=None;total=None;last=None
+    for page_number in range(16):
+        if last is not None:time.sleep(max(0,0.26-(time.monotonic()-last)))
+        params={'height':height,'kind':'finality','offset':len(data),'limit':65536}
+        if digest is not None:params['expected_sha256']=digest
+        last=time.monotonic();page=fetch(params)
+        if page is None and page_number==0:return None
+        require(isinstance(page,dict) and set(page)==keys and type(page['version']) is int and page['version']==1
+            and type(page['height']) is int and page['height']==height and page['kind']=='finality' and page['encoding']=='base64'
+            and type(page['offset']) is int and page['offset']==len(data)
+            and isinstance(page['sha256'],str) and re.fullmatch('[a-f0-9]{64}',page['sha256'])
+            and type(page['total_bytes']) is int and 0<page['total_bytes']<=1024*1024
+            and page['authentication']=='verify complete original bytes against independently authenticated PoSy commitments','Invalid finality page')
+        if digest is None:digest=page['sha256'];total=page['total_bytes']
+        require(page['sha256']==digest and page['total_bytes']==total,'Finality document changed')
+        require(isinstance(page['bytes_base64'],str) and len(page['bytes_base64'])<=87384,'Finality page exceeds bound')
+        chunk=base64.b64decode(page['bytes_base64'],validate=True)
+        require(base64.b64encode(chunk).decode()==page['bytes_base64'] and len(chunk)==min(65536,total-len(data)),'Invalid finality page bytes')
+        data.extend(chunk);expected=len(data) if len(data)<total else None
+        require(page['next_offset']==expected and (expected is None or type(page['next_offset']) is int),'Invalid finality continuation')
+        if expected is None:
+            require(hashlib.sha256(data).hexdigest()==digest,'Finality document digest differs')
+            return bytes(data),digest,page_number+1
+    raise ValueError('Finality document exceeds bound')
+
+def verify_finality_document(c,root,raw,scope,genesis,commitment):
+    import tempfile,signal
+    config_path=c.direct(root/'config/node.json',True,1024*1024);config_bytes=config_path.read_bytes();config=json.loads(config_bytes)
+    require(config.get('genesis_path')==str(root/'network/genesis.json') and config.get('manifest_path')==str(root/'network/network-manifest.json')
+        and config.get('consensus',{}).get('authority_binding')==str(root/'network/authority.json')
+        and config.get('consensus',{}).get('authority_trust_key_path')==str(root/'network/authority-root.pub')
+        and config.get('storage',{}).get('data_directory')==str(root/'data'),'Finality verifier origin paths differ')
+    provider=config.get('aegis_provider',{});report=c.direct(root/'lib/apqe/build-report.json',False,4*1024*1024)
+    require(provider.get('report_path')==str(report) and provider.get('authenticated_report_sha256')==hashlib.sha256(report.read_bytes()).hexdigest(),'Finality provider differs')
+    tmp=root/'tmp';m=tmp.lstat();require(stat.S_ISDIR(m.st_mode) and not tmp.is_symlink() and m.st_uid==os.geteuid() and not m.st_mode&0o022,'Unsafe proof temporary directory')
+    fd,name=tempfile.mkstemp(prefix='consensus-proof-',suffix='.json',dir=tmp);handlers={}
+    def cancelled(signum,frame):raise SystemExit('Observation cancelled')
+    try:
+        for sig in (signal.SIGTERM,signal.SIGHUP):handlers[sig]=signal.signal(sig,cancelled)
+        with os.fdopen(fd,'wb') as stream:stream.write(raw);stream.flush()
+        from synergy_linux import native
+        result=json.loads(native([root/'bin/synergy-node','finality-proof','verify',config_path,name],timeout=45,maximum_stdout=16384))
+        require(set(result)=={'version','verified','chain_id','network_id','genesis_hash','finalized'} and type(result['version']) is int and result['version']==1
+            and result['verified'] is True and type(result['chain_id']) is int and result['chain_id']==int(scope['chain_id'])
+            and result['network_id']==scope['network_id'] and result['genesis_hash']==genesis,'Finality verifier scope differs')
+        fields={'height','block_id','finality_certificate_id','protected_execution_root'}
+        require(isinstance(result['finalized'],dict) and set(result['finalized'])==fields
+            and all(result['finalized'][k]==commitment[k] for k in fields)
+            and config_path.read_bytes()==config_bytes,'Finality verifier commitment differs')
+        return result
+    finally:
+        try:os.unlink(name)
+        finally:
+            for sig,handler in handlers.items():signal.signal(sig,handler)
+
 def transaction_observation(rpc,selector):
     import re
     pin=lambda v:isinstance(v,str) and re.fullmatch('[a-f0-9]{64}',v)
@@ -103,20 +161,29 @@ def consensus_observation(wire):
         if op=='transaction':
             evidence=transaction_observation(rpc,value)
         elif op!='telemetry':
-            method,params=('synergy_getFinalizedProofPageV1',{'height':value,'kind':'finality','offset':0,'limit':65536}) if op=='finality' else ('synergy_getEpochTransitionProofV1',{'epoch':value})
+            method='synergy_getFinalizedProofPageV1' if op=='finality' else 'synergy_getEpochTransitionProofV1'
             # LocalRpc's spending allowlist is deliberately unchanged. These two
             # fixed read methods use the SAME listener/PID checks and envelope.
-            require(listener(root,c.public_json(root/'config/node.json',True))==(rpc.pid,rpc.port),'RPC ownership changed')
-            conn=http.client.HTTPConnection('127.0.0.1',rpc.port,timeout=10)
-            try:
-                conn.request('POST','/rpc',body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params},separators=(',',':')),headers={'Content-Type':'application/json','Connection':'close'})
-                response=conn.getresponse();raw=response.read(4*1024*1024+1)
-                require(response.status==200 and len(raw)<=4*1024*1024,'Evidence response exceeds bound')
-                envelope=json.loads(raw);require(isinstance(envelope,dict) and set(envelope)=={'jsonrpc','id','result'} and envelope['jsonrpc']=='2.0' and type(envelope['id']) is int and envelope['id']==1,'Evidence unavailable')
-                evidence=envelope['result']
-            finally:conn.close()
-            if op=='finality' and evidence is not None:
+            deadline=time.monotonic()+30
+            def fetch(params):
+                require(time.monotonic()<deadline,'Evidence deadline exceeded')
+                require(listener(root,c.public_json(root/'config/node.json',True))==(rpc.pid,rpc.port),'RPC ownership changed')
+                conn=http.client.HTTPConnection('127.0.0.1',rpc.port,timeout=min(10,deadline-time.monotonic()))
+                try:
+                    conn.request('POST','/rpc',body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params},separators=(',',':')),headers={'Content-Type':'application/json','Connection':'close'})
+                    response=conn.getresponse();raw=response.read(4*1024*1024+1)
+                    require(response.status==200 and len(raw)<=4*1024*1024,'Evidence response exceeds bound')
+                    envelope=json.loads(raw);require(isinstance(envelope,dict) and set(envelope)=={'jsonrpc','id','result'} and envelope['jsonrpc']=='2.0' and type(envelope['id']) is int and envelope['id']==1,'Evidence unavailable')
+                    return envelope['result']
+                finally:conn.close()
+            document=finality_document(fetch,value) if op=='finality' else None
+            evidence=fetch({'epoch':value}) if op=='epoch' else None
+            if document is not None:
+                raw,digest,pages=document
                 selected=finality_telemetry(rpc,scope,genesis,value)
+                verified=verify_finality_document(c,root,raw,scope,genesis,selected['common_finalized_commitment'])
+                import base64
+                evidence={'schema':'nodenetwork-finality-document-v1','height':value,'sha256':digest,'bytes_base64':base64.b64encode(raw).decode(),'pages':pages,'verification':verified}
         after=rpc.verify();observation_identity(after,scope,genesis,rpc.pid)
         if selected is not None:
             require(type(selected.get('finalized_height')) is int and type(after.get('finalized_height')) is int

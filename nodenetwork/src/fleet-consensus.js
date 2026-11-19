@@ -70,5 +70,6 @@ export async function collectFleetConsensus(selection,read,{isCurrent=()=>true,o
  const match=rows.every(row=>equalFields(commitment,row.finality.commitment,commitmentFields));
  return {...output,status:match?'commitments_match':'commitments_differ',commitment:match?commitment:null,
   evidence_documents:{same_digest:rows.every(row=>row.finality.evidence.sha256===rows[0].finality.evidence.sha256),
-   all_complete:rows.every(row=>row.finality.evidence.complete)}};
+   all_complete:rows.every(row=>row.finality.evidence.complete),
+   all_certificate_verified:rows.every(row=>row.finality.evidence.certificate_verified)}};
 }

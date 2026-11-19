@@ -87,4 +87,69 @@ class TransactionObservation(unittest.TestCase):
             bad=deepcopy(self.accounts);bad['sender'][key]=val
             with self.subTest(key=key),self.assertRaises(ValueError):self.observe(accounts=bad)
 
+class FinalityContinuation(unittest.TestCase):
+    def setUp(self):
+        import hashlib,base64
+        self.hashlib=hashlib;self.base64=base64
+        def require(ok,message):
+            if not ok:raise ValueError(message)
+        self.m=runpy.run_path(str(Path(__file__).parents[1]/'native/src/consensus_observation.py'),init_globals={'require':require})
+        self.raw=b'public canonical finality bytes'*3000;self.digest=hashlib.sha256(self.raw).hexdigest()
+    def page(self,q):
+        end=min(len(self.raw),q['offset']+q['limit'])
+        return {'version':1,'height':100,'kind':'finality','encoding':'base64','sha256':self.digest,'total_bytes':len(self.raw),'offset':q['offset'],'next_offset':end if end<len(self.raw) else None,'bytes_base64':self.base64.b64encode(self.raw[q['offset']:end]).decode(),'authentication':'verify complete original bytes against independently authenticated PoSy commitments'}
+    def test_two_pages_pinned_digest_exact_offsets_and_bounded_pacing(self):
+        from unittest.mock import patch
+        calls=[]
+        def fetch(q):calls.append(q);return self.page(q)
+        with patch('time.sleep') as sleep:
+            self.assertEqual(self.m['finality_document'](fetch,100),(self.raw,self.digest,2))
+        self.assertEqual(calls,[{'height':100,'kind':'finality','offset':0,'limit':65536},{'height':100,'kind':'finality','offset':65536,'limit':65536,'expected_sha256':self.digest}]);sleep.assert_called_once()
+    def test_changed_or_truncated_or_foreign_page_never_verifies(self):
+        from unittest.mock import patch
+        changes=[('sha256','f'*64),('height',101),('total_bytes',len(self.raw)+1),('offset',0),('next_offset',True),('authentication','trust this key'),('bytes_base64','eA==')]
+        for key,value in changes:
+            def fetch(q):
+                result=self.page(q)
+                if q['offset']:result[key]=value
+                return result
+            with self.subTest(key=key),patch('time.sleep'),self.assertRaises(ValueError):self.m['finality_document'](fetch,100)
+        self.assertIsNone(self.m['finality_document'](lambda q:None,100))
+        with self.assertRaises(ValueError):self.m['finality_document'](lambda q:{**self.page(q),'total_bytes':1024*1024+1},100)
+    def test_owner_scope_commitment_and_temporary_cleanup_on_failure_or_cancel(self):
+        import tempfile,json,os,stat,types,sys
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name);(root/'tmp').mkdir(mode=0o700);(root/'config').mkdir();(root/'lib/apqe').mkdir(parents=True)
+            report=root/'lib/apqe/build-report.json';report.write_bytes(b'approved provider')
+            config={'genesis_path':str(root/'network/genesis.json'),'manifest_path':str(root/'network/network-manifest.json'),
+                'consensus':{'authority_binding':str(root/'network/authority.json'),'authority_trust_key_path':str(root/'network/authority-root.pub')},
+                'storage':{'data_directory':str(root/'data')},'aegis_provider':{'report_path':str(report),'authenticated_report_sha256':self.hashlib.sha256(report.read_bytes()).hexdigest()}}
+            path=root/'config/node.json';path.write_text(json.dumps(config));path.chmod(0o600)
+            c=types.SimpleNamespace(direct=lambda p,*args:p)
+            scope={'network_id':'fresh','chain_id':'99999'};commit={'height':100,'block_id':'b'*64,'finality_certificate_id':'c'*64,'protected_execution_root':'d'*64}
+            result={'version':1,'verified':True,'chain_id':99999,'network_id':'fresh','genesis_hash':'a'*64,'finalized':commit}
+            self.m['verify_finality_document'].__globals__.update({'os':os,'stat':stat,'json':json,'hashlib':self.hashlib})
+            outcomes=[result,{**result,'genesis_hash':'f'*64},{**result,'finalized':{**commit,'height':101}},TimeoutError(),SystemExit()]
+            for outcome in outcomes:
+                def native(argv,**kwargs):
+                    proof=Path(argv[-1]);self.assertEqual(proof.parent,root/'tmp');self.assertEqual(stat.S_IMODE(proof.stat().st_mode),0o600);self.assertEqual(proof.read_bytes(),self.raw)
+                    self.assertEqual(argv[:3],[root/'bin/synergy-node','finality-proof','verify'])
+                    if isinstance(outcome,BaseException):raise outcome
+                    return json.dumps(outcome).encode()
+                with patch.dict(sys.modules,{'synergy_linux':types.SimpleNamespace(native=native)}):
+                    if outcome is result:self.assertEqual(self.m['verify_finality_document'](c,root,self.raw,scope,'a'*64,commit),result)
+                    else:
+                        with self.assertRaises((ValueError,TimeoutError,SystemExit)):self.m['verify_finality_document'](c,root,self.raw,scope,'a'*64,commit)
+                self.assertEqual(list((root/'tmp').iterdir()),[])
+            config['storage']['data_directory']='/foreign';path.write_text(json.dumps(config))
+            with self.assertRaises(ValueError):self.m['verify_finality_document'](c,root,self.raw,scope,'a'*64,commit)
+            config['storage']['data_directory']=str(root/'data');config['aegis_provider']['authenticated_report_sha256']='f'*64;path.write_text(json.dumps(config))
+            with self.assertRaises(ValueError):self.m['verify_finality_document'](c,root,self.raw,scope,'a'*64,commit)
+            config['aegis_provider']['authenticated_report_sha256']=self.hashlib.sha256(report.read_bytes()).hexdigest();path.write_text(json.dumps(config))
+            def changed_config(*args,**kwargs):
+                path.write_text('{}');return json.dumps(result).encode()
+            with patch.dict(sys.modules,{'synergy_linux':types.SimpleNamespace(native=changed_config)}),self.assertRaises(ValueError):self.m['verify_finality_document'](c,root,self.raw,scope,'a'*64,commit)
+            self.assertEqual(list((root/'tmp').iterdir()),[])
+
 if __name__=='__main__':unittest.main()

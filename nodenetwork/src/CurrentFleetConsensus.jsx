@@ -32,16 +32,16 @@ export function CurrentFleetConsensus({disabled}){
    <p role="status">{result.status==='commitments_match'?`Node-reported finalized commitments match at H${result.common_height}.`:result.status==='commitments_differ'?`Node-reported finalized commitments differ at H${result.common_height}.`:result.status==='scope_mismatch'?'Selected controllers reported different network, Genesis, formation or release scopes. No common-height comparison was made.':'Complete same-height observations are unavailable. No agreement is inferred.'}</p>
    <Detail data={{selectedControllers:result.observations.length,commonFinalizedHeight:result.common_height??'Not observed',completedAt:new Date(result.completed_at_unix_ms).toISOString(),...(result.scope||{})}}/>
    {result.commitment&&<Detail data={result.commitment}/>}
-   {result.evidence_documents&&<Detail data={{nodeReportedFinalityDocumentDigests:result.evidence_documents.same_digest?'Match':'Differ',completeDocuments:result.evidence_documents.all_complete?'Observed in every bounded first page':'Not all documents fit in the bounded first page'}}/>}
+   {result.evidence_documents&&<Detail data={{nodeReportedFinalityDocumentDigests:result.evidence_documents.same_digest?'Match':'Differ',completeDocuments:result.evidence_documents.all_complete?'Reassembled and SHA-256 checked for every selected controller':'Not observed for every selected controller',threeQcCertificatesVerified:result.evidence_documents.all_certificate_verified?'Existing native verifier passed for every selected controller':'Not verified for every selected controller'}}/>}
    {result.observations.map(row=>{
     const view=row.finality||row.telemetry;
     return <div key={JSON.stringify(row.target)}><h4>{targetName(row.target)}</h4>
      {row.error&&<ErrorMessage error={row.error}/>}
      {view&&<Detail data={{processId:view.process_id,observedAt:new Date(view.observed_at_unix_ms).toISOString(),latestFinalizedHeight:view.finalized_height,observedEpoch:view.epoch??'Not observed',epochContext:view.epoch_context_root??'Not observed',authenticatedPeerSessions:view.transport.authenticated_peer_count,...(result.status==='scope_mismatch'?view.scope:{})}}/>}
-     {row.finality&&<Detail data={{...row.finality.commitment,finalityDocumentSha256:row.finality.evidence.sha256,completeDocument:row.finality.evidence.complete}}/>}
+     {row.finality&&<Detail data={{...row.finality.commitment,finalityDocumentSha256:row.finality.evidence.sha256,completeDocument:row.finality.evidence.complete,threeQcCertificateVerified:row.finality.evidence.certificate_verified}}/>}
     </div>;
    })}
   </>}
-  <p>This compares authenticated local-node observations. It does not independently verify certificates, quorum, physical host separation, account balances or transaction inclusion. Live epoch and tip readings may differ while the chain advances. Saved targets grant no trust; changing the selection requires a fresh collection.</p>
+  <p>This compares authenticated local-node observations. Where marked verified, certificate verification uses the existing native three-QC verifier and authenticated authority history. It does not independently prove the displayed state root, physical host separation, account balances or transaction inclusion. Live epoch and tip readings may differ while the chain advances. Saved targets grant no trust; changing the selection requires a fresh collection.</p>
  </Card>;
 }

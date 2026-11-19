@@ -10,7 +10,7 @@ function view(index,operation,height){
   process_id:1000+index,observed_at_unix_ms:1795000000000+(operation==='finality'?100:0),epoch:1,epoch_context_root:pin,finalized_height:tip,
   commitment:{height:operation==='finality'?height:tip,block_id:pin,state_root:pin,finality_certificate_id:pin,protected_execution_root:pin},
   transport:{authenticated_peer_count:0,apqe_session_count:0,production_qualified:false,peers:[]},
-  evidence:operation==='finality'?{kind:'finality',selector:height,sha256:pin,bytes:120,complete:true}:null};
+  evidence:operation==='finality'?{kind:'finality',selector:height,sha256:pin,bytes:120,complete:true,certificate_verified:true}:null};
 }
 function reader(transform=()=>{}){
  const calls=[];
@@ -24,7 +24,7 @@ test('advancing tips compare only one common height through fixed native reads',
  const value=await collectFleetConsensus(targets,r.read,{onProgress:p=>progress.push(p)});
  assert.equal(value.status,'commitments_match');assert.equal(value.common_height,100);
  assert.equal(value.commitment.height,100);assert.equal(value.observations.length,4);
- assert.deepEqual(value.evidence_documents,{same_digest:true,all_complete:true});
+ assert.deepEqual(value.evidence_documents,{same_digest:true,all_complete:true,all_certificate_verified:true});
  assert.deepEqual(r.calls.map(c=>[c.operation,c.height]),[...targets.map(()=>['telemetry',null]),...targets.map(()=>['finality',100])]);
  assert.deepEqual(progress.filter(p=>p.completed===4).map(p=>p.operation),['telemetry','finality']);
  assert.equal(Object.hasOwn(value,'quorum'),false);assert.equal(Object.hasOwn(value,'proof_verified'),false);
@@ -61,9 +61,9 @@ test('each exact commitment component is compared; a matching state root alone i
  }
 });
 test('live epoch differences and bounded document metadata do not masquerade as commitment conflicts',async()=>{
- const r=reader((v,i,op)=>{v.epoch=i%2+1;v.epoch_context_root=i%2?other:pin;if(op==='finality'&&i===2){v.evidence.sha256=other;v.evidence.complete=false;}});
+ const r=reader((v,i,op)=>{v.epoch=i%2+1;v.epoch_context_root=i%2?other:pin;if(op==='finality'&&i===2){v.evidence.sha256=other;v.evidence.complete=false;v.evidence.certificate_verified=false;}});
  const value=await collectFleetConsensus(targets,r.read);assert.equal(value.status,'commitments_match');
- assert.deepEqual(value.evidence_documents,{same_digest:false,all_complete:false});
+ assert.deepEqual(value.evidence_documents,{same_digest:false,all_complete:false,all_certificate_verified:false});
 });
 test('selection or permission changes prevent the next wave, after current reads settle',async()=>{
  let current=true,finished=0;
