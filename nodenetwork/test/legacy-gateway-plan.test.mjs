@@ -23,3 +23,18 @@ test('actual IPC wrapper is a single bounded read and never calls a mutation lea
   globalThis.__handoff.native=false;await assert.rejects(nodeNetworkLegacyGatewayPlan(target,'root'),/native Portal/);assert.equal(calls.length,3);
  }finally{delete globalThis.__handoff;}
 });
+
+function retirementFixture(){
+ const v=fixture();v.schema='nodenetwork-legacy-canary-retirement-plan-v1';v.candidate_units=v.candidate_units.slice(1);
+ v.blockers=['explicit_retirement_approval_required','legacy_inventory_requires_attribution','legacy_peer_retirement_required'];
+ delete v.legacy.chain1266_executable_sha256;v.preserved.files.canary_frontend=p;
+ Object.assign(v.preserved,{rpc_tunnel_pid:10,metrics_pid:11});Object.assign(v.legacy,{canary_pid:12,vpn_pid:13,
+ old_network:{network_id:'posy-apqe-canary-process-49028',chain_id:99999,genesis_sha256:'d28ab09b6857f670482580a786edd939b090e88aa9378cdd0ad91379a724a9d7',node_config_sha256:p,relay_config_sha256:p},
+ vpn_binding:{enrollment_sha256:'f27a0e0031ba00f2a234e77e55449ca5f4b9a15dec7e2c8da3da5bde6ea37573',binding_sha256:'1629d857606c040ecbd7ed9d5dc692ac697dda3b129cc1f8b2bb9834e594d5f2',peer_id:'dboqb9if611ohpqo0e1g',peer_name:'synergy-canary-rpc-99999',hostname:'vmi3381382',ip:'10.69.51.205',wireguard_public_key:'EhHDd/L7fXX+c8x2nyJx8wWUwGRij3AmioVZKiH4/2M=',management_origin:'https://vpn-coordinator.synergy-network.io',retirement_verified:false}});
+ return v;
+}
+test('old49028-only plan binds exact historical public identity and excludes1266 from removal candidates',()=>{
+ const v=retirementFixture();assert.deepEqual(legacyGatewayPlanView(v,target),v);
+ assert.equal(v.legacy.chain1266_executable_sha256,undefined);assert(!v.candidate_units.includes('synergy-chain1266-role@rpc-gateway.service'));
+ for(const mutate of [x=>x.legacy.old_network.network_id='synergy-posy-canary-20261117',x=>x.legacy.old_network.chain_id=1266,x=>x.legacy.vpn_binding.peer_id='foreign',x=>x.legacy.vpn_binding.retirement_verified=true,x=>x.legacy.canary_pid=0,x=>x.preserved.metrics_pid=-1,x=>delete x.preserved.files.canary_frontend,x=>x.blockers.pop(),x=>x.legacy.secret='private']){const bad=retirementFixture();mutate(bad);assert.throws(()=>legacyGatewayPlanView(bad,target));}
+});

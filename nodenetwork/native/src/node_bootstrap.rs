@@ -262,7 +262,7 @@ pub(super) fn bootstrap_script(script:&str)->Result<String,String>{
  if loader.len()>96*1024{return Err("Encoded authenticated bootstrap exceeds remote argument budget".into())}Ok(loader)
 }
 fn shell_quote_static(value:&str)->String{format!("'{}'",value.replace('\'',"'\\''"))}
-pub(super) fn gateway_handoff_command()->Result<String,String>{Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --gateway-handoff-plan",shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))}
+pub(super) fn gateway_handoff_command()->Result<String,String>{Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --legacy-canary-retirement-plan",shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))}
 pub fn validate_operator(operator:&str)->Result<(),String>{
     if operator.is_empty()||operator.len()>32||!operator.as_bytes()[0].is_ascii_alphabetic()||!operator.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b)){return Err("Enter the existing administrative SSH account name, without a host, password or command.".into());}Ok(())
 }
