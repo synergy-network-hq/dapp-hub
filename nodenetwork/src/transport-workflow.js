@@ -18,3 +18,12 @@ export function transportStagingView(value){
   artifact_sha256:Object.fromEntries(ARTIFACTS.map(name=>[name,files[name]])),
   fleet_readiness_verified:false,commissioned:false,runtime_admission:false};
 }
+
+
+export function transportFailureMessage(failure){
+ const message=typeof failure==='string'?failure:failure instanceof Error?failure.message:null;
+ // Native commands reject with a String. Never stringify an arbitrary object,
+ // render control bytes or pass through an unbounded diagnostic payload.
+ return typeof message==='string'&&message.length>0&&message.length<=512&&!/[\x00-\x1f\x7f]/.test(message)
+  ?message:'Transport result unavailable. Reconcile uncertain staging through the same staging action before another approval.';
+}

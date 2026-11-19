@@ -24,7 +24,7 @@ pub struct Prepared {wire:Zeroizing<Vec<u8>>,pub summary:Value,pub host_key:Opti
 fn digest(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
 fn pin(s:&str)->bool{s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))}
 fn limit(name:&str)->Option<usize>{match name{
- "managed-guest.json"=>Some(16384),"commissioning-readiness.json"=>Some(128*1024),"formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
+ "managed-guest.json"=>Some(16384),"commissioning-readiness.json"=>Some(128*1024),"formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-unused-cancellation.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
  "commissioning/config/node.json"=>Some(1024*1024),"commissioning/config/start-authorized.json"=>Some(65536),
  "commissioning/network/genesis.json"=>Some(4*1024*1024),"commissioning/network/authority.json"|
  "commissioning/network/network-manifest.json"|"commissioning/network/transport-registry.json"=>Some(1024*1024),
@@ -61,7 +61,7 @@ fn validate(raw:&str,target:&Target,expected:&str,now:u64)->Result<Document,Stri
  Request{version:1,operation:"install_preflight".into(),parameters:json!({"release_id":d.release_id,"manifest_sha256":d.manifest_sha256,"network_id":d.network_id,"chain_id":d.chain_id,"node_name":d.node_name})}.validate()?;
  if d.artifacts.len()>10||d.artifacts.iter().any(|(n,p)|limit(n).is_none()||!pin(p))||d.requests.is_empty()||d.requests.len()>16{return Err("Authorization inputs or requests exceed exact fixed scope".into());}
  let mut requests=std::collections::BTreeSet::new();
- for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"treasury_prepare"|"guest_create"|"guest_stop"|"guest_remove"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
+ for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"vpn_cancel_unused"|"vpn_stop"|"vpn_resume"|"boot_policy"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"treasury_prepare"|"treasury_send_prepare"|"treasury_send_submit"|"guest_create"|"guest_stop"|"guest_resume"|"guest_remove"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
  if d.genesis_pins.as_ref().is_some_and(|p|p.len()!=3||!["genesis.json","authority.json","authority-root.pub"].iter().all(|n|p.get(*n).is_some_and(|s|pin(s)))){return Err("Exact independently approved Genesis pins required".into());}
  Ok(d)
 }
@@ -99,6 +99,7 @@ pub async fn execute(target:Target,operator:String,prepared:Prepared,control:&Pa
  }
  let continuation=prepared.continuation.as_ref().map(|(initial,parent,formation)|format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256=\"{initial}\"\nNATIVE_AUTHENTICATED_AUTHORIZATION_PARENT_SHA256=\"{parent}\"\nNATIVE_AUTHENTICATED_AUTHORIZATION_FORMATION_SHA256=\"{formation}\"\n")).unwrap_or_default();
  let script=format!("NATIVE_AUTHENTICATED_AUTHORIZATION_SHA256=\"{}\"\n{}{}",prepared.sha256,continuation,BOOTSTRAP);
+ let script=node_bootstrap::bootstrap_script(&script)?;
  let mut c=if target.kind=="local"{
   if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local authorization requires Linux x86_64".into());}
   let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script,"--stage-engineering-authorization"]);c
@@ -154,8 +155,8 @@ pub(super) fn continuation(doc:Value,target:&Target,initial:&str,parent:&str,for
 pub(super) struct NativeVpnArtifact<'a>{pub name:&'a str,pub bytes:&'a [u8],pub ca:Option<&'a [u8]>,pub provider:Option<&'a [u8]>}
 pub(super) fn vpn_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,artifact:NativeVpnArtifact<'_>)->Result<Prepared,String>{
  let NativeVpnArtifact{name,bytes,ca,provider}=artifact;
- if !matches!(name,"vpn-enrollment.json"|"vpn-server-binding.json"|"vpn-retirement.json")||bytes.is_empty()||bytes.len()>16384{return Err("Invalid native VPN continuation input".into())}
- let operation=if name=="vpn-enrollment.json"{"vpn_enroll"}else if name=="vpn-server-binding.json"{"vpn_bind"}else{"vpn_retire"};
+ if !matches!(name,"vpn-enrollment.json"|"vpn-server-binding.json"|"vpn-retirement.json"|"vpn-unused-cancellation.json")||bytes.is_empty()||bytes.len()>16384{return Err("Invalid native VPN continuation input".into())}
+ let operation=if name=="vpn-enrollment.json"{"vpn_enroll"}else if name=="vpn-server-binding.json"{"vpn_bind"}else if name=="vpn-unused-cancellation.json"{"vpn_cancel_unused"}else{"vpn_retire"};
  if doc["requests"][0]["operation"]!=operation{return Err("VPN artifact and exact request differ".into())}
  let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
  doc["artifacts"]=json!({name:digest(bytes)});
@@ -217,6 +218,13 @@ pub(super) fn transport_continuation(mut doc:Value,target:&Target,initial:&str,p
   let g=crate::managed_guest::GuestBinding{guest_id:"validator-guest".into(),create_request_sha256:"a".repeat(64),ssh_host_public_key:format!("ssh-ed25519 {}",STANDARD.encode(&bytes)),ssh_host_fingerprint:format!("SHA256:{}",STANDARD.encode(Sha256::digest(&bytes)).trim_end_matches('='))};
   t.guest=Some(g.clone());d["target"]["guest"]=serde_json::to_value(g).unwrap();let raw=d.to_string();let pin=digest(raw.as_bytes());assert!(validate(&raw,&t,&pin,1000).is_ok());
   let mut other=t.clone();other.guest=None;assert!(validate(&raw,&other,&pin,1000).is_err());other=t;other.guest.as_mut().unwrap().create_request_sha256="b".repeat(64);assert!(validate(&raw,&other,&pin,1000).is_err());
+ }
+ #[test]fn vpn_stop_continuation_requires_exact_native_authorization_scope(){
+  let(t,mut d)=fixture();let request=Request{version:1,operation:"vpn_stop".into(),parameters:json!({})};
+  d["requests"]=json!([{"operation":"vpn_stop","request_sha256":request.approval_id()}]);
+  let raw=d.to_string();assert!(validate(&raw,&t,&digest(raw.as_bytes()),1000).is_ok());
+  assert!(validate(&raw,&t,&"f".repeat(64),1000).is_err());
+  let mut other=t.clone();other.port=Some(22282);assert!(validate(&raw,&other,&digest(raw.as_bytes()),1000).is_err());
  }
  #[test]fn initial_document_set_is_bounded_exact_and_debug_only(){let pins=(0..5).map(|i|format!("{i:064x}")).collect::<Vec<_>>();let five=pins.join(",");assert!(approved_initial(&pins[0],None,Some(&five),true));assert!(!approved_initial(&pins[0],None,Some(&five),false));assert!(!approved_initial(&"f".repeat(64),None,Some(&five),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{five},{}","f".repeat(64))),true));assert!(!approved_initial(&pins[0],None,Some(&format!("{five},{}",pins[0])),true));assert!(!approved_initial(&pins[0],Some(&"e".repeat(64)),Some(&five),true));}
  #[test]fn exact_native_pin_target_expiry_and_request_validation_precede_input_access(){let(t,d)=fixture();let raw=d.to_string();assert!(validate(&raw,&t,&digest(raw.as_bytes()),1000).is_ok());assert!(validate(&raw,&t,&"0".repeat(64),1000).is_err());let other=Target{port:Some(22282),..t.clone()};assert!(validate(&raw,&other,&digest(raw.as_bytes()),1000).is_err());assert!(validate(&raw,&t,&digest(raw.as_bytes()),1060).is_err());for (key,value)in[("artifacts",json!({"../../private-key":"b".repeat(64)})),("requests",json!([{"operation":"shell","request_sha256":"c".repeat(64)}])),("sequence",json!(0))]{let mut bad=d.clone();bad[key]=value;let bytes=bad.to_string();assert!(validate(&bytes,&t,&digest(bytes.as_bytes()),1000).is_err());}}

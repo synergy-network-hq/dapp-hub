@@ -177,10 +177,11 @@ pub(super) fn software_receipt_status(value: &Value, selection: &crate::node_con
     let installed=&value["result"]["installation"];
     let expected=&selection.parameters;
     let pin_matches=installed["package_sha256"]==expected["manifest_sha256"];
+    let expected_chain_id=expected["chain_id"].as_u64().map(|id|id.to_string());
     // This path consumes a Request validated against the exact owner v1 parameters.
     let identity_matches=selection.operation=="upgrade" || (installed["role"]=="validator"
         && installed["network_id"]==expected["network_id"] && installed["node_name"]==expected["node_name"]
-        && installed["chain_id"]==expected["chain_id"].to_string());
+        && expected_chain_id.is_some() && installed["chain_id"].as_str()==expected_chain_id.as_deref());
     if pin_matches && identity_matches { "match" } else { "different" }
 }
 

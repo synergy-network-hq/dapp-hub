@@ -47,8 +47,8 @@ export function acceptedReview(operation,parameters,response,target){
 
 
 // Mirror the canonical controller operation kinds; declarations cannot reclassify a read as a mutation.
-const READS=new Set(["treasury_preflight", "treasury_status", "treasury_export", "commissioning_observation", "network_transport_status", "network_transport_export", "guest_resources", "guest_preflight", "guest_status", "target", "inventory", "health", "install_preflight", "upgrade_preflight", "recovery_preflight", "uninstall_preflight", "vpn_status", "vpn_diagnostics", "diagnostics", "identity_preflight", "identity_status", "formation_preflight", "formation_status", "formation_export", "genesis_stage_preflight", "genesis_binding_preflight", "authorization_status", "network_formation_status", "network_formation_export"]);
-const MUTATIONS=new Set(["treasury_prepare", "network_transport_prepare", "network_transport_sign", "guest_create", "guest_stop", "guest_remove", "install", "commission", "register", "vpn_enroll", "vpn_bind", "vpn_retire", "start", "stop", "restart", "upgrade", "uninstall", "identity_generate", "formation_prepare", "genesis_stage", "genesis_bind", "network_formation_prepare", "network_formation_sign"]);
+const READS=new Set(["treasury_preflight", "treasury_status", "treasury_export", "commissioning_observation", "network_transport_status", "network_transport_export", "guest_resources", "guest_preflight", "guest_status", "target", "inventory", "health", "install_preflight", "upgrade_preflight", "recovery_preflight", "uninstall_preflight", "vpn_status", "vpn_diagnostics", "vpn_stop_status", "vpn_resume_status", "boot_policy_status", "diagnostics", "identity_preflight", "identity_status", "formation_preflight", "formation_status", "formation_export", "genesis_stage_preflight", "genesis_binding_preflight", "authorization_status", "network_formation_status", "network_formation_export"]);
+const MUTATIONS=new Set(["treasury_send_prepare", "treasury_send_submit", "treasury_prepare", "network_transport_prepare", "network_transport_sign", "guest_create", "guest_stop", "guest_remove", "install", "commission", "register", "vpn_enroll", "vpn_bind", "vpn_retire", "vpn_stop", "vpn_resume", "boot_policy", "start", "stop", "restart", "upgrade", "uninstall", "identity_generate", "formation_prepare", "genesis_stage", "genesis_bind", "network_formation_prepare", "network_formation_sign"]);
 
 export function workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus,identityReview,formationReview,formationRecord,bindingReview,networkReview}){
  const unavailable=blocker=>({available:false,blocker});
@@ -61,7 +61,7 @@ export function workflowGate({target,state,permitted,operation,form,review,confi
  const declarations=state.operations.filter(entry=>entry?.operation===canonicalOperation);
  if(!expectedKind||declarations.length!==1||declarations[0].kind!==expectedKind)return unavailable('The controller capability kind differs from the supported operation. Inspect the selected target again.');
  if((operation==='install'||operation==='install_preflight')&&state.installed)return unavailable('A node is already installed. Use Updates for a qualified replacement.');
- if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_diagnostics','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
+ if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_diagnostics','vpn_stop_status','vpn_resume_status','boot_policy_status','boot_policy','vpn_stop','vpn_resume','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
  if(operation==='network_formation_prepare'&&(!state.installed||!formationRecord?.pending||networkReview?.pending))return unavailable('Read the prepared formation identity and reconcile any existing network before preparing another.');
  if(operation==='network_formation_sign'&&(!networkReview?.pending||networkReview.signed||networkReview.target!==JSON.stringify(target)))return unavailable('Read and review the exact unsigned Genesis on this target before signing.');
  if(operation==='vpn_enroll'){
@@ -139,6 +139,14 @@ export function vpnView(value){
  return {...Object.fromEntries(fields.map(key=>[key,value[key]])),overlay_address:value.overlay_address};
 }
 
+export function unusedVpnCancellationView(value){
+ const pin=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
+ if(value?.schema!=='nodenetwork-vpn-unused-cancellation-v1'||value.cancelled!==true||
+    value.retry_requires_new_confirmation!==true||!pin(value.attempt_sha256)||!pin(value.cancellation_sha256))
+  throw Error('The target did not verify cancellation of the unused VPN attempt. Do not enroll again.');
+ return {cancelled:true,retry_requires_new_confirmation:true,attempt_sha256:value.attempt_sha256,cancellation_sha256:value.cancellation_sha256};
+}
+
 // Diagnostics are observations only. Never expose raw logs or infer enrollment
 // success from a live client, a provider-issued key or a reachable peer.
 export function vpnDiagnosticsView(value){
@@ -162,12 +170,29 @@ export function vpnDiagnosticsView(value){
    !(c.wireguard_public_key===null||typeof c.wireguard_public_key==='string'&&/^[A-Za-z0-9+/]{43}=$/.test(c.wireguard_public_key))||
    !(c.overlay_address===null||cidr(c.overlay_address))||!oneOf(c.error_code,['client_status_timeout','client_status_unavailable']))fail();
  if(!Array.isArray(value.peers)||value.peers.length>5||new Set(value.peers.map(p=>p?.ip)).size!==value.peers.length||value.peers.some(p=>!literalIp(p?.ip)||!flag(p.route_via_wt0)||!flag(p.reachable)||!oneOf(p.error_code,['peer_unreachable','peer_route_unavailable'])))fail();
- const codes=['tls_untrusted','tls_expired','tls_name_mismatch','setup_key_rejected','transport_timeout','connection_refused','interface_permission'];
+ let roster;
+ if(Object.hasOwn(value,'roster')){
+  const r=value.roster,exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
+  const address=v=>typeof v==='string'&&/^synv1[0-9a-z]{10,90}$/.test(v);
+  const publicKey=v=>typeof v==='string'&&/^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/.test(v);
+  if(!exact(r,['available','error_code','source','peer_status_sample','local_address','peers'])||!flag(r.available)||r.source!=='approved_signed_transport'||r.peer_status_sample!=='before_probes'||!(r.local_address===null||address(r.local_address))||!Array.isArray(r.peers))fail();
+  if(r.available){if(r.error_code!==null||!address(r.local_address)||r.peers.length!==4)fail();}
+  else if(!['scope_unavailable','status_unavailable'].includes(r.error_code)||r.peers.length!==0||(r.error_code==='status_unavailable'&&!address(r.local_address)))fail();
+  const seenAddresses=new Set(),seenIps=new Set();
+  const peers=r.peers.map(p=>{
+   if(!exact(p,['address','ip','match_count','matches','route_via_wt0','reachable','error_code'])||!address(p.address)||p.address===r.local_address||seenAddresses.has(p.address)||!literalIp(p.ip)||seenIps.has(p.ip)||!Number.isInteger(p.match_count)||p.match_count<0||p.match_count>1024||!Array.isArray(p.matches)||p.matches.length!==Math.min(p.match_count,5)||!flag(p.route_via_wt0)||!flag(p.reachable)||(p.reachable&&!p.route_via_wt0)||!oneOf(p.error_code,['peer_missing','peer_duplicate','peer_not_connected','peer_route_unavailable','peer_unreachable']))fail();
+   seenAddresses.add(p.address);seenIps.add(p.ip);
+   const matches=p.matches.map(m=>{if(!exact(m,['wireguard_public_key','public_key_format_valid','status'])||!flag(m.public_key_format_valid)||(m.public_key_format_valid?!publicKey(m.wireguard_public_key):m.wireguard_public_key!==null)||!['Connected','Connecting','Disconnected','Idle','unknown'].includes(m.status))fail();return {wireguard_public_key:m.wireguard_public_key,public_key_format_valid:m.public_key_format_valid,status:m.status};});
+   return {address:p.address,ip:p.ip,match_count:p.match_count,matches,route_via_wt0:p.route_via_wt0,reachable:p.reachable,error_code:p.error_code};
+  });
+  roster={available:r.available,error_code:r.error_code,source:r.source,peer_status_sample:r.peer_status_sample,local_address:r.local_address,peers};
+ }
+ const codes=['launcher_import_failure','tls_untrusted','tls_expired','tls_name_mismatch','setup_key_rejected','transport_timeout','connection_refused','interface_permission'];
  if(!l||!flag(l.available)||!(l.modified_at_ms===null||time(l.modified_at_ms))||!Number.isSafeInteger(l.sampled_bytes)||l.sampled_bytes<0||l.sampled_bytes>65536||!Array.isArray(l.codes)||l.codes.some(x=>!codes.includes(x))||JSON.stringify(l.codes)!==JSON.stringify([...new Set(l.codes)].sort()))fail();
  return {observed_at_ms:value.observed_at_ms,enrollment:Object.fromEntries(fields.map(k=>[k,value.enrollment[k]])),
   trust:{mode:t.mode,error_code:t.error_code},client:{available:c.available,management_connected:c.management_connected,signal_connected:c.signal_connected,wireguard_public_key:c.wireguard_public_key,overlay_address:c.overlay_address,error_code:c.error_code},
   peers:value.peers.map(p=>({ip:p.ip,route_via_wt0:p.route_via_wt0,reachable:p.reachable,error_code:p.error_code})),
-  log:{available:l.available,modified_at_ms:l.modified_at_ms,sampled_bytes:l.sampled_bytes,codes:[...l.codes]},mutation_performed:false};
+  log:{available:l.available,modified_at_ms:l.modified_at_ms,sampled_bytes:l.sampled_bytes,codes:[...l.codes]},...(roster?{roster}:{}),mutation_performed:false};
 }
 
 export function authorizationView(value){
@@ -184,4 +209,52 @@ export function updateStageView(value){
  const pin=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
  if(value?.schema!=='nodenetwork-update-stage-v1'||typeof value.stagedRelease!=='string'||!/^[A-Za-z0-9._-]{1,128}$/.test(value.stagedRelease)||!pin(value.manifestSha256)||!pin(value.initial_sha256)||!pin(value.parent_sha256)||value.controllerAdopted!==true||value.validatorUpgraded!==false)throw Error('The target did not confirm exact native-reviewed update staging.');
  return {release_id:value.stagedRelease,manifest_sha256:value.manifestSha256,controllerAdopted:true,validatorUpgraded:false};
+}
+
+export function vpnStopView(value){
+ if(!value||Object.keys(value).sort().join(',')!=='attempt_preserved,provider_action,schema,stopped'||value.schema!=='nodenetwork-vpn-stop-v1'||value.stopped!==true||value.attempt_preserved!==true||value.provider_action!==false)throw Error('VPN stop outcome is uncertain; read diagnostics before another action.');
+ return {schema:value.schema,stopped:true,attempt_preserved:true,provider_action:false};
+}
+
+export function vpnStopStatusView(value){
+ const stopped=vpnStopView({schema:'nodenetwork-vpn-stop-v1',stopped:true,attempt_preserved:value?.attempt_preserved,provider_action:value?.provider_action});
+ if(!value||Object.keys(value).sort().join(',')!=='attempt_preserved,provider_action,request_sha256,schema,stopped'||value.schema!=='nodenetwork-vpn-stop-status-v1'||!((value.stopped===false&&value.request_sha256===null)||(value.stopped===true&&/^[a-f0-9]{64}$/.test(value.request_sha256))))throw Error('Unsupported VPN stop reconciliation evidence.');
+ return {...stopped,schema:value.schema,stopped:value.stopped,request_sha256:value.request_sha256};
+}
+
+// The stage response may adopt only its exact release/hash into the same draft.
+// This token is local UI correlation, never a preflight or authorization grant.
+export function controllerDraftScope(targetKey,permitted,form){
+ return JSON.stringify([targetKey,permitted,form.release_id,form.manifest_sha256,form.network_id,form.chain_id,form.node_name]);
+}
+export function retainedUpdateStageReceipt(adoption,previousScope,currentScope){
+ if(!adoption||adoption.fromScope!==previousScope||adoption.toScope!==currentScope||previousScope===currentScope||adoption.record?.operation!=='update_stage')return null;
+ try{
+  const before=JSON.parse(previousScope),after=JSON.parse(currentScope),response=adoption.record.response;
+  if(before.length!==7||after.length!==7||[0,1,4,5,6].some(index=>before[index]!==after[index])||after[1]!==true||after[2]!==response.release_id||after[3]!==response.manifest_sha256||response.controllerAdopted!==true||response.validatorUpgraded!==false)return null;
+  return adoption.record;
+ }catch{return null;}
+}
+
+export function vpnResumeView(value){
+ if(!value||Object.keys(value).sort().join(',')!=='enrollment_preserved,resumed,schema,validator_started'||value.schema!=='nodenetwork-vpn-resume-v1'||value.resumed!==true||value.validator_started!==false||value.enrollment_preserved!==true)throw Error('VPN resume outcome uncertain; read resume status before another action.');
+ return {...value};
+}
+export function vpnResumeStatusView(value){
+ if(!value||Object.keys(value).sort().join(',')!=='enrollment_preserved,request_sha256,resumed,schema,validator_started'||value.schema!=='nodenetwork-vpn-resume-status-v1'||value.validator_started!==false||value.enrollment_preserved!==true||!((value.resumed===false&&value.request_sha256===null)||(value.resumed===true&&/^[a-f0-9]{64}$/.test(value.request_sha256))))throw Error('Unsupported exact VPN resume reconciliation.');
+ return {...value};
+}
+
+export function bootPolicyParameters(value,target){
+ if(!value||Object.keys(value).sort().join(',')!=='enabled,service'||!['node','vpn'].includes(value.service)||typeof value.enabled!=='boolean')throw Error('Choose one service and an exact boot policy.');
+ if(value.enabled&&target?.guest)throw Error('Managed guest boot enablement is unavailable.');
+ return {service:value.service,enabled:value.enabled};
+}
+export function bootPolicyView(value,request){
+ if(!value||Object.keys(value).sort().join(',')!=='enabled,runtime_changed,schema,service'||value.schema!=='nodenetwork-boot-policy-v1'||value.runtime_changed!==false||value.service!==request.service||value.enabled!==request.enabled)throw Error('Boot policy outcome uncertain; read boot policy status before another change.');
+ return {...value};
+}
+export function bootPolicyStatusView(value){
+ if(!value||Object.keys(value).sort().join(',')!=='applied,node_enabled,request_sha256,runtime_changed,schema,vpn_enabled'||value.schema!=='nodenetwork-boot-policy-status-v1'||typeof value.node_enabled!=='boolean'||typeof value.vpn_enabled!=='boolean'||value.runtime_changed!==false||!((value.applied===false&&value.request_sha256===null)||(value.applied===true&&typeof value.request_sha256==='string'&&/^[a-f0-9]{64}$/.test(value.request_sha256))))throw Error('Unsupported observed boot policy.');
+ return {...value};
 }

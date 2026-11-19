@@ -57,6 +57,50 @@ pub async fn portal_nodenetwork_review_upgrade_receipt(window:tauri::WebviewWind
  read_software_receipt(window,app,target,record_id,selection).await
 }
 
+#[tauri::command]
+pub async fn portal_nodenetwork_reconcile_continuation(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target)->Result<Option<Value>,String>{
+ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+ main_only(&window)?;target.validate()?;
+ let base=app.path().app_local_data_dir().map_err(|_|"Native app state unavailable")?;
+ let control=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+ let(operator,review,pin,snapshot)=crate::authorization_lifecycle::continuation_recovery(&base,&target,&control).await?;
+ let message=format!("Target: {}\nPending continuation SHA-256: {}\n\nVerify only that this exact continuation was never applied: unchanged predecessor, no request grant or consumed audit, no partial exchange, same installed master/formation/initial approval. Only a fresh pinned proof can retire the exact local pending intent as NOT APPLIED, never success. No target change, grant creation or operation retry occurs. Any next mutation requires separate review.",target.label(),review["context"]["pending_sha256"]);
+ let accepted=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Review pending continuation nonapplication").buttons(MessageDialogButtons::OkCancelCustom("Verify and release only if not applied".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Continuation review interrupted")?;
+ if !accepted{return Ok(None)}
+ let _transaction=crate::authorization_lifecycle::continuation_lock(&base,&target)?;
+ let(operator_now,fresh,pin_now,snapshot_now)=crate::authorization_lifecycle::continuation_recovery(&base,&target,&control).await?;
+ if operator!=operator_now||pin!=pin_now||snapshot!=snapshot_now||review["pending_json"]!=fresh["pending_json"]||["initial_sha256","authorization","formation_sha256","target","selection","genesis_pins","pending_sha256"].iter().any(|k|review["context"][k]!=fresh["context"][k]){return Err("Continuation scope changed during review; no local intent released".into())}
+ let deadline=std::time::Instant::now();
+ let proof=node_bootstrap::prove_continuation_not_applied(&target,&operator,&control,pin.as_deref(),&fresh).await?;
+ if deadline.elapsed()>std::time::Duration::from_secs(120){return Err("Continuation proof expired; pending intent preserved".into())}
+ crate::authorization_lifecycle::retire_continuation(&base,&target,&fresh,&proof,&snapshot)?;
+ Ok(Some(proof))
+}
+
+#[tauri::command]
+pub async fn portal_nodenetwork_upgrade_not_applied(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,record_id:String,release_id:String,manifest_sha256:String)->Result<Option<Value>,String>{
+ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+ main_only(&window)?;target.validate()?;
+ if !cfg!(debug_assertions){return Err("Upgrade non-application reconciliation is unavailable in production".into())}
+ let request=node_controller::Request{version:1,operation:"upgrade".into(),parameters:serde_json::json!({"release_id":release_id,"manifest_sha256":manifest_sha256})};request.validate()?;
+ let base=app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?;
+ let control=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+ let picker=window.clone();let folder=tauri::async_runtime::spawn_blocking(move||picker.dialog().file().set_parent(&picker).set_title("Select independently approved current master for read-only upgrade verification").blocking_pick_folder()).await.map_err(|_|"Verifier selection interrupted")?;
+ let Some(folder)=folder else{return Ok(None)};
+ let verifier=node_bootstrap::upgrade_verifier(&folder.into_path().map_err(|_|"Select a local approved verifier master")?)?;
+ let (operator,context,host_pin,adoption)=crate::authorization_lifecycle::update_context(&base,&target,&control).await?;
+ if adoption["selection"]["release_id"]!=request.parameters["release_id"]||adoption["selection"]["manifest_sha256"]!=request.parameters["manifest_sha256"]||adoption["previous_selection"]!=context["selection"]{return Err("Original upgrade adoption differs; no journal outcome changed".into())}
+ let message=format!("READ-ONLY UPGRADE NON-APPLICATION PROOF\nTarget: {}\nOriginal upgrade request: {}\nVerifier manifest: {}\n\nVerify the complete unchanged old installation, exact consumed audit, stopped guest and services, original staged candidate, and absence of upgrade intent or partial exchange. Only a proven non-applied outcome is recorded as FALSE, never success. No upgrade is retried. Another release requires a separate review and authorization.",target.label(),request.approval_id(),verifier["verifier_sha256"]);
+ let prompt=window.clone();let accepted=tauri::async_runtime::spawn_blocking(move||prompt.dialog().message(message).parent(&prompt).title("Review unchanged upgrade outcome").buttons(MessageDialogButtons::OkCancelCustom("Verify without replay".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Upgrade proof confirmation interrupted")?;
+ if !accepted{return Ok(None)}
+ let (operator_now,context_now,pin_now,adoption_now)=crate::authorization_lifecycle::update_context(&base,&target,&control).await?;
+ if operator_now!=operator||pin_now!=host_pin||adoption_now!=adoption||!crate::authorization_lifecycle::same_update_review(&context,&context_now){return Err("Upgrade proof target context changed during review".into())}
+ let ticket=request_journal::upgrade_not_applied_ticket(&base,&target.journal_identity(),&record_id,&request.canonical())?;
+ let wire=serde_json::json!({"context":context_now,"adoption":adoption,"request":request.canonical(),"challenge":ticket.challenge(),"verifier_manifest_json":verifier["verifier_manifest_json"],"verifier_conformance":verifier["verifier_conformance"]});
+ let proof=node_bootstrap::prove_upgrade_not_applied(&target,&operator,&control,host_pin.as_deref(),wire,verifier["verifier_sha256"].as_str().ok_or("Verifier pin unavailable")?).await?;
+ request_journal::verify_upgrade_not_applied(&base,&target.journal_identity(),&request.canonical(),ticket)?;Ok(Some(proof))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub struct InstallReceiptSelection {
@@ -214,12 +258,29 @@ fn pick_operator_public_key(window:&tauri::WebviewWindow)->Result<Option<PathBuf
 }
 
 #[tauri::command]
-pub async fn portal_nodenetwork_review_operator_key(window:tauri::WebviewWindow)->Result<Option<Value>,String>{
+pub async fn portal_nodenetwork_review_operator_key(window:tauri::WebviewWindow,app:tauri::AppHandle,target:Option<node_controller::Target>)->Result<Option<Value>,String>{
+ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;
- tauri::async_runtime::spawn_blocking(move || {
-  let Some(key)=pick_operator_public_key(&window)? else{return Ok(None)};
-  node_bootstrap::review_operator_public_key(&key).map(Some)
- }).await.map_err(|_|"Public key inspection did not finish.")?
+ if let Some(selected)=&target{selected.validate()?;if selected.kind!="remote"||selected.guest.is_some(){return Err("Select a physical remote target for its operator public identity".into())}}
+ let view=window.clone();
+ let Some(key)=tauri::async_runtime::spawn_blocking(move || {
+  let Some(path)=pick_operator_public_key(&view)? else{return Ok(None)};
+  node_bootstrap::selected_operator_key(&path).map(Some)
+ }).await.map_err(|_|"Public key inspection did not finish.")?? else{return Ok(None)};
+ let Some(target)=target else{return node_bootstrap::review_operator_public_key_bytes(&key).map(Some)};
+ let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+ let base=app.path().app_local_data_dir().map_err(|_|"Native authorization unavailable")?;
+ // Preserve independent target host trust; selecting a client key cannot grant host trust.
+ let _pin=match crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?{Some(pin)=>pin,None=>node_controller::bootstrap_host_pin(&target,&directory)?};
+ let review=node_bootstrap::review_operator_public_key_bytes(&key)?;
+ let message=format!("Target: {}\nOperator public-key SHA-256: {}\n\nBind this public key to this physical target's restricted controller SSH connection. The matching private key must already be available through your SSH agent. No private key is read or stored, no target operation is sent, and existing host-key verification remains mandatory. This does not prove the historical bootstrap key.",target.label(),review["canonicalSha256"]);
+ let accepted=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Select target operator public key").buttons(MessageDialogButtons::OkCancelCustom("Use this public key for this target".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Operator identity confirmation interrupted")?;
+ if !accepted{return Ok(None)}
+ let _serial=node_controller::SERIAL.lock().await;
+ // A live master predates this selection and would ignore -i. Close only this
+ // exact restricted controller mux; the next exchange proves the selected key.
+ node_controller::close_connection_checked(&target,&directory,"synergy-nodenetwork").await?;
+ node_bootstrap::retain_operator_identity(&target,&directory,&key).map(Some)
 }
 
 async fn pick_genesis_stage_inputs(window:tauri::WebviewWindow)->Result<Option<PreparedGenesisStage>,String>{
@@ -278,10 +339,13 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;
  target.validate()?;
- if matches!(request.operation.as_str(),"treasury_prepare"|"treasury_export"|"treasury_preflight"|"commissioning_observation"|"genesis_stage"|"genesis_stage_preflight"|"network_formation_prepare"|"network_formation_export"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"network_transport_prepare"|"network_transport_sign"|"network_transport_export"|"guest_preflight"|"guest_status"|"guest_create"|"guest_stop"|"guest_remove"){
+ if request.operation.starts_with("treasury_send_"){return Err("Use the dedicated native ordinary treasury review and one-use dispatch route".into())}
+ if matches!(request.operation.as_str(),"treasury_prepare"|"treasury_export"|"treasury_preflight"|"commissioning_observation"|"genesis_stage"|"genesis_stage_preflight"|"network_formation_prepare"|"network_formation_export"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"vpn_cancel_unused"|"vpn_unused_preflight"|"network_transport_prepare"|"network_transport_sign"|"network_transport_export"|"guest_preflight"|"guest_boot_diagnostics"|"guest_status"|"guest_create"|"guest_stop"|"guest_resume"|"guest_remove"){
   return Err("Use the native signed Genesis folder review.".into());
  }
  let mutation=request.validate()?;
+ if request.operation=="boot_policy"&&request.parameters["enabled"]==true&&target.guest.is_some(){return Err("Managed guest boot enablement is unavailable; no grant or mutation was sent".into())}
+
  let mut genesis_review=None;
  if request.operation=="network_formation_sign" {
   let dir=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
@@ -293,6 +357,9 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  if mutation {
   let title=format!("Authorize NodeNetwork {}",request.operation);
   let message=format!("Target: {}\nRoot: /opt/synergy\nOperation: {}\nParameters: {}\nExact request approval ID: {}\n\nThis action changes the selected validator. A separate matching host grant is required. In an independently approved debug formation, this confirmation can stage a short-lived exact continuation for the same target/master/network; production remains denied. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",target.label(),request.operation,request.parameters,request.approval_id());
+  let message=if request.operation=="vpn_stop"{format!("{message}\n\nStop ONLY the attributed node VPN. The validator must already be stopped. Original enrollment attempts, custody and VPN state are preserved. This does not revoke a key, delete a peer or contact the provider. If the reply is lost, read diagnostics; do not repeat blindly.")}else{message};
+  let message=if request.operation=="vpn_resume"{format!("{message}\n\nResume ONLY the already enrolled, independently server-bound node VPN using its existing private identity. The validator stays stopped. No setup key, provider API, new enrollment, or validator start is requested. Issuance approval expiry does not replace the existing peer. If the reply is lost, read Resume status; do not repeat blindly.")}else{message};
+  let message=if request.operation=="boot_policy"{format!("{message}\n\nChange ONLY the selected service's boot enablement. This does not start or stop either service, enroll VPN, or create custody. Enabling requires the exact commissioned signed-roster identity and existing bound VPN; observed policy is read from attributed systemd units. The node service Requires=VPN: enabling node at boot also starts its existing VPN dependency at boot even when VPN's own boot link is disabled. If a reply is lost, read boot policy status; never regrant blindly.")}else{message};
   let message=if let Some(review)=genesis_review{format!("{message}\n\nVerified unsigned Genesis review: {review}\n\nThis signs a new isolated engineering network with its prepared APQE authority custody. It does not approve production or start validators.")}else{message};
   let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title(title)
    .buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show())
@@ -303,7 +370,12 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  let operation=request.operation.clone();
  let target_for_eligibility=target.clone();
  let target_identity=target.journal_identity();
- if mutation{exact_continuation(&app,&target,&request,&directory,None).await?;}
+ let resume_base=app.path().app_local_data_dir().map_err(|_|"Portal journal unavailable")?;
+ let _resume_transaction=if matches!(operation.as_str(),"vpn_resume"|"vpn_resume_status"|"boot_policy"|"boot_policy_status"|"commission"){Some(crate::authorization_lifecycle::continuation_lock(&resume_base,&target)?)}else{None};
+ if matches!(operation.as_str(),"vpn_resume"|"boot_policy"|"commission"){
+  request_journal::require_resumable_scope(&resume_base,&target_identity)?;
+  crate::authorization_lifecycle::grant_locked(&resume_base,&target,&request,&directory,None,_resume_transaction.as_ref().ok_or("Service-policy transaction unavailable")?).await?;
+ }else if mutation{exact_continuation(&app,&target,&request,&directory,None).await?;}
  let dispatch=if mutation {Some(request_journal::Dispatch::begin(&app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no mutation was sent.")?,&target_identity,&operation,&request.canonical())?)} else {None};
  let dispatched_request=request.clone();
  let result=controller(&app,target,request,&directory).await.and_then(|reply|node_controller::mutation_acknowledgement(&dispatched_request,reply)).and_then(|reply|if operation=="uninstall"{crate::authorization_lifecycle::verify_removal(&target_for_eligibility,reply)}else{Ok(reply)});
@@ -313,6 +385,21 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   if operation=="target"&&crate::authorization_lifecycle::eligible(&app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?,&target_for_eligibility,&directory).await?{
    result["result"]["engineeringContinuation"]=serde_json::json!(true);
    if let Some(operations)=result["result"]["operations"].as_array_mut(){for row in operations{if row["kind"]=="mutation"&&row["blocker"]=="Operation has not passed host qualification"{row["engineeringContinuation"]=serde_json::json!(true);}}}
+  }
+  if operation=="boot_policy_status" {
+   if let Some(digest)=node_controller::boot_policy_reconciliation(&result)?{
+    request_journal::reconcile_verified(&resume_base,&target_identity,"boot_policy",&digest)?;
+   }
+  }
+  if operation=="vpn_resume_status" {
+   if let Some(digest)=node_controller::vpn_resume_reconciliation(&result)?{
+    request_journal::reconcile_verified(&app.path().app_local_data_dir().map_err(|_|"Portal journal unavailable")?,&target_identity,"vpn_resume",&digest)?;
+   }
+  }
+  if operation=="vpn_stop_status" {
+   if let Some(digest)=node_controller::vpn_stop_reconciliation(&result)?{
+    request_journal::reconcile_verified(&app.path().app_local_data_dir().map_err(|_|"Portal journal unavailable")?,&target_identity,"vpn_stop",&digest)?;
+   }
   }
   if operation=="authorization_status" {
    let update=&result["result"]["update"];
@@ -481,8 +568,10 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
  let Some(prepared)=prepared else{return Ok(None)};
  let base=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no bootstrap was sent.")?;
  let bootstrap_request=serde_json::json!({"version":1,"operation":"bootstrap","operator":operator,"parameters":parameters,"bootstrapPin":node_bootstrap::script_pin()});
- let reconciliation=request_journal::bootstrap_absence_candidate(&base,&target.journal_identity(),&bootstrap_request)?;
- let reconciliation_notice=if reconciliation.is_some(){"\n\nAn exact previous bootstrap is UNCERTAIN. This confirmation authorizes ONLY a pinned, read-only absence check of both Synergy roots, registrations, accounts, mounts and application/bootstrap processes. Only a fully clean proof resolves that journal entry as verified absence, never success. No bootstrap is retried in this action; you must confirm a fresh Bootstrap action separately."}else{""};
+ // Bind this read-only review to the current selected key without rewriting the legacy dispatch request.
+ let absence_review=serde_json::json!({"request":bootstrap_request,"operator_public_key_sha256":prepared.operator_public_key_sha256()});
+ let reconciliation=request_journal::bootstrap_absence_candidate(&base,&target.journal_identity(),&absence_review)?;
+ let reconciliation_notice=if let Some(ticket)=&reconciliation{format!("\n\nOriginal uncertain bootstrap request SHA-256: {}\nThis confirmation authorizes ONLY a pinned, read-only absence check of both Synergy roots, registrations, accounts, mounts and application/bootstrap processes. The original record remains bound to its original request even if the selected release or embedded script has changed. The administrative account and public key shown above are current selections; the legacy journal does not prove their historical equivalence. Only a fully clean proof resolves the original entry as verified absence, never success. No bootstrap is retried in this action; confirm a fresh Bootstrap action separately.",ticket.original_request_sha256())}else{String::new()};
  let message=format!("Target: {}\nAdministrative account: {}\nRoot: /opt/synergy\nRelease: {}\nManifest SHA-256: {}\nEmbedded bootstrap SHA-256: {}\nNetwork incarnation: {}\nChain: {}\nNode name: {}\nOperator public-key SHA-256: {}\n\nThis stages the verified software and installs a restricted host controller account, rooted SSH/sudo definitions and the automatic removal guard. The target must be clean. No community enrollment, custody creation, consensus membership or activation is authorized. No passwords are requested or stored by Portal.",target.label(),operator,prepared.release,prepared.manifest_sha256,node_bootstrap::script_pin(),parameters["network_id"],parameters["chain_id"],parameters["node_name"],prepared.operator_public_key_sha256());
  let message=format!("{message}{reconciliation_notice}");
  let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title("Authorize NodeNetwork target bootstrap")
@@ -492,16 +581,19 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
  if let Some(ticket)=reconciliation{
   let pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
   node_bootstrap::prove_clean_bootstrap(&target,&operator,&prepared,&directory,pin.as_deref(),&ticket.challenge()).await?;
-  request_journal::verify_bootstrap_absence(&base,&target.journal_identity(),&bootstrap_request,ticket)?;
+  request_journal::verify_bootstrap_absence(&base,&target.journal_identity(),&absence_review,ticket)?;
   return Err("The exact prior uncertain bootstrap was reconciled as verified clean absence, not success. No bootstrap was retried. Select Bootstrap and confirm again to authorize one fresh attempt.".into())
  }
+ if target.kind=="remote"&&target.guest.is_none(){node_bootstrap::require_selected_operator_identity(&target,&directory,&prepared.public_key)?;}
  let retry=crate::authorization_lifecycle::prepare_reinstallation(&base,&target,&operator,&parameters,&bootstrap_request)?;
  let pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
  let dispatch=request_journal::Dispatch::begin_bootstrap(&base,&target.journal_identity(),&bootstrap_request,retry)?;
  let expected=parameters.clone();
+ let identity_target=target.clone();let identity_key=prepared.public_key.clone();
  let result=node_bootstrap::execute_pinned(target,operator,parameters,prepared,&directory,pin.as_deref()).await.and_then(|reply|{
   if reply["ok"]==true&&(reply["result"]["root"]!="/opt/synergy"||reply["result"]["stagedRelease"]!=expected["release_id"]||reply["result"]["manifestSha256"]!=expected["manifest_sha256"]||reply["result"]["controllerEnrolled"]!=true||reply["result"]["softwareInstalled"]!=false||reply["result"]["rootDeletionGuardActive"]!=true){return Err("Fresh bootstrap receipt differs; preserve the native journal for reconciliation".into())}Ok(reply)
  });
+ if result.as_ref().is_ok_and(|reply|reply["ok"]==true)&&identity_target.kind=="remote"&&identity_target.guest.is_none(){node_bootstrap::retain_operator_identity(&identity_target,&directory,&identity_key)?;}
  dispatch.finish(&result).map_err(|_|"Bootstrap outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;
  result.map(Some)
 }
@@ -658,20 +750,58 @@ pub async fn portal_nodenetwork_stage_update(window:tauri::WebviewWindow,app:tau
  if !cfg!(debug_assertions){return Err("Engineering release adoption is disabled in production".into())}
  let base=app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?;
  let control=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
- let(operator,mut context,pin)=crate::authorization_lifecycle::update_context(&base,&target,&control).await?;
+ let(operator,mut context,pin,pending_update)=crate::authorization_lifecycle::update_context(&base,&target,&control).await?;
  let view=window.clone();let selection=context["selection"].clone();
  let prepared=tauri::async_runtime::spawn_blocking(move||{
   let Some(folder)=view.dialog().file().set_parent(&view).set_title("Select the exact NEW engineering synergy master").blocking_pick_folder() else{return Ok(None)};
-  node_bootstrap::prepare_update(&folder.into_path().map_err(|_|"Choose a local master folder")?,&selection).map(Some)
+  let folder=folder.into_path().map_err(|_|"Choose a local master folder")?;
+  node_bootstrap::prepare_update(&folder,&selection).map(|prepared|(prepared,folder)).map(Some)
  }).await.map_err(|_|"Update inventory review interrupted")??;
- let Some(prepared)=prepared else{return Ok(None)};
+ let Some((prepared,folder))=prepared else{return Ok(None)};
  if context["selection"]["release_id"]==prepared.release||context["selection"]["manifest_sha256"]==prepared.manifest_sha256{return Err("Choose a distinct new release; reconcile an already staged update instead of replaying".into())}
+ let pending=crate::authorization_lifecycle::pending_update(&pending_update,&context["selection"]);
+ let replacement=pending&&(pending_update["selection"]["release_id"]!=prepared.release||pending_update["selection"]["manifest_sha256"]!=prepared.manifest_sha256);
+ let reconcile=pending&&!replacement;
+ let old_upgrade=serde_json::json!({"version":1,"operation":"upgrade","parameters":{"release_id":pending_update["selection"]["release_id"],"manifest_sha256":pending_update["selection"]["manifest_sha256"]}});
+ let stage_request=serde_json::json!({"version":1,"operation":"update_stage","parameters":{"release_id":prepared.release,"manifest_sha256":prepared.manifest_sha256}});
+ let mut replacement_unused=false;
+ let verifier=if replacement{
+  // The local terminal record permits review only. The remote re-runs the full
+  // authenticated non-application proof under its lock before replacing bytes.
+  replacement_unused=request_journal::update_replacement_ticket(&base,&target.journal_identity(),&old_upgrade,&stage_request)?.unused();
+  Some(node_bootstrap::upgrade_verifier(&folder)?)
+ }else{None};
+ let commission_review=node_bootstrap::inspect_update_commission_grant(&target,&operator,&control,pin.as_deref(),&context).await?;
  context["release_id"]=serde_json::json!(prepared.release);context["manifest_sha256"]=serde_json::json!(prepared.manifest_sha256);
- let message=format!("ISOLATED DEBUG ENGINEERING RELEASE ADOPTION ONLY\nTarget: {}\nRoot: /opt/synergy\nCurrent exact release: {}\nNEW release: {}\nNEW manifest SHA-256: {}\nInitial native approval: {}\nCurrent authorization: {}\nFormation: {}\n\nThe complete local package inventory was hashed by native code. This confirmation approves these exact new software bytes for this existing authenticated engineering target/network. It is not production publisher approval. Stop the validator first. This stages software and the matching controller, but does not upgrade, restart, change custody or grant membership. A separate reviewed upgrade and one-use host grant remain mandatory. Never replay an uncertain result.",target.label(),context["selection"],prepared.release,prepared.manifest_sha256,context["initial_sha256"],context["parent_sha256"],context["formation_sha256"]);
- let confirmed=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Review exact engineering update").buttons(MessageDialogButtons::OkCancelCustom("Approve and stage exact release once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Update confirmation interrupted")?;
+ let preservation_notice=if commission_review["preservation"].is_null(){String::new()}else{format!("PRESERVE EXACT EXPIRED UNUSED COMMISSION GRANT\nRequest: {}\nGrant SHA-256: {}\nExpired at: {}\nStaged commissioning commitment: {}\nThe exact expired grant is preserved byte-for-byte, not consumed, renewed or replayed. No commissioning or validator activation is authorized.\n",commission_review["preservation"]["request_sha256"],commission_review["preservation"]["grant_sha256"],commission_review["preservation"]["expires_at"],commission_review["preservation"]["commissioning_sha256"])};
+ let action=if replacement&&replacement_unused{"VERIFY EXACT UNUSED STAGED UPGRADE THEN STAGE NEW RELEASE ONCE — no old upgrade dispatch, grant, consumed audit, intent or partial is permitted; preserve a NOT-APPLIED receipt, never upgrade success"}else if replacement{"REPLACE EXACT VERIFIED-NOT-APPLIED STAGE — full unchanged-installation proof runs again; old upgrade is never retried"}else if reconcile{"RECONCILE ALREADY ADOPTED CONTROLLER ONLY — no archive upload or repeated adoption"}else{"STAGE EXACT NEW RELEASE ONCE"};
+ let superseded_notice=if replacement{format!("Original staged selection: {}\nOriginal verified-not-applied upgrade request: {:x}\nOnly authenticated staged public software is replaced; original audit and false outcome remain.\n",pending_update["selection"],Sha256::digest(old_upgrade.to_string().as_bytes()))}else{String::new()};
+ let message=format!("{action}\n{superseded_notice}{preservation_notice}ISOLATED DEBUG ENGINEERING RELEASE ADOPTION ONLY\nTarget: {}\nRoot: /opt/synergy\nCurrent exact release: {}\nNEW release: {}\nNEW manifest SHA-256: {}\nInitial native approval: {}\nCurrent authorization: {}\nFormation: {}\n\nThe complete local package inventory was hashed by native code. This confirmation approves these exact new software bytes for this existing authenticated engineering target/network. It is not production publisher approval. Stop the validator first. This stages software and the matching controller, or reconciles ONLY the exact already-adopted controller backup without retransmitting the archive. It does not upgrade, restart, change custody or grant membership. A separate reviewed upgrade and one-use host grant remain mandatory. Never replay an uncertain result.",target.label(),context["selection"],prepared.release,prepared.manifest_sha256,context["initial_sha256"],context["parent_sha256"],context["formation_sha256"]);
+ let confirmed=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Review exact engineering update").buttons(MessageDialogButtons::OkCancelCustom(if reconcile{"Reconcile exact staged controller".into()}else{"Approve and stage exact release once".into()},"Cancel".into())).blocking_show()).await.map_err(|_|"Update confirmation interrupted")?;
  if !confirmed{return Ok(None)}
- let request=serde_json::json!({"version":1,"operation":"update_stage","parameters":{"release_id":prepared.release,"manifest_sha256":prepared.manifest_sha256}});
- let dispatch=request_journal::Dispatch::begin(&base,&target.journal_identity(),"update_stage",&request)?;
+ // Human review and local hashing must not consume the remote 300-second lease.
+ // Re-observe the authenticated scope after confirmation; changes require review again.
+ let(fresh_operator,mut fresh,fresh_pin,fresh_pending)=crate::authorization_lifecycle::update_context(&base,&target,&control).await?;
+ if operator!=fresh_operator||pin!=fresh_pin||pending_update!=fresh_pending||!crate::authorization_lifecycle::same_update_review(&context,&fresh){return Err("Update scope changed during native review; inspect and review again without dispatch".into())}
+ let commission_now=node_bootstrap::inspect_update_commission_grant(&target,&operator,&control,pin.as_deref(),&fresh).await?;
+ if !node_bootstrap::same_update_commission_review(&commission_review,&commission_now){return Err("Expired commissioning grant changed during review; no update dispatched".into())}
+ if !commission_now["preservation"].is_null(){fresh["commission_grant_preservation"]=commission_now["preservation"].clone();}
+ fresh["release_id"]=context["release_id"].clone();fresh["manifest_sha256"]=context["manifest_sha256"].clone();fresh["reconcile_only"]=serde_json::json!(reconcile);context=fresh;
+ let request=stage_request;
+ let dispatch=if let Some(verifier)=verifier{
+  let ticket=request_journal::update_replacement_ticket(&base,&target.journal_identity(),&old_upgrade,&request)?;
+  if ticket.unused()!=replacement_unused{return Err("Original upgrade evidence changed during review; no stage sent".into())}
+  let mut proof_context=context.clone();let fields=proof_context.as_object_mut().ok_or("Invalid native replacement context")?;
+  for name in ["release_id","manifest_sha256","reconcile_only","commission_grant_preservation"]{fields.remove(name);}
+  let mut wire=serde_json::json!({"context":proof_context,"adoption":pending_update,"request":old_upgrade,"challenge":ticket.challenge(),"verifier_manifest_json":verifier["verifier_manifest_json"],"verifier_conformance":verifier["verifier_conformance"]});
+  if replacement_unused{
+   wire["unused"]=serde_json::json!(true);
+   let proof=node_bootstrap::prove_upgrade_not_applied(&target,&operator,&control,pin.as_deref(),wire.clone(),verifier["verifier_sha256"].as_str().ok_or("Verifier pin unavailable")?).await?;
+   crate::authorization_lifecycle::remember_unused_upgrade(&base,&target,&wire,&proof)?;
+  }
+  context["superseded_upgrade"]=wire;
+  request_journal::Dispatch::begin_update_replacement(&base,&target.journal_identity(),&request,ticket)?
+ }else{request_journal::Dispatch::begin(&base,&target.journal_identity(),"update_stage",&request)?};
  let result=node_bootstrap::execute_update(target,operator,context.clone(),prepared,&control,pin.as_deref()).await;
  dispatch.finish(&result).map_err(|_|"Update outcome uncertain; read authorization status before any further operation")?;
  let result=result?;
@@ -682,14 +812,14 @@ pub async fn portal_nodenetwork_stage_update(window:tauri::WebviewWindow,app:tau
 #[tauri::command]
 pub async fn portal_nodenetwork_vpn(window:tauri::WebviewWindow,app:tauri::AppHandle,target:crate::node_controller::Target,operation:String)->Result<Option<Value>,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};main_only(&window)?;target.validate()?;
- if !cfg!(debug_assertions)||!matches!(operation.as_str(),"enroll"|"reconcile"|"revoke"|"retire"){return Err("This native build has no approved VPN workflow".into())}
+ if !cfg!(debug_assertions)||!matches!(operation.as_str(),"enroll"|"reconcile"|"revoke"|"retire"|"cancel_unused"){return Err("This native build has no approved VPN workflow".into())}
  let target_label=target.label();let action=operation.clone();let select=window.clone();
  let picked=tauri::async_runtime::spawn_blocking(move||{
   let Some(folder)=select.dialog().file().set_parent(&select).set_title("Choose independently approved VPN provider folder").blocking_pick_folder()else{return Ok(None)};
   let folder=folder.into_path().map_err(|_|"Select a local provider folder")?;
   let Some(credential)=select.dialog().file().set_parent(&select).set_title("Choose private provider credential (never sent to renderer/validator)").blocking_pick_file()else{return Ok(None)};
   let credential=credential.into_path().map_err(|_|"Select a private credential file")?;
-  let ok=select.dialog().message(format!("Engineering VPN enrollment/reconciliation: {action}\nTarget: {target_label}\nThis uses only the independently compiled HTTPS provider/account/CA and exact current target/master/network/formation. A provider setup key can be consumed even if the reply is lost. No automatic retry or production approval. Revoke cancels only the exact setup key. Retire deletes the independently attributed provider peer and records verified absence for normal removal; first stop the validator.")).parent(&select).title("Authorize native VPN workflow once").buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show();
+  let ok=select.dialog().message(format!("Engineering VPN enrollment/reconciliation: {action}\nTarget: {target_label}\nThis uses only the independently compiled HTTPS provider/account/CA and exact current target/master/network/formation. A provider setup key can be consumed even if the reply is lost. No automatic retry or production approval. Revoke cancels only the exact setup key. Cancel unused verifies zero usage/no peer and quiescent target, revokes only that original key, records cancellation, and NEVER issues or enrolls a new key; a later Enroll requires separate confirmation. Retire deletes the independently attributed provider peer and records verified absence for normal removal; first stop the validator.")).parent(&select).title("Authorize native VPN workflow once").buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show();
   Ok::<_,String>(if ok{Some((folder,credential))}else{None})
  }).await.map_err(|_|"Native VPN selection did not finish")??;
  let Some((folder,credential))=picked else{return Ok(None)};
@@ -1550,7 +1680,7 @@ mod tests {
   }));
   let target_read=json!({"version":1,"operation":"target","parameters":{}});
   assert!(result.unwrap_err().contains("qualified removal operation"));
-  assert_eq!(calls,[target_read.clone()]);
+  assert_eq!(calls.as_slice(),std::slice::from_ref(&target_read));
   assert!(!journal.exists());
 
   let removed=json!({"version":1,"ok":true,"result":{"removed_root":"/opt/synergy","logical_removal_verified":true,

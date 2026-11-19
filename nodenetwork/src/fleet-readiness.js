@@ -8,3 +8,8 @@ export function fleetTargets(value){
  return targets;
 }
 export function addFleetTarget(value,target){return fleetTargets([...fleetTargets(value),nodeNetworkTarget(target)]);}
+
+export function readinessFailureMessage(failure){
+ const message=typeof failure==='string'?failure:failure instanceof Error?failure.message:null;
+ return typeof message==='string'&&message.length>0&&message.length<=512&&!/[\u0000-\u001f\u007f]/.test(message)?message:'Readiness outcome unavailable. Read the exact controller status before continuing; no staging or commissioning is inferred.';
+}

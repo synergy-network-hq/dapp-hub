@@ -16,8 +16,12 @@ test('native VPN IPC carries only selected target and action, handles cancel/ref
   assert.equal(calls.length,2);
   await assert.rejects(nodeNetworkVpn(target,'arbitrary-delete'),/Unsupported/);
   assert.equal(calls.length,2);
+  response={version:1,ok:true,result:{schema:'nodenetwork-vpn-unused-cancellation-v1',cancelled:true,retry_requires_new_confirmation:true,attempt_sha256:'a'.repeat(64),cancellation_sha256:'b'.repeat(64)}};
+  assert.equal((await nodeNetworkVpn(target,'cancel_unused')).retry_requires_new_confirmation,true);
+  assert.deepEqual(calls[2],['portal_nodenetwork_vpn',{target,operation:'cancel_unused'}]);
+  assert.equal(calls.length,3);
   globalThis.__nnVpnTest.native=false;
   await assert.rejects(nodeNetworkVpn(target,'retire'),/native Portal/);
-  assert.equal(calls.length,2);
+  assert.equal(calls.length,3);
  }finally{delete globalThis.__nnVpnTest;}
 });

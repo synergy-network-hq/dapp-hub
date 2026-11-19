@@ -1,8 +1,8 @@
 import {nodeNetworkTarget} from './nodeNetwork.js';
 
 export const requestOperations = Object.freeze([
- 'authorization_stage','update_stage','bare_bootstrap_rollback','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_prepare','guest_create','guest_stop','guest_remove',
- 'bootstrap', 'install', 'identity_generate', 'formation_prepare', 'genesis_stage', 'genesis_bind', 'commission', 'register', 'vpn_enroll', 'start', 'stop', 'restart', 'upgrade', 'uninstall',
+ 'authorization_stage','update_stage','bare_bootstrap_rollback','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_send_prepare','treasury_send_submit','treasury_prepare','guest_create','guest_stop','guest_resume','guest_remove',
+ 'bootstrap', 'install', 'identity_generate', 'formation_prepare', 'genesis_stage', 'genesis_bind', 'commission', 'register', 'vpn_enroll', 'vpn_stop','vpn_resume','boot_policy', 'start', 'stop', 'restart', 'upgrade', 'uninstall',
 ]);
 
 export const requestStatusOptions = [
@@ -11,6 +11,8 @@ export const requestStatusOptions = [
  {id: 'responses', label: 'Responses or verified outcomes'},
  {id: 'verified', label: 'Durable target outcomes verified'},
  {id: 'absence', label: 'Bootstrap absence verified'},
+ {id: 'stopped', label: 'Guest resume stopped'},
+ {id: 'not-applied', label: 'Operation not applied'},
  {id: 'reported-ok', label: 'Controller reported ok'},
  {id: 'refused', label: 'Controller reported refusal'},
 ];
@@ -18,6 +20,10 @@ export const requestStatusOptions = [
 function requestOutcome(record) {
  if (record.state === 'verified_target_outcome') return 'verified';
  if (record.state === 'verified_bootstrap_absence') return 'absence';
+ if (record.state === 'verified_guest_resume_stopped') return 'stopped';
+ if (record.state === 'verified_treasury_prepare_not_applied' || record.state === 'verified_readiness_not_applied' || record.state === 'verified_commission_not_applied') return 'not-applied';
+ if (record.state === 'verified_transport_not_applied') return 'not-applied';
+ if (record.state === 'verified_upgrade_not_applied') return 'not-applied';
  if (record.state !== 'response_received') return 'unresolved';
  return record.response_ok ? 'reported-ok' : 'refused';
 }
@@ -27,13 +33,19 @@ export function requestStatusLabel(record) {
  if (record.state === 'uncertain') return 'Outcome uncertain';
  if (record.state === 'verified_target_outcome') return 'Durable target outcome verified';
  if (record.state === 'verified_bootstrap_absence') return 'Bootstrap absence verified · not completed';
+ if (record.state === 'verified_guest_resume_stopped') return 'Guest resume stopped · not completed';
+ if (record.state === 'verified_treasury_prepare_not_applied') return 'Treasury preparation not applied · fresh quote and separate confirmation required';
+ if (record.state === 'verified_commission_not_applied') return 'Commission not applied · fresh readiness and separate confirmation required';
+ if (record.state === 'verified_readiness_not_applied') return 'Readiness authorization not applied · fresh collection and separate confirmation required';
+ if (record.state === 'verified_transport_not_applied') return 'Transport authorization not applied · separate staging confirmation required';
+ if (record.state === 'verified_upgrade_not_applied') return 'Upgrade not applied · unchanged installation verified';
  return requestOutcome(record) === 'reported-ok' ? 'Controller reported ok' : 'Controller reported refusal';
 }
 
 export function filterRequests(records, {status, operation, target}) {
  return records.filter(record =>
   (status === 'all' || requestOutcome(record) === status
-   || (status === 'responses' && ['response_received','verified_target_outcome','verified_bootstrap_absence'].includes(record.state)))
+   || (status === 'responses' && ['response_received','verified_target_outcome','verified_bootstrap_absence','verified_guest_resume_stopped','verified_upgrade_not_applied','verified_transport_not_applied','verified_readiness_not_applied','verified_commission_not_applied','verified_treasury_prepare_not_applied'].includes(record.state)))
   && (operation === 'all' || record.operation === operation)
   && (!target || record.target_digest === target),
  );
@@ -70,7 +82,12 @@ const validState = record => {
  if (!timestamp(record.observed_at_ms)) return false;
  if (record.state === 'uncertain') return record.response_ok === null;
  if (record.state === 'verified_bootstrap_absence') return record.operation === 'bootstrap' && record.response_ok === null && record.observed_at_ms >= record.recorded_at_ms;
- if (record.state === 'verified_target_outcome') return record.response_ok === true && ['authorization_stage','update_stage','identity_generate','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_prepare','guest_create','formation_prepare','genesis_stage','genesis_bind'].includes(record.operation);
+ if (record.state === 'verified_treasury_prepare_not_applied') return record.operation === 'treasury_send_prepare' && record.response_ok === false && record.observed_at_ms >= record.recorded_at_ms;
+ if (record.state === 'verified_commission_not_applied') return record.operation === 'commission' && record.response_ok === false && record.observed_at_ms >= record.recorded_at_ms;
+ if (['verified_transport_not_applied','verified_readiness_not_applied'].includes(record.state)) return record.operation === 'authorization_stage' && record.response_ok === false && record.observed_at_ms >= record.recorded_at_ms;
+ if (record.state === 'verified_upgrade_not_applied') return record.operation === 'upgrade' && record.response_ok === false && record.observed_at_ms >= record.recorded_at_ms;
+ if (record.state === 'verified_guest_resume_stopped') return record.operation === 'guest_resume' && record.response_ok === false && record.observed_at_ms >= record.recorded_at_ms;
+ if (record.state === 'verified_target_outcome') return record.response_ok === true && ['vpn_stop','vpn_resume','boot_policy','authorization_stage','update_stage','identity_generate','network_formation_prepare','network_formation_sign','network_transport_prepare','network_transport_sign','treasury_prepare','treasury_send_prepare','treasury_send_submit','guest_create','guest_resume','formation_prepare','genesis_stage','genesis_bind'].includes(record.operation);
  return record.state === 'response_received' && typeof record.response_ok === 'boolean';
 };
 const historyLimit = 256;

@@ -77,6 +77,11 @@ pub(crate) fn status(value: &Value, guest_id: &str) -> Result<Value, String> {
                 || (value["exists"] == false && value["removed"] == true)),
     )?;
     if value["exists"] == true {
+        if ["runtime_version","resume_sequence","resume_request_sha256","resume_verified"].iter().any(|k|value.get(*k).is_some()){require(matches!(value["runtime_version"].as_u64(),Some(1|2))&&value["resume_sequence"].as_u64().is_some_and(|n|n<=128)&&value["resume_verified"].is_boolean()
+            &&(value["resume_sequence"]==0&&value["resume_request_sha256"].is_null()&&value["resume_verified"]==false||value["resume_sequence"].as_u64().is_some_and(|n|n>0)&&pin(&value["resume_request_sha256"])))?;}
+        if ["stop_verified","stop_request_sha256","stopped_resume_request_sha256"].iter().any(|k|value.get(*k).is_some()){
+            require(value["stop_verified"].is_boolean()&&(value["stop_request_sha256"].is_null()||pin(&value["stop_request_sha256"]))&&(value["stopped_resume_request_sha256"].is_null()||pin(&value["stopped_resume_request_sha256"])))?;
+        }
         require(
             matches!(
                 value["phase"].as_str(),
@@ -133,12 +138,48 @@ pub(crate) fn status(value: &Value, guest_id: &str) -> Result<Value, String> {
         "guest_os_reachability_verified",
         "vpn_enrolled",
         "removed",
+        "runtime_version", "resume_sequence", "resume_request_sha256", "resume_verified",
+        "stop_verified", "stop_request_sha256", "stopped_resume_request_sha256",
     ] {
         if let Some(v) = value.get(field) {
             safe[field] = v.clone();
         }
     }
     Ok(safe)
+}
+
+pub(crate) fn boot_diagnostics(value:&Value,guest_id:&str)->Result<Value,String>{
+    let fields=["schema","guest_id","request_sha256","runtime_version","sampled_bytes","log_size_bytes","categories","mutation_performed"];
+    let categories=["firmware_started","boot_device_attempted","boot_device_failed","firmware_asset_missing","kernel_started","cloud_init_observed","ssh_started","ssh_failed","kernel_panic","login_prompt"];
+    require(value.as_object().is_some_and(|m|m.len()==fields.len()&&fields.iter().all(|k|m.contains_key(*k)))
+        &&value["schema"]=="nodenetwork-guest-boot-diagnostics-v1"&&value["guest_id"]==guest_id&&pin(&value["request_sha256"])
+        &&matches!(value["runtime_version"].as_u64(),Some(1|2))&&value["sampled_bytes"].as_u64().is_some_and(|n|n<=65536)
+        &&value["log_size_bytes"].as_u64().is_some_and(|n|n>=value["sampled_bytes"].as_u64().unwrap_or(u64::MAX))&&value["mutation_performed"]==false
+        &&value["categories"].as_object().is_some_and(|m|m.len()==categories.len()&&categories.iter().all(|k|m.get(*k).is_some_and(Value::is_boolean))))?;
+    Ok(value.clone())
+}
+
+fn resume_request(current:&Value,guest_id:&str,sequence:u64)->Request{
+    Request{version:1,operation:"guest_resume".into(),parameters:json!({"guest_id":guest_id,"resume_sequence":sequence,"create_request_sha256":current["request_sha256"]})}
+}
+fn reconcile_stopped(base:&std::path::Path,target:&Target,current:&Value,guest_id:&str)->Result<(),String>{
+    if current["stop_verified"]!=true{return Ok(())}
+    let stop=Request{version:1,operation:"guest_stop".into(),parameters:json!({"guest_id":guest_id})};
+    require(current["pid"]==0&&matches!(current["service_state"].as_str(),Some("inactive"|"failed"))&&current["stop_request_sha256"]==stop.approval_id())?;
+    if !current["stopped_resume_request_sha256"].is_null(){
+        let sequence=current["resume_sequence"].as_u64().ok_or("Missing stopped resume sequence")?;
+        let prior=resume_request(current,guest_id,sequence);prior.validate()?;
+        require(current["resume_request_sha256"]==prior.approval_id()&&current["stopped_resume_request_sha256"]==prior.approval_id())?;
+        request_journal::reconcile_guest_stopped(base,&target.journal_identity(),&prior.approval_id(),&stop.approval_id())?;
+    }
+    Ok(())
+}
+
+fn connection_report(guest_id:&str,current:Option<&Value>,code:&str)->Value{
+    json!({"schema":"nodenetwork-guest-connection-v1","guest_id":guest_id,
+        "request_sha256":current.and_then(|v|v.get("request_sha256")),
+        "ssh_host_fingerprint":current.and_then(|v|v.get("ssh_host_fingerprint")),
+        "ready":code=="ready","code":code,"mutation_performed":false})
 }
 
 #[tauri::command]
@@ -151,10 +192,11 @@ pub async fn portal_nodenetwork_guest(
 ) -> Result<Option<Value>, String> {
     commands::main_only(&window)?;
     target.validate()?;
+    if matches!(operation.as_str(),"resume"|"boot_diagnostics")&&target.guest.is_some(){return Err("Select the physical guest host".into())}
     if !id(&guest_id)
         || !matches!(
             operation.as_str(),
-            "preflight" | "status" | "create" | "stop" | "remove"
+            "preflight" | "status" | "connection" | "boot_diagnostics" | "create" | "stop" | "resume" | "remove"
         )
     {
         return Err(
@@ -176,14 +218,25 @@ pub async fn portal_nodenetwork_guest(
         operation: name.into(),
         parameters: json!({"guest_id":guest_id}),
     };
-    let observed =
-        commands::controller(&app, target.clone(), read("guest_status"), &control).await?;
+    if operation=="connection"&&(target.kind!="remote"||target.guest.is_some()){
+        return Err("Select the physical hosting machine for guest connection diagnostics".into());
+    }
+    let observed = match commands::controller(&app, target.clone(), read("guest_status"), &control).await{
+        Ok(reply)=>reply,
+        Err(_) if operation=="connection"=>return Ok(Some(connection_report(&guest_id,None,"physical_controller_unavailable"))),
+        Err(error)=>return Err(error),
+    };
     if observed["ok"] != true {
+        if operation=="connection"{return Ok(Some(connection_report(&guest_id,None,"physical_controller_unavailable")))}
         return Err(
             "Target refused guest attribution; verify its approved master and host policy".into(),
         );
     }
     let current = status(&observed["result"], &guest_id)?;
+    if operation=="connection"{
+        let code=crate::managed_guest::connection_probe(&target,&current,&control).await?;
+        return Ok(Some(connection_report(&guest_id,Some(&current),code)));
+    }
     if current["phase"] == "created" {
         request_journal::reconcile_verified(
             &base,
@@ -194,6 +247,15 @@ pub async fn portal_nodenetwork_guest(
                 .ok_or("Missing guest creation receipt")?,
         )?;
     }
+    if current["resume_verified"]==true {
+        require(current["runtime_version"]==2 && current["service_state"]=="active" && current["pid"].as_u64().is_some_and(|v|v>1) && pin(&current["resume_request_sha256"]))?;
+        request_journal::reconcile_verified(&base,&target.journal_identity(),"guest_resume",current["resume_request_sha256"].as_str().unwrap())?;
+    }
+    if operation=="boot_diagnostics" {
+        let reply=commands::controller(&app,target,read("guest_boot_diagnostics"),&control).await?;
+        require(reply["ok"]==true)?;return boot_diagnostics(&reply["result"],&guest_id).map(Some);
+    }
+    reconcile_stopped(&base,&target,&current,&guest_id)?;
     if operation == "status" {
         return Ok(Some(current));
     }
@@ -219,6 +281,7 @@ pub async fn portal_nodenetwork_guest(
     if operation == "stop" && current["exists"] != true {
         return Err("No attributed guest exists to stop".into());
     }
+    if operation == "resume" && (current["exists"]!=true || current["phase"]!="created" || current["pid"]!=0 || !matches!(current["service_state"].as_str(),Some("inactive"|"failed"))) {return Err("Explicitly stop and inspect the exact existing guest before diagnostic resume".into())}
     if operation == "remove"
         && (current["exists"] != true
             || !matches!(
@@ -235,11 +298,14 @@ pub async fn portal_nodenetwork_guest(
             operation: "guest_create".into(),
             parameters: preflight(prepared.as_ref().unwrap(), &guest_id)?,
         }
+    } else if operation=="resume" {
+        let sequence=current["resume_sequence"].as_u64().unwrap_or(0);require(sequence<128)?;
+        resume_request(&current,&guest_id,sequence+1)
     } else {
         read(&format!("guest_{operation}"))
     };
     request.validate()?;
-    let message=format!("Host: {}\nGuest: {}\nOperation: {}\nExact request SHA-256: {}\nApproved selection: {}\n\nCreation uses only the target's pinned image, tools and resource policy. It starts an isolated OS guest, not a validator. Its SSH endpoint is relative to that host; no Portal connection, VPN, APQE identity or consensus admission is inferred. Removal deletes this guest disk and management identity. Uncertain outcomes must be reconciled through Read guest status; never replay automatically.",target.label(),guest_id,operation,request.approval_id(),prepared.as_ref().unwrap_or(&current));
+    let message=format!("Host: {}\nGuest: {}\nOperation: {}\nExact request SHA-256: {}\nApproved selection: {}\n\nDiagnostic resume preserves the existing disk, seed, SSH identity and original creation request; it changes only the attributed runtime to record OS serial boot categories. It never replays an uncertain start. Creation uses only the target's pinned image, tools and resource policy. It starts an isolated OS guest, not a validator. Its SSH endpoint is relative to that host; no Portal connection, VPN, APQE identity or consensus admission is inferred. Removal deletes this guest disk and management identity. Uncertain outcomes must be reconciled through Read guest status; never replay automatically.",target.label(),guest_id,operation,request.approval_id(),prepared.as_ref().unwrap_or(&current));
     let accepted = tauri::async_runtime::spawn_blocking(move || {
         window
             .dialog()
@@ -257,14 +323,24 @@ pub async fn portal_nodenetwork_guest(
     if !accepted {
         return Ok(None);
     }
+    let latest=commands::controller(&app,target.clone(),read("guest_status"),&control).await?;
+    require(latest["ok"]==true && status(&latest["result"],&guest_id)?==current)?;
     commands::exact_continuation(&app, &target, &request, &control, None).await?;
-    let dispatch = request_journal::Dispatch::begin(
-        &base,
-        &target.journal_identity(),
-        &request.operation,
-        &request.canonical(),
-    )?;
-    let reply = commands::controller(&app, target, request, &control).await;
+    let dispatch=if operation=="stop"&&pin(&current["resume_request_sha256"]){
+        let sequence=current["resume_sequence"].as_u64().ok_or("Missing original resume sequence")?;
+        let original=resume_request(&current,&guest_id,sequence);original.validate()?;
+        require(current["resume_request_sha256"]==original.approval_id())?;
+        request_journal::Dispatch::begin_guest_stop(&base,&target.journal_identity(),&request.canonical(),&original.canonical())?
+    }else{request_journal::Dispatch::begin(&base,&target.journal_identity(),&request.operation,&request.canonical())?};
+    let resume_pin=request.approval_id();
+    let reply = commands::controller(&app, target.clone(), request, &control).await.and_then(|reply|{
+        if operation=="stop"&&reply["ok"]==true{let observed=status(&reply["result"],&guest_id)?;require(observed["stop_verified"]==true&&observed["stop_request_sha256"]==resume_pin&&observed["pid"]==0&&matches!(observed["service_state"].as_str(),Some("inactive"|"failed")))?;}
+        if operation=="resume"&&reply["ok"]==true {
+            let observed=status(&reply["result"],&guest_id)?;
+            require(observed["resume_request_sha256"]==resume_pin && observed["resume_verified"]==true)?;
+        }
+        Ok(reply)
+    });
     dispatch.finish(&reply)?;
     let reply = reply?;
     if reply["ok"] != true {
@@ -272,7 +348,9 @@ pub async fn portal_nodenetwork_guest(
             "Guest operation refused or uncertain; read attributed status before proceeding".into(),
         );
     }
-    status(&reply["result"], &guest_id).map(Some)
+    let observed=status(&reply["result"], &guest_id)?;
+    reconcile_stopped(&base,&target,&observed,&guest_id)?;
+    Ok(Some(observed))
 }
 
 #[cfg(test)]
@@ -341,4 +419,13 @@ mod tests {
         v["ssh_host_fingerprint"] = json!("SHA256:forged");
         assert!(status(&v, "fifth").is_err());
     }
+    #[test] fn boot_categories_are_closed_bounded_and_never_raw(){
+        let mut value=json!({"schema":"nodenetwork-guest-boot-diagnostics-v1","guest_id":"fifth","request_sha256":"a".repeat(64),"runtime_version":2,"sampled_bytes":42,"log_size_bytes":42,"mutation_performed":false,"categories":{"firmware_started":true,"boot_device_attempted":true,"boot_device_failed":false,"firmware_asset_missing":false,"kernel_started":true,"cloud_init_observed":true,"ssh_started":false,"ssh_failed":false,"kernel_panic":false,"login_prompt":true}});
+        assert!(boot_diagnostics(&value,"fifth").is_ok());assert!(boot_diagnostics(&value,"other").is_err());
+        value["raw_log"]=json!("private");assert!(boot_diagnostics(&value,"fifth").is_err());value.as_object_mut().unwrap().remove("raw_log");
+        value["sampled_bytes"]=json!(65537);assert!(boot_diagnostics(&value,"fifth").is_err());
+        let current=json!({"request_sha256":"a".repeat(64)});let r=resume_request(&current,"fifth",1);assert_eq!(r.validate(),Ok(true));
+        assert!(resume_request(&current,"fifth",129).validate().is_err());
+    }
+
 }

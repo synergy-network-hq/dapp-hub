@@ -286,7 +286,7 @@ pub(super) fn review(folder: &OwnedFd, manifest: &Value, manifest_sha256: &str) 
         gateway_declared,
         provider_report: None,
     };
-    let outcome = review.walk(folder, "", manifest_sha256).and_then(|()| {
+    let outcome = review.walk(folder, "", manifest_sha256).and({
         if review.manifest_seen && review.remaining.is_empty() {
             Ok(())
         } else {

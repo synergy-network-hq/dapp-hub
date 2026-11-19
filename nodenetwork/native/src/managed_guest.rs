@@ -26,6 +26,12 @@ fn header(binding:&GuestBinding)->Result<String,String>{
  binding.validate()?;let mut value=json!({"guest_id":binding.guest_id,"create_request_sha256":binding.create_request_sha256,"ssh_host_fingerprint":binding.ssh_host_fingerprint});value.sort_all_objects();
  let result=format!("SYNERGY-GUEST-SSH/1 {value}");if result.len()+1>1024{return Err("Guest channel header exceeds bound".into())}Ok(result)
 }
+fn proxy_command(binding:&GuestBinding,args:&[String])->Result<String,String>{
+ // OpenSSH executes `exec PROXY`; a bare brace/pipeline is not a command
+ // following exec. The explicit shell owns only this fixed, quoted pipeline.
+ let pipeline=format!("{{ /usr/bin/printf '%s\\n' {}; /bin/cat; }} | {}",quote(&header(binding)?),args.iter().map(|s|quote(s)).collect::<Vec<_>>().join(" "));
+ Ok(format!("/bin/sh -c {}",quote(&pipeline)))
+}
 fn pin_file(directory:&Path,target:&Target,binding:&GuestBinding)->Result<PathBuf,String>{
  let bytes=format!("{} {}\n",alias(target),binding.ssh_host_public_key);let file=directory.join(format!("guest-{:x}.known-hosts",Sha256::digest(bytes.as_bytes())));
  if file.exists()||file.is_symlink(){let m=std::fs::symlink_metadata(&file).map_err(|_|"Guest host pin unavailable")?;
@@ -44,13 +50,51 @@ pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:
  let pin=pin_file(directory,target,binding)?;
  let host_socket=node_controller::control_socket(&physical,directory,"synergy-nodenetwork");
  let args=["/usr/bin/ssh".to_owned(),"-F".into(),"/dev/null".into(),"-T".into(),"-S".into(),host_socket.to_string_lossy().into_owned(),"-oControlMaster=no".into(),"-oProxyCommand=/usr/bin/false".into(),"-oBatchMode=yes".into(),"-oStrictHostKeyChecking=yes".into(),"-oForwardAgent=no".into(),"-oClearAllForwardings=yes".into(),"-p".into(),physical.port.unwrap_or(22).to_string(),"--".into(),format!("synergy-nodenetwork@{}",physical.host.as_deref().ok_or("Missing physical host")?.trim_matches(['[',']'])),"/usr/bin/true".into()];
- let proxy=format!("{{ /usr/bin/printf '%s\\n' {}; /bin/cat; }} | {}",quote(&header(binding)?),args.iter().map(|s|quote(s)).collect::<Vec<_>>().join(" "));
+ let proxy=proxy_command(binding,&args)?;
  let mut c=tokio::process::Command::new("/usr/bin/ssh");
  c.args(["-F","/dev/null","-T","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oUpdateHostKeys=no","-oPasswordAuthentication=no","-oKbdInteractiveAuthentication=no","-oForwardAgent=no","-oClearAllForwardings=yes","-oHostKeyAlgorithms=ssh-ed25519","-oGlobalKnownHostsFile=/dev/null","-oConnectTimeout=10","-oServerAliveInterval=15","-oServerAliveCountMax=2","-oControlMaster=auto","-oControlPersist=600"])
  .arg("-o").arg(format!("UserKnownHostsFile={}",pin.display())).arg("-o").arg(format!("HostKeyAlias={}",alias(target))).arg("-o").arg(format!("ControlPath={}",node_controller::control_socket(target,directory,account).display())).arg("-o").arg(format!("ProxyCommand={}",proxy.replace('%',"%%")))
  .arg("--").arg(format!("{account}@managed-guest.invalid")).arg(remote);
  Ok(c)
 }
+// Fixed read-only command: no bootstrap, credential issue or service mutation.
+const CONNECTION_PROBE:&str="/bin/sh -c '/usr/bin/sudo -n /usr/bin/true >/dev/null 2>&1 || exit 77; /usr/bin/printf \"SYNERGY-GUEST-READY/1\\n\"'";
+async fn probe_command(mut command:tokio::process::Command)->&'static str{
+ use tokio::io::AsyncReadExt;
+ use std::process::Stdio;
+ command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+ let Ok(mut child)=command.spawn() else{return "guest_ssh_unavailable"};
+ let Some(output)=child.stdout.take() else{return "guest_ssh_unavailable"};
+ let result=tokio::time::timeout(std::time::Duration::from_secs(20),async{
+  let mut bytes=Vec::new();output.take(1025).read_to_end(&mut bytes).await.ok()?;
+  if bytes.len()>1024{return None}
+  let status=child.wait().await.ok()?;
+  Some(match status.code(){
+   Some(0) if bytes==b"SYNERGY-GUEST-READY/1\n"=>"ready",
+   Some(77)=>"guest_sudo_unavailable",
+   _=>"guest_ssh_unavailable",
+  })
+ }).await;
+ match result{Ok(Some(code))=>code,_=>"guest_ssh_unavailable"}
+}
+pub(crate) async fn connection_probe(target:&Target,current:&Value,directory:&Path)->Result<&'static str,String>{
+ if target.kind!="remote"||target.guest.is_some(){return Err("Choose the physical hosting target for guest connection diagnostics".into())}
+ if current["phase"]!="created"||current["service_state"]!="active"||current["pid"].as_u64().is_none_or(|p|p==0)||current["ssh_identity_verified"]!=true{return Ok("guest_inactive")}
+ let binding:GuestBinding=serde_json::from_value(json!({"guest_id":current["guest_id"],"create_request_sha256":current["request_sha256"],"ssh_host_public_key":current["ssh_host_public_key"],"ssh_host_fingerprint":current["ssh_host_fingerprint"]})).map_err(|_|"Incomplete guest connection binding")?;
+ binding.validate()?;
+ let _serial=node_controller::SERIAL.lock().await;
+ let check=tokio::time::timeout(std::time::Duration::from_secs(3),tokio::process::Command::new("/usr/bin/ssh")
+  .args(["-F","/dev/null","-S"]).arg(node_controller::control_socket(target,directory,"synergy-nodenetwork"))
+  .args(["-O","check","--"]).arg(target.host.as_deref().ok_or("Missing physical host")?)
+  .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()).await;
+ if !matches!(check,Ok(Ok(status)) if status.success()){return Ok("physical_mux_unavailable")}
+ let mut guest=target.clone();guest.guest=Some(binding);
+ let command=remote_command(&guest,directory,"synergy",CONNECTION_PROBE)?;
+ // Guest channel rechecks the same active creation receipt; inner SSH proves
+ // its pinned host key before the fixed sudo probe. No account is provisioned.
+ Ok(probe_command(command).await)
+}
+
 #[tauri::command]
 pub async fn portal_nodenetwork_select_guest(window:tauri::WebviewWindow,app:tauri::AppHandle,target:Target,guest_id:String)->Result<Option<Value>,String>{
  commands::main_only(&window)?;target.validate()?;
@@ -79,6 +123,40 @@ pub async fn portal_nodenetwork_select_guest(window:tauri::WebviewWindow,app:tau
   let proxy=args.iter().find(|s|s.starts_with("ProxyCommand=")).unwrap();assert!(proxy.contains("-oControlMaster=no"));assert!(proxy.contains("-oProxyCommand=/usr/bin/false"));assert!(proxy.contains("-oForwardAgent=no"));assert!(proxy.contains("SYNERGY-GUEST-SSH/1 "));assert!(!proxy.contains("-W"));assert!(!proxy.contains("ssh_host_public_key"));assert!(args.iter().any(|s|s=="-oStrictHostKeyChecking=yes"));assert!(args.iter().any(|s|s.starts_with("HostKeyAlias=synergy-guest-")));
   let mut host=t.clone();host.guest=None;assert_ne!(node_controller::control_socket(&host,&directory,"synergy-nodenetwork"),node_controller::control_socket(&t,&directory,"synergy-nodenetwork"));assert!(remote_command(&t,&directory,"root","anything").is_err());
   let pin=pin_file(&directory,&t,t.guest.as_ref().unwrap()).unwrap();std::fs::write(pin,b"changed public key").unwrap();assert!(remote_command(&t,&directory,"synergy","/usr/bin/true").is_err());
+ }
+ #[tokio::test(flavor="current_thread")]
+ async fn guest_connection_probe_classifies_only_fixed_bounded_read_results(){
+  for (exit,stdout,expected) in [(0,"SYNERGY-GUEST-READY/1\n","ready"),(77,"","guest_sudo_unavailable"),(255,"","guest_ssh_unavailable"),(0,"foreign bytes","guest_ssh_unavailable"),(17,"private remote error","guest_ssh_unavailable")]{
+   let mut command=tokio::process::Command::new("/usr/bin/python3");
+   command.args(["-I","-B","-c",&format!("import sys\nsys.stdout.write({stdout:?})\nsys.stderr.write('SECRET STDERR')\nsys.exit({exit})")]);
+   assert_eq!(probe_command(command).await,expected);
+  }
+  let mut command=tokio::process::Command::new("/usr/bin/python3");command.args(["-I","-B","-c","print('x'*1025)"]);
+  assert_eq!(probe_command(command).await,"guest_ssh_unavailable");
+ }
+ #[tokio::test(flavor="current_thread")]
+ async fn guest_connection_inactive_refuses_before_any_transport(){
+  let mut physical=target();physical.guest=None;
+  assert_eq!(connection_probe(&physical,&json!({"phase":"created","service_state":"inactive","pid":0,"ssh_identity_verified":true}),Path::new("/nonexistent")).await.unwrap(),"guest_inactive");
+  assert!(connection_probe(&target(),&json!({}),Path::new("/nonexistent")).await.is_err());
+  assert!(!CONNECTION_PROBE.contains("bootstrap"));assert!(!CONNECTION_PROBE.contains("controller.py"));assert!(!CONNECTION_PROBE.contains("setup-key"));
+ }
+ #[test]fn openssh_exec_proxy_shell_preserves_exact_header_and_binary_stream(){
+  use std::{io::Write,process::{Command,Stdio}};
+  let g=binding();
+  let script="import sys,signal; signal.alarm(3); data=sys.stdin.buffer.read(4096); sys.stdout.buffer.write(data)";
+  let consumer=vec!["/usr/bin/python3".to_owned(),"-I".into(),"-B".into(),"-c".into(),script.into(),"harmless ' quoted % argument".into()];
+  let proxy=proxy_command(&g,&consumer).unwrap();assert!(proxy.starts_with("/bin/sh -c '"));
+  // Match OpenSSH's percent expansion before its `exec PROXY` shell call.
+  let configured=proxy.replace('%',"%%");let expanded=configured.replace("%%","%");
+  let raw=b"SSH-2.0-offline-client\r\n\0binary\xff'$(must-not-execute)";
+  for shell in ["/bin/sh","/bin/bash"]{
+   let mut child=Command::new(shell).args(["-c",&format!("exec {expanded}")])
+    .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+   child.stdin.take().unwrap().write_all(raw).unwrap();
+   let output=child.wait_with_output().unwrap();assert!(output.status.success());assert!(output.stderr.is_empty());
+   let expected=[header(&g).unwrap().as_bytes(),b"\n",raw].concat();assert_eq!(output.stdout,expected);
+  }
  }
  #[test]fn header_has_only_canonical_current_receipt_scope(){let g=binding();let line=header(&g).unwrap();let value:Value=serde_json::from_str(line.strip_prefix("SYNERGY-GUEST-SSH/1 ").unwrap()).unwrap();assert_eq!(value.as_object().unwrap().len(),3);assert_eq!(value["create_request_sha256"],g.create_request_sha256);let mut bad=g;bad.guest_id="../host".into();assert!(header(&bad).is_err());}
 }

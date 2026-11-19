@@ -6,11 +6,26 @@ use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
 #[tauri::command]
 pub async fn portal_nodenetwork_transport(window:tauri::WebviewWindow,app:tauri::AppHandle,target:Target,operation:String,review_sha256:Option<String>)->Result<Option<Value>,String>{
  commands::main_only(&window)?;target.validate()?;
- if !matches!(operation.as_str(),"status"|"prepare"|"sign"|"export"|"stage"){return Err("Unsupported native transport formation operation".into())}
+ if !matches!(operation.as_str(),"status"|"prepare"|"sign"|"export"|"stage"|"reconcile_stage"){return Err("Unsupported native transport formation operation".into())}
  let control=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
  let base=app.path().app_local_data_dir().map_err(|_|"Portal app state unavailable")?;
+ if operation=="reconcile_stage"{
+  if !cfg!(debug_assertions){return Err("Transport nonapplication review is isolated engineering only".into())}
+  let(_,review,_,_)=crate::authorization_lifecycle::transport_recovery(&base,&target,&control).await?;
+  let message=format!("ISOLATED ENGINEERING ONLY\nTarget: {}\nOriginal transport authorization: {}\nOriginal dispatch: {}\n\nVerify through the independently pinned administrator channel that the exact transport staging was NOT applied. The proof must show unchanged prior authorization, no commissioning grant/audit or partial exchange, and the exact pre-existing Genesis inputs. This reads the host only. If proven, retain the original intent in a public nonapplication receipt and mark its local journal outcome false. No files are restaged, no grant is issued and no validator starts. Any future staging requires a separate confirmation.",target.label(),review["context"]["pending_sha256"],review["context"]["dispatch_sha256"]);
+  let consent=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Verify transport stage not applied").buttons(MessageDialogButtons::OkCancelCustom("Verify nonapplication only".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Transport nonapplication confirmation interrupted")?;
+  if !consent{return Ok(None)}
+  let _transaction=crate::authorization_lifecycle::continuation_lock(&base,&target)?;
+  let(operator,current,pin,ticket)=crate::authorization_lifecycle::transport_recovery(&base,&target,&control).await?;
+  for key in ["initial_sha256","authorization","formation_sha256","target","selection","genesis_pins","pending_sha256","artifact_sha256","dispatch_sha256"]{if current["context"][key]!=review["context"][key]{return Err("Transport scope changed during nonapplication review".into())}}
+  if current["intent"]!=review["intent"]{return Err("Original transport intent changed during review".into())}
+  let proof=crate::node_bootstrap::prove_transport_not_applied(&target,&operator,&control,pin.as_deref(),&current).await?;
+  crate::authorization_lifecycle::retire_transport(&base,&target,&current,&proof,ticket)?;
+  return Ok(Some(json!({"schema":"nodenetwork-native-transport-not-applied-v1","not_applied":true,"staged":false,"dispatch_sha256":current["context"]["dispatch_sha256"],"authorization_sha256":current["context"]["pending_sha256"],"automatic_retry":false})))
+ }
  if operation=="stage"{
   if !cfg!(debug_assertions){return Err("Fresh commissioning draft staging is isolated engineering only".into())}
+  let _transaction=crate::authorization_lifecycle::continuation_lock(&base,&target)?;
   if let Some(previous)=crate::authorization_lifecycle::reconcile_transport(&base,&target,&control).await?{return Ok(Some(previous))}
   let candidate=crate::transport_staging::candidate(&base,&target,&control).await?;
   let message=format!("ISOLATED ENGINEERING ONLY\nTarget: {}\nVerified signed coordinator transport: {}\nEight exact public input digests: {}\n\nStage only this target's signed-formation commissioning drafts. Existing custody, Genesis and carrier identity are preserved. Readiness remains false; no validator is commissioned or started. An uncertain result must be reconciled using this same action; it is never automatically repeated.",target.label(),candidate.summary["review_sha256"],candidate.summary["artifact_sha256"]);

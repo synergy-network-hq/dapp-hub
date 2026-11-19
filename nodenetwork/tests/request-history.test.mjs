@@ -130,3 +130,13 @@ test('rejects empty, malformed or stale selections before building an export', (
  }
  assert.throws(() => reviewRequestSelection({...envelope, automaticReplay: true}, [accepted.id]));
 });
+
+
+test('transport nonapplication is a false terminal outcome only for exact authorization staging',()=>{
+ const terminal=record('9',targetA,'authorization_stage','verified_transport_not_applied',false,1002);
+ const parsed=parseRequestHistory({...envelope,records:[terminal]});
+ assert.match(requestStatusLabel(parsed.records[0]),/Transport authorization not applied/);
+ assert.equal(filterRequests(parsed.records,{status:'not-applied',operation:'all',target:null}).length,1);
+ for(const change of [{operation:'upgrade'},{response_ok:true},{observed_at_ms:999}])
+  assert.throws(()=>parseRequestHistory({...envelope,records:[{...terminal,...change}]}));
+});

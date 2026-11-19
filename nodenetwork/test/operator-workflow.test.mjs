@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {updateStageView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,NODE_ROLES,nodeRoleCatalog,vpnView,vpnDiagnosticsView,workflowGate} from '../src/operator-workflow.js';
+import {controllerDraftScope,retainedUpdateStageReceipt,updateStageView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,NODE_ROLES,nodeRoleCatalog,vpnView,vpnDiagnosticsView,vpnStopView,vpnStopStatusView,unusedVpnCancellationView,workflowGate} from '../src/operator-workflow.js';
 import {emptyProvisioningDraft} from '../src/provisioning-draft.js';
 import {installParameters,nodeNetworkTarget} from '../src/nodeNetwork.js';
 
@@ -173,3 +173,43 @@ test('update staging preserves exact native release and never implies an upgrade
   assert.equal(gate('inventory',{state:targetState(true,'inventory')}).available,true);
   assert.equal(gate('start',{state:targetState(true,'start')}).available,true);
  });
+
+
+test('unused VPN cancellation never grants enrollment or renders private provider fields',()=>{
+ const receipt={schema:'nodenetwork-vpn-unused-cancellation-v1',cancelled:true,retry_requires_new_confirmation:true,attempt_sha256:'a'.repeat(64),cancellation_sha256:'b'.repeat(64)};
+ assert.deepEqual(unusedVpnCancellationView({...receipt,setup_key:'must not render'}),{cancelled:true,retry_requires_new_confirmation:true,attempt_sha256:receipt.attempt_sha256,cancellation_sha256:receipt.cancellation_sha256});
+ for(const change of [{cancelled:false},{retry_requires_new_confirmation:false},{attempt_sha256:null},{cancellation_sha256:'not verified'},{schema:'nodenetwork-vpn-status-v1'}])assert.throws(()=>unusedVpnCancellationView({...receipt,...change}),/Do not enroll again/);
+});
+
+test('VPN-only stop is exact installed mutation and never provider approval',()=>{
+ const state=targetState(true,'vpn_stop');
+ assert.equal(gate('vpn_stop',{state}).available,true);
+ assert.equal(gate('vpn_stop',{state:targetState(false,'vpn_stop')}).available,false);
+ state.operations[0].kind='read';assert.equal(gate('vpn_stop',{state}).available,false);
+ const receipt={schema:'nodenetwork-vpn-stop-v1',stopped:true,attempt_preserved:true,provider_action:false};
+ assert.deepEqual(vpnStopView(receipt),receipt);
+ for(const bad of [{...receipt,provider_action:true},{...receipt,attempt_preserved:false},{...receipt,unknown:'secret'}])assert.throws(()=>vpnStopView(bad));
+});
+
+test('VPN stop status is read-only observed evidence with exact unknown outcome',()=>{
+ const state=targetState(true,'vpn_stop_status');state.operations[0].kind='read';assert.equal(gate('vpn_stop_status',{state}).available,true);
+ const receipt={schema:'nodenetwork-vpn-stop-status-v1',stopped:false,request_sha256:null,attempt_preserved:true,provider_action:false};
+ assert.deepEqual(vpnStopStatusView(receipt),receipt);
+ for(const bad of [{...receipt,stopped:true},{...receipt,request_sha256:'a'.repeat(64)},{...receipt,provider_action:true}])assert.throws(()=>vpnStopStatusView(bad));
+});
+
+test('only internal exact update draft adoption retains its stage receipt once',()=>{
+ const fromScope=controllerDraftScope(JSON.stringify(target),true,form);
+ const response={release_id:'next-master',manifest_sha256:'f'.repeat(64),controllerAdopted:true,validatorUpgraded:false};
+ const adopted={...form,release_id:response.release_id,manifest_sha256:response.manifest_sha256};
+ const toScope=controllerDraftScope(JSON.stringify(target),true,adopted);
+ const record={operation:'update_stage',parameters:{},response,receivedAt:1000};
+ const token={fromScope,toScope,record};
+ assert.equal(retainedUpdateStageReceipt(token,fromScope,toScope),record);
+ assert.equal(retainedUpdateStageReceipt(null,fromScope,toScope),null);
+ assert.equal(retainedUpdateStageReceipt(token,toScope,toScope),null);
+ assert.equal(retainedUpdateStageReceipt({...token,record:{...record,operation:'upgrade_preflight'}},fromScope,toScope),null);
+ for(const change of [{release_id:'manual-master'},{manifest_sha256:'e'.repeat(64)},{network_id:'other-network'},{chain_id:'99998'},{node_name:'other-node'}])assert.equal(retainedUpdateStageReceipt(token,fromScope,controllerDraftScope(JSON.stringify(target),true,{...adopted,...change})),null);
+ assert.equal(retainedUpdateStageReceipt(token,fromScope,controllerDraftScope(JSON.stringify({...target,host:'other.example'}),true,adopted)),null);
+ assert.equal(retainedUpdateStageReceipt(token,fromScope,controllerDraftScope(JSON.stringify(target),false,adopted)),null);
+});

@@ -25,6 +25,8 @@ export function nodeServiceRegistrationObservation(value) {
  return {services:registered.length===3?['node','vpn','canary-rpc-relay']:['node','vpn']};
 }
 
+// The native health projection contains service observations only. Never interpret
+// service count/readiness or additional caller fields as a validator denominator.
 export function targetHealthObservation(value) {
  const unsupported = 'The selected controller returned unsupported service health evidence.';
  if (!fieldCount(value, 2) || value.schema_version !== 1

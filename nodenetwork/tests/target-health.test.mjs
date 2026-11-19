@@ -69,3 +69,22 @@ test('projects only the current exact owned OS registration inventory without in
   {schema:'nodenetwork-service-registration-v1',services:['node','vpn'],services_started:false,boot_enabled:false}])
   assert.throws(()=>nodeServiceRegistrationObservation(value),/Service registration outcome is uncertain/);
 });
+
+
+test('service health never adopts a roster-five online-four quorum or candidate cluster claim', () => {
+ // Five running service records are not five validators or four connected peers.
+ const services=Array.from({length:5},(_,index)=>({...network,id:`service-${index}`}));
+ const health={schema_version:1,services};
+ assert.deepEqual(targetHealthObservation(health),services);
+ for(const claims of [
+  {validator_count:5,online_peer_count:4},
+  {roster_count:5,quorum_required:4},
+  {online_peer_count:4,quorum_required:3},
+  {cluster_count:2,cluster_id:0},
+  {consensus:{roster_count:5,online_peer_count:4,quorum_available:true}},
+ ]) assert.throws(()=>targetHealthObservation({...health,...claims}),/unsupported service health evidence/);
+ for(const claims of [{validator_count:5},{online_peer_count:4},{quorum_available:true},{cluster_id:0}])
+  assert.throws(()=>targetHealthObservation({...health,services:[{...network,...claims}]}),/unsupported service health evidence/);
+ // An empty observation remains an empty service list, never a zero-member roster.
+ assert.deepEqual(targetHealthObservation({schema_version:1,services:[]}),[]);
+});

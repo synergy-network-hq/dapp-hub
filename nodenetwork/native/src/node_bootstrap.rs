@@ -118,6 +118,54 @@ fn read_operator_public_key(path:&Path)->Result<OperatorPublicKey,String>{
     parse_operator_public_key(&read_bounded(path,PUBLIC_KEY_LIMIT)?)
 }
 
+pub(super) fn selected_operator_key(path:&Path)->Result<String,String>{ public_key(path) }
+fn operator_identity_path(target:&Target,directory:&Path)->Result<std::path::PathBuf,String>{
+ target.validate()?;
+ if target.kind!="remote"||target.guest.is_some(){return Err("Operator selection requires a physical remote target".into())}
+ Ok(directory.join(format!("operator-{:x}.pub",Sha256::digest(target.journal_identity().to_string().as_bytes()))))
+}
+pub(super) fn controller_operator_identity(target:&Target,directory:&Path)->Result<Option<std::path::PathBuf>,String>{
+ let path=operator_identity_path(target,directory)?;
+ if !path.exists()&&!path.is_symlink(){return Ok(None)}
+ let m=fs::symlink_metadata(&path).map_err(|_|"Selected operator public identity unavailable")?;
+ #[cfg(unix)]{use std::os::unix::fs::MetadataExt;if m.uid()!=unsafe{libc::geteuid()}||m.mode()&0o777!=0o600||m.nlink()!=1{return Err("Selected operator public identity ownership changed".into())}}
+ if !m.is_file()||m.file_type().is_symlink(){return Err("Selected operator public identity is not a regular file".into())}
+ let raw=read_bounded(&path,PUBLIC_KEY_LIMIT)?;let canonical=parse_operator_public_key(&raw)?.0;
+ if raw!=format!("{canonical}\n").as_bytes(){return Err("Selected operator public identity is not canonical".into())}
+ Ok(Some(path))
+}
+pub(super) fn require_selected_operator_identity(target:&Target,directory:&Path,key:&str)->Result<(),String>{
+ let canonical=parse_operator_public_key(key.as_bytes())?;
+ if canonical.0!=key{return Err("Operator public identity must be canonical".into())}
+ if let Some(path)=controller_operator_identity(target,directory)?{
+  if read_bounded(&path,PUBLIC_KEY_LIMIT)?!=format!("{key}\n").as_bytes(){return Err("Bootstrap public key differs from the existing target selection; no bootstrap was sent".into())}
+ }Ok(())
+}
+pub(super) fn retain_operator_identity(target:&Target,directory:&Path,key:&str)->Result<Value,String>{
+ #[cfg(unix)]node_controller::protect_control_directory(directory)?;
+ let canonical=parse_operator_public_key(key.as_bytes())?;
+ if canonical.0!=key{return Err("Operator public identity must be canonical".into())}
+ let path=operator_identity_path(target,directory)?;let raw=format!("{key}\n");
+ if let Some(existing)=controller_operator_identity(target,directory)?{
+  if read_bounded(&existing,PUBLIC_KEY_LIMIT)?!=raw.as_bytes(){return Err("Target already has a different selected operator public identity".into())}
+ }else{
+  use std::io::Write;
+  let pending=path.with_extension("pending");let mut options=fs::OpenOptions::new();options.write(true).create_new(true);
+  #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+  let result=(||{let mut file=options.open(&pending).map_err(|_|"Operator identity publication requires reconciliation")?;
+   file.write_all(raw.as_bytes()).and_then(|_|file.sync_all()).map_err(|_|"Cannot persist public operator identity")?;
+   fs::hard_link(&pending,&path).map_err(|_|"Operator identity changed during publication")?;
+   fs::remove_file(&pending).and_then(|_|fs::File::open(directory)?.sync_all()).map_err(|_|"Cannot complete public operator identity publication")?;Ok::<(),String>(())})();
+  result?;
+ }
+ Ok(json!({"schema":"nodenetwork-operator-public-key-v1","algorithm":"ssh-ed25519","canonicalSha256":canonical.sha256()}))
+}
+
+pub(super) fn review_operator_public_key_bytes(key:&str)->Result<Value,String>{
+ let key=parse_operator_public_key(key.as_bytes())?;
+ Ok(json!({"schema":"nodenetwork-operator-public-key-v1","algorithm":"ssh-ed25519","canonicalSha256":key.sha256()}))
+}
+#[cfg(test)]
 pub(super) fn review_operator_public_key(path:&Path)->Result<Value,String>{
     let key=read_operator_public_key(path)?;
     Ok(json!({"schema":"nodenetwork-operator-public-key-v1","algorithm":"ssh-ed25519","canonicalSha256":key.sha256()}))
@@ -200,6 +248,19 @@ fn tar_header(member:&Member)->[u8;512]{
     out[156]=if member.directory{b'5'}else{b'0'};out[257..263].copy_from_slice(b"ustar\0");out[263..265].copy_from_slice(b"00");
     let sum:u32=out.iter().map(|v|*v as u32).sum();out[148..156].copy_from_slice(format!("{:06o}\0 ",sum).as_bytes());out
 }
+// Lossless transport encoding only. Python stdlib zlib is mandatory and failure
+// precedes execution; no unverified/plaintext fallback or stdin consumption.
+pub(super) fn bootstrap_script(script:&str)->Result<String,String>{
+ use std::io::Write;
+ if script.is_empty()||script.len()>2*1024*1024{return Err("Authenticated bootstrap source exceeds bound".into())}
+ let mut encoder=flate2::write::ZlibEncoder::new(Vec::new(),flate2::Compression::default());
+ encoder.write_all(script.as_bytes()).map_err(|_|"Cannot encode authenticated bootstrap")?;
+ let compressed=encoder.finish().map_err(|_|"Cannot encode authenticated bootstrap")?;
+ let encoded=base64::engine::general_purpose::STANDARD.encode(compressed);
+ let digest=format!("{:x}",Sha256::digest(script.as_bytes()));let length=script.len();
+ let loader=format!("# NATIVE_AUTHENTICATED_MANIFEST_SHA256=encoded-source\nimport base64,hashlib,zlib\n_z=zlib.decompressobj()\n_b=_z.decompress(base64.b64decode('{encoded}',validate=True),{length}+1)\nif not (_z.eof and not _z.unused_data and not _z.unconsumed_tail and len(_b)=={length} and hashlib.sha256(_b).hexdigest()=='{digest}'): raise SystemExit('Authenticated bootstrap encoding refused')\nexec(compile(_b,'<authenticated-node-bootstrap>','exec'),globals())");
+ if loader.len()>96*1024{return Err("Encoded authenticated bootstrap exceeds remote argument budget".into())}Ok(loader)
+}
 fn shell_quote_static(value:&str)->String{format!("'{}'",value.replace('\'',"'\\''"))}
 pub fn validate_operator(operator:&str)->Result<(),String>{
     if operator.is_empty()||operator.len()>32||!operator.as_bytes()[0].is_ascii_alphabetic()||!operator.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b)){return Err("Enter the existing administrative SSH account name, without a host, password or command.".into());}Ok(())
@@ -211,11 +272,20 @@ pub async fn execute(target:Target,operator:String,parameters:Value,prepared:Pre
 pub(super) async fn execute_pinned(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
     execute_transport(target,operator,parameters,prepared,control_dir,known_hosts,None).await
 }
-pub(super) async fn execute_update(target:Target,operator:String,context:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
+pub(super) async fn execute_update(target:Target,operator:String,mut context:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
     if !cfg!(debug_assertions)||context["release_id"]!=prepared.release||context["manifest_sha256"]!=prepared.manifest_sha256{return Err("Update does not match the exact native review".into())}
-    execute_transport(target,operator,json!({}),prepared,control_dir,known_hosts,Some(context)).await
+    let reconcile=context.as_object_mut().and_then(|value|value.remove("reconcile_only")).and_then(|value|value.as_bool()).unwrap_or(false);
+    execute_transport(target,operator,json!({}),prepared,control_dir,known_hosts,Some((context,reconcile))).await
 }
-async fn execute_transport(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>,update:Option<Value>)->Result<Value,String>{
+fn update_replacement_wire(context:&Value)->Result<(Value,Option<Vec<u8>>),String>{
+ let mut context=context.clone();let proof=context.as_object_mut().ok_or("Invalid update review")?.remove("superseded_upgrade");
+ let wire=proof.map(|proof|->Result<Vec<u8>,String>{
+  if proof["context"]["selection"]!=context["selection"]||proof["context"]["target"]!=context["target"]||proof["context"]["initial_sha256"]!=context["initial_sha256"]||proof["context"]["parent_sha256"]!=context["parent_sha256"]||proof["context"]["formation_sha256"]!=context["formation_sha256"]||proof["context"]["expires_at"]!=context["expires_at"]{return Err("Replacement proof changes its native review".into())}
+  let mut raw=serde_json::to_vec(&proof).map_err(|_|"Cannot encode replacement proof")?;
+  if raw.len()+1>2*1024*1024{return Err("Replacement proof exceeds bound".into())}raw.push(b'\n');Ok(raw)
+ }).transpose()?;Ok((context,wire))
+}
+async fn execute_transport(target:Target,operator:String,parameters:Value,prepared:Prepared,control_dir:&Path,known_hosts:Option<&Path>,update:Option<(Value,bool)>)->Result<Value,String>{
     target.validate()?;validate_operator(&operator)?;
     if target.guest.is_some()&&operator!="synergy"{return Err("Managed guest bootstrap uses its approved synergy account".into())}
     let _guard=node_controller::SERIAL.lock().await;
@@ -224,20 +294,30 @@ async fn execute_transport(target:Target,operator:String,parameters:Value,prepar
     let bootstrap_pin=if update.is_none()&&target.kind=="remote"&&target.guest.is_none()&&known_hosts.is_none(){Some(node_controller::bootstrap_host_pin(&target,control_dir)?)}else{None};
     let known_hosts=known_hosts.or(bootstrap_pin.as_deref());
     let expected_release=prepared.release.clone();let expected_manifest=prepared.manifest_sha256.clone();let is_update=update.is_some();
-    let script=if let Some(context)=&update{format!("NATIVE_AUTHENTICATED_UPDATE_CONTEXT=__import__('json').loads({})\n{}",serde_json::to_string(&context.to_string()).map_err(|_|"Cannot encode reviewed update")?,BOOTSTRAP)}else{format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP)};
-    let arguments=if update.is_some(){format!(" --stage-engineering-update {} {}",prepared.release,prepared.manifest_sha256)}else{String::new()};
+    let reconcile=update.as_ref().is_some_and(|(_,reconcile)|*reconcile);
+    let update_flag=if reconcile{"--reconcile-engineering-update"}else{"--stage-engineering-update"};
+    let (script_context,replacement_wire)=if let Some((context,_))=&update{update_replacement_wire(context)?}else{(Value::Null,None)};
+    let replacement_globals=if replacement_wire.is_some(){
+     if reconcile{return Err("A staged replacement cannot use reconcile-only mode".into())}authenticate_release(&prepared.manifest_sha256)?;
+     format!("NATIVE_AUTHENTICATED_SUPERSEDED_UPGRADE=True\nNATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n",prepared.manifest_sha256)
+    }else{String::new()};
+    let script=if update.is_some(){format!("{replacement_globals}NATIVE_AUTHENTICATED_UPDATE_CONTEXT=__import__('json').loads({})\n{}",serde_json::to_string(&script_context.to_string()).map_err(|_|"Cannot encode reviewed update")?,BOOTSTRAP)}else{format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{}\"\n{}",prepared.manifest_sha256,BOOTSTRAP)};
+ let script=bootstrap_script(&script)?;
+    let arguments=if update.is_some(){format!(" {update_flag} {} {}",prepared.release,prepared.manifest_sha256)}else{String::new()};
     let mut command=if target.kind=="local"{
         if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local bootstrap requires Linux x86_64.".into());}
-        let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script]);if update.is_some(){c.args(["--stage-engineering-update",&prepared.release,&prepared.manifest_sha256]);}c
+        let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script]);if update.is_some(){c.args([update_flag,&prepared.release,&prepared.manifest_sha256]);}c
     }else{public_archive_ssh(node_controller::remote_command(&target,control_dir,&operator,&(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {}",shell_quote_static(&script))+&arguments),known_hosts)?)?};
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child=command.spawn().map_err(|_|"Cannot start restricted bootstrap transport.")?;
     let mut input=child.stdin.take().ok_or("Bootstrap input unavailable.")?;
     let output=child.stdout.take().ok_or("Bootstrap output unavailable.")?;
     let mut header=parameters;header["version"]=json!(1);header["operator_public_key"]=json!(prepared.public_key);
-    let upload_deadline=prepared.upload_deadline;
+    let upload_deadline=if reconcile{std::time::Duration::from_secs(60)}else{prepared.upload_deadline};
     let transfer=async move {
+        if reconcile{drop(input);return Ok::<(),&str>(())}
         if update.is_none(){input.write_all(format!("{}\n",header).as_bytes()).await.map_err(|_|"Cannot send bootstrap header.")?;}
+        if let Some(wire)=replacement_wire{input.write_all(&wire).await.map_err(|_|"Cannot send exact staged replacement proof")?;}
         for member in &prepared.members{
             input.write_all(&tar_header(member)).await.map_err(|_|"Cannot send master archive header.")?;
             if member.directory{continue;}
@@ -274,10 +354,29 @@ fn validate_bootstrap_acknowledgement(reply:&Value,release:&str,manifest:&str)->
 // A verified-host refusal can close stdin before the archive is fully sent.
 // Preserve that negative envelope; success still requires every upload integrity
 // check and a successful transport exit. Stderr remains discarded, never exposed.
+fn bootstrap_transport_exit(status:std::process::ExitStatus)->Result<(),&'static str>{
+ if status.success(){return Ok(())}
+ Err(match status.code(){
+  Some(255)=>"Bootstrap SSH session unavailable. Inspect the pinned target and reconcile its state before another confirmation; no automatic retry occurred.",
+  Some(_)=>"Bootstrap transport failed during remote execution. Inspect target state and restricted SSH/sudo permissions before another confirmation; no automatic retry occurred.",
+  None=>"Bootstrap transport interrupted. Inspect and reconcile target state before another confirmation; no automatic retry occurred.",
+ })
+}
+
 async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload:&mut tokio::task::JoinHandle<Result<(),&'static str>>,child:&mut tokio::process::Child)->Result<Value,&'static str>{
  let mut bytes=Vec::new();output.take(1_000_001).read_to_end(&mut bytes).await.map_err(|_|"Cannot read bootstrap response.")?;
  if bytes.len()>1_000_000{return Err("Bootstrap response exceeds its limit.")}
- let reply=node_controller::decode_receipt_reply(&bytes).map_err(|_|"Invalid bootstrap response.")?;
+ let reply=match node_controller::decode_receipt_reply(&bytes){
+  Ok(reply)=>reply,
+  Err(_)=>{
+   // A closed SSH session commonly has empty stdout. Classify its actual
+   // exit before calling that a malformed acknowledgement; never expose stderr.
+   upload.abort();let _=upload.await;
+   let status=child.wait().await.map_err(|_|"Bootstrap transport exit status unavailable; inspect target before another confirmation.")?;
+   bootstrap_transport_exit(status)?;
+   return Err("Invalid bootstrap response from a completed session. Inspect target state before another confirmation; no automatic retry occurred.")
+  }
+ };
  if reply["version"]!=1||!reply["ok"].is_boolean()||!reply.as_object().is_some_and(|fields|fields.len()==3){return Err("Unsupported bootstrap response.")}
  if reply["ok"]==false{
   if !reply["error"].as_object().is_some_and(|fields|fields.len()==2)||!reply["error"]["code"].is_string()||!reply["error"]["message"].is_string(){return Err("Unsupported bootstrap refusal.")}
@@ -286,7 +385,7 @@ async fn bootstrap_transport_reply(output:impl tokio::io::AsyncRead+Unpin,upload
  if !reply["result"].is_object(){return Err("Unsupported bootstrap response.")}
  upload.await.map_err(|_|"Master upload task did not finish.")??;
  let status=child.wait().await.map_err(|_|"Bootstrap did not finish.")?;
- if !status.success(){return Err("Bootstrap transport failed; verify SSH host identity, agent authentication and restricted sudo permissions.")}
+ bootstrap_transport_exit(status)?;
  Ok(reply)
 }
 
@@ -364,9 +463,24 @@ def accounts_absent():
     return True
 def units_absent():
     for verb in ('list-unit-files','list-units'):
-        result=subprocess.run(['/usr/bin/systemctl',verb,'--all','--no-legend','--no-pager','--plain',*PATTERNS],capture_output=True,timeout=8,check=False)
-        require(not result.stdout and not result.stderr)
+        result=subprocess.run(['/usr/bin/systemctl',verb,'--all','--no-legend','--no-pager','--plain',*PATTERNS],capture_output=True,text=True,timeout=8,check=False)
+        require(isinstance(result.stdout,str) and len(result.stdout)<=2_000_000 and not result.stderr)
         require(result.returncode==0 or (verb=='list-unit-files' and result.returncode==1))
+        if result.returncode!=0:require(result.stdout=='')
+        for line in result.stdout.splitlines():
+            parts=line.split()
+            require(verb=='list-units' and len(parts)>=4 and any(fnmatch.fnmatchcase(parts[0],p) for p in PATTERNS)
+                    and parts[1]=='not-found' and parts[2:4] in (['inactive','dead'],['failed','failed']))
+            fields=('LoadState','ActiveState','SubState','MainPID','ControlPID','FragmentPath',
+                    'SourcePath','DropInPaths','UnitFileState','Triggers','TriggeredBy','Job')
+            detail=subprocess.run(['/usr/bin/systemctl','show',parts[0],'--property='+','.join(fields)],capture_output=True,text=True,timeout=8,check=False)
+            require(detail.returncode==0 and not detail.stderr and isinstance(detail.stdout,str) and len(detail.stdout)<=65536)
+            values={}
+            for row in detail.stdout.splitlines():
+                key,separator,value=row.partition('=');require(separator and key in fields and key not in values);values[key]=value
+            require(set(values)==set(fields) and values['LoadState']=='not-found'
+                    and (values['ActiveState'],values['SubState']) in (('inactive','dead'),('failed','failed'))
+                    and values['MainPID']==values['ControlPID']=='0' and all(values[k]=='' for k in fields[5:]))
     return True
 if __name__=='__main__':
     try:
@@ -397,7 +511,276 @@ pub(super) async fn prove_clean_bootstrap(target:&Target,operator:&str,prepared:
     drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
 }
 
+pub(super) fn upgrade_verifier(folder:&Path)->Result<Value,String>{
+ let raw=read_bounded(&folder.join("package.json"),1024*1024)?;
+ let pin=format!("{:x}",Sha256::digest(&raw));authenticate_release(&pin)?;
+ let manifest:Value=serde_json::from_slice(&raw).map_err(|_|"Invalid independently approved verifier manifest")?;
+ const SOURCE:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/conformance.py"));
+ if manifest["files"]["tools/conformance.py"]!=format!("{:x}",Sha256::digest(SOURCE.as_bytes())){return Err("Selected verifier master does not contain this exact native conformance implementation".into())}
+ Ok(json!({"verifier_manifest_json":String::from_utf8(raw).map_err(|_|"Invalid verifier UTF-8")?,"verifier_conformance":SOURCE,"verifier_sha256":pin}))
+}
+fn decode_upgrade_proof(reply:Value,expected:Value)->Result<Value,String>{
+ if reply==json!({"version":1,"ok":true,"result":expected}){return Ok(expected)}
+ let phase=reply["error"]["code"].as_str().and_then(|code|code.strip_prefix("upgrade_proof_")).and_then(|code|code.strip_suffix("_refused"));
+ if reply.as_object().is_some_and(|v|v.len()==3)&&reply["version"]==1&&reply["ok"]==false&&reply["error"].as_object().is_some_and(|v|v.len()==2)&&reply["error"]["message"]=="Read-only upgrade proof refused"{
+  let label=match phase{Some("entry")=>Some("input and freshness"),Some("verifier")=>Some("independent verifier"),Some("engine")=>Some("sealed controller engine"),Some("scope")=>Some("exact authorization and adoption scope"),Some("receipt")=>Some("installed release seal"),Some("outcome")=>Some("upgrade intent and partial absence"),Some("audit")=>Some("exact grant and audit state"),Some("package")=>Some("original staged package"),Some("guest")=>Some("managed guest compatibility"),Some("processes")=>Some("owned service and process quiescence"),Some("conformance")=>Some("full installed conformance"),_=>None};
+  if let Some(label)=label{return Err(format!("Read-only upgrade proof refused at {label}; no replacement stage was sent"))}
+ }
+ Err("Unchanged upgrade outcome not proven; original journal remains uncertain".into())
+}
+pub(super) async fn prove_upgrade_not_applied(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:Value,verifier_pin:&str)->Result<Value,String>{
+ target.validate()?;validate_operator(operator)?;authenticate_release(verifier_pin)?;
+ if target.kind!="remote"{return Err("Upgrade non-application proof requires its pinned remote engineering target".into())}
+ let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256={}\n{}",serde_json::to_string(verifier_pin).unwrap(),BOOTSTRAP);
+ let script=bootstrap_script(&script)?;
+ let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --upgrade-not-applied-proof",shell_quote_static(&script));
+ let _guard=node_controller::SERIAL.lock().await;
+ node_controller::close_connection_checked(target,control,"synergy-nodenetwork").await?;
+ node_controller::close_connection_checked(target,control,operator).await?;
+ let mut cmd=node_controller::remote_command(target,control,operator,&command,known_hosts)?;
+ cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+ let mut child=cmd.spawn().map_err(|_|"Cannot start pinned read-only upgrade proof".to_string())?;
+ let result=async{
+  let bytes=serde_json::to_vec(&wire).map_err(|_|"Cannot encode public upgrade proof".to_string())?;
+  if bytes.len()>2*1024*1024{return Err("Upgrade proof input exceeds bound".into())}
+  let mut input=child.stdin.take().ok_or_else(||"Upgrade proof input unavailable".to_string())?;
+  input.write_all(&bytes).await.map_err(|_|"Upgrade proof input interrupted".to_string())?;input.shutdown().await.map_err(|_|"Upgrade proof input interrupted".to_string())?;drop(input);
+  let mut bytes=Vec::new();child.stdout.take().ok_or_else(||"Upgrade proof output unavailable".to_string())?.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Upgrade proof output interrupted".to_string())?;
+  if bytes.len()>4096||!child.wait().await.map_err(|_|"Upgrade proof exit unavailable".to_string())?.success(){return Err("Unchanged upgrade outcome not proven; preserve original uncertainty".into())}
+  let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Unsupported upgrade proof reply".to_string())?;
+  let expected=json!({"schema":"nodenetwork-upgrade-not-applied-v1","challenge":wire["challenge"],"request_sha256":Request{version:1,operation:"upgrade".into(),parameters:wire["request"]["parameters"].clone()}.approval_id(),"old_manifest_sha256":wire["context"]["selection"]["manifest_sha256"],"candidate_manifest_sha256":wire["request"]["parameters"]["manifest_sha256"],"not_applied":true,"mutation_performed":false});
+  decode_upgrade_proof(reply,expected)
+ };
+ let result=tokio::time::timeout(Duration::from_secs(60),result).await.map_err(|_|"Upgrade proof timed out; journal remains uncertain".to_string()).and_then(std::convert::identity);
+ drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
+}
+
+fn decode_update_commission_grant(reply:Value,context:&Value,challenge:&str,now:u64)->Result<Value,String>{
+ let invalid=||"Exact expired commission grant preservation was not proven".to_string();
+ let envelope=reply.as_object().ok_or_else(invalid)?;
+ if reply["version"]==1&&reply["ok"]==false&&envelope.len()==3{
+  let error=reply["error"].as_object().ok_or_else(invalid)?;
+  if error.len()==2{for (phase,label) in [("grant_scope","exact expired commissioning grant scope"),("grant_artifacts","unchanged approved commissioning artifacts"),("grant_audit","unused commissioning audit"),("grant_state","unpublished commissioning state"),("requests","outstanding operator requests and commissioning preservation")]{
+   let code=format!("engineering_update_{phase}_refused");let message=format!("Engineering update refused at {label}. Inspect and reconcile the exact target; no validator was activated.");
+   if reply["error"]["code"]==code&&reply["error"]["message"]==message{return Err(format!("{code}: {message}"))}
+  }}
+ }
+ if envelope.len()!=3||reply["version"]!=1||reply["ok"]!=true{return Err(invalid())}
+ let r=&reply["result"];let fields=r.as_object().ok_or_else(invalid)?;
+ if fields.len()!=6||!["schema","challenge","parent_sha256","authorization_sequence","preservation","mutation_performed"].iter().all(|k|fields.contains_key(*k))||r["schema"]!="nodenetwork-update-commission-grant-v1"||r["challenge"]!=challenge||r["parent_sha256"]!=context["parent_sha256"]||r["mutation_performed"]!=false||r["authorization_sequence"].as_u64().is_none_or(|n|n==0||n>=(1u64<<53)){return Err(invalid())}
+ if !r["preservation"].is_null(){
+  let p=&r["preservation"];let fields=p.as_object().ok_or_else(invalid)?;
+  let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
+  if fields.len()!=4||!["request_sha256","grant_sha256","expires_at","commissioning_sha256"].iter().all(|k|fields.contains_key(*k))||p["request_sha256"]!=request.approval_id()||p["expires_at"].as_u64().is_none_or(|n|n==0||n>now)||["grant_sha256","commissioning_sha256"].iter().any(|k|p[*k].as_str().is_none_or(|v|v.len()!=64||!v.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))){return Err(invalid())}
+ }
+ Ok(r.clone())
+}
+pub(super) fn same_update_commission_review(before:&Value,after:&Value)->bool{
+ ["parent_sha256","authorization_sequence","preservation"].iter().all(|key|before[*key]==after[*key])
+}
+pub(super) async fn inspect_update_commission_grant(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,context:&Value)->Result<Value,String>{
+ target.validate()?;validate_operator(operator)?;
+ let initial=context["initial_sha256"].as_str().ok_or("Initial scope unavailable")?;
+ let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"Clock unavailable")?;
+ let challenge=format!("{:x}",Sha256::digest(format!("{}:{}:{}",context,now.as_nanos(),std::process::id()).as_bytes()));
+ let wire=json!({"context":context,"challenge":challenge});
+ let script=bootstrap_script(&format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256={}\n{}",serde_json::to_string(initial).unwrap(),BOOTSTRAP))?;
+ let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --inspect-update-commission-grant",shell_quote_static(&script));
+ let _guard=node_controller::SERIAL.lock().await;
+ let mut cmd=if target.kind=="local"{
+  if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local update grant inspection requires Linux x86_64".into())}
+  let mut cmd=tokio::process::Command::new("/usr/bin/sudo");cmd.args(["-n","/usr/bin/python3","-I","-B","-c",&script,"--inspect-update-commission-grant"]);cmd
+ }else{
+  node_controller::close_connection_checked(target,control,"synergy-nodenetwork").await?;
+  node_controller::close_connection_checked(target,control,operator).await?;
+  node_controller::remote_command(target,control,operator,&command,known_hosts)?
+ };
+ cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+ let mut child=cmd.spawn().map_err(|_|"Cannot inspect exact retained update grant")?;
+ let result=async{
+  let bytes=serde_json::to_vec(&wire).map_err(|_|"Cannot encode update grant inspection")?;
+  if bytes.len()>65536{return Err("Update grant inspection exceeds bound".to_string())}
+  let mut input=child.stdin.take().ok_or("Inspection input unavailable")?;
+  input.write_all(&bytes).await.map_err(|_|"Inspection input interrupted")?;input.shutdown().await.map_err(|_|"Inspection input interrupted")?;drop(input);
+  let mut bytes=Vec::new();child.stdout.take().ok_or("Inspection output unavailable")?.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Inspection output interrupted")?;
+  if bytes.len()>4096||!child.wait().await.map_err(|_|"Inspection exit unavailable")?.success(){return Err("Update grant inspection refused; no update dispatched".into())}
+  let reply=serde_json::from_slice(&bytes).map_err(|_|"Invalid update grant inspection")?;
+  decode_update_commission_grant(reply,context,&challenge,now.as_secs())
+ };
+ let result=tokio::time::timeout(Duration::from_secs(60),result).await.map_err(|_|"Update grant inspection timed out; no update dispatched".to_string()).and_then(|r|r);
+ drop(child);if target.kind=="remote"{node_controller::close_connection_checked(target,control,operator).await?;}result
+}
+
+pub(super) async fn prove_continuation_not_applied(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:&Value)->Result<Value,String>{
+ target.validate()?;validate_operator(operator)?;
+ let initial=wire["context"]["initial_sha256"].as_str().ok_or("Initial scope unavailable")?;
+ let script=format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256={}\n{}",serde_json::to_string(initial).unwrap(),BOOTSTRAP);
+ let script=bootstrap_script(&script)?;
+ let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --continuation-not-applied-proof",shell_quote_static(&script));
+ let _guard=node_controller::SERIAL.lock().await;
+ node_controller::close_connection_checked(target,control,"synergy-nodenetwork").await?;
+ node_controller::close_connection_checked(target,control,operator).await?;
+ let mut cmd=node_controller::remote_command(target,control,operator,&command,known_hosts)?;
+ cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+ let mut child=cmd.spawn().map_err(|_|"Cannot start pinned continuation proof")?;
+ let result=async{
+  let bytes=serde_json::to_vec(wire).map_err(|_|"Cannot encode continuation proof")?;if bytes.len()>131072{return Err("Continuation proof exceeds bound")}
+  let mut input=child.stdin.take().ok_or("Proof input unavailable")?;input.write_all(&bytes).await.map_err(|_|"Proof input interrupted")?;input.shutdown().await.map_err(|_|"Proof input interrupted")?;drop(input);
+  let mut bytes=Vec::new();child.stdout.take().ok_or("Proof output unavailable")?.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Proof output interrupted")?;
+  if bytes.len()>4096||!child.wait().await.map_err(|_|"Proof exit unavailable")?.success(){return Err("Continuation nonapplication not proven; preserve pending intent")}
+  let pending:Value=serde_json::from_str(wire["pending_json"].as_str().ok_or("Pending document unavailable")?).map_err(|_|"Pending document malformed")?;
+  let expected=json!({"schema":"nodenetwork-continuation-not-applied-v1","challenge":wire["challenge"],"pending_sha256":wire["context"]["pending_sha256"],"request_sha256":pending["requests"][0]["request_sha256"],"parent_sha256":wire["context"]["authorization"]["sha256"],"not_applied":true,"mutation_performed":false});
+  if serde_json::from_slice::<Value>(&bytes).ok()!=Some(json!({"version":1,"ok":true,"result":expected})){return Err("Exact continuation proof mismatch; pending intent preserved")}
+  Ok(expected)
+ };
+ let result=tokio::time::timeout(Duration::from_secs(60),result).await.map_err(|_|"Continuation proof timed out; no local intent released".to_string()).and_then(|r|r.map_err(String::from));
+ drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
+}
+
+pub(super) async fn prove_treasury_not_applied(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:&Value)->Result<Value,String>{
+ target.validate()?;validate_operator(operator)?;
+ let initial=wire["context"]["initial_sha256"].as_str().ok_or("Original initial approval absent")?;
+ let script=bootstrap_script(&format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256={}\n{}",serde_json::to_string(initial).unwrap(),BOOTSTRAP))?;
+ let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --treasury-send-not-applied-proof",shell_quote_static(&script));
+ let _serial=node_controller::SERIAL.lock().await;
+ node_controller::close_connection_checked(target,control,"synergy-nodenetwork").await?;node_controller::close_connection_checked(target,control,operator).await?;
+ let mut cmd=node_controller::remote_command(target,control,operator,&command,known_hosts)?;
+ cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);let mut child=cmd.spawn().map_err(|_|"Cannot start pinned read-only proof")?;
+ let result=async{
+  let remote=json!({"context":wire["context"],"challenge":wire["challenge"]});let bytes=serde_json::to_vec(&remote).map_err(|_|"Cannot encode commission proof")?;if bytes.len()>65536{return Err("Commission proof input exceeds bound")}
+  let mut input=child.stdin.take().ok_or("Commission proof input unavailable")?;input.write_all(&bytes).await.map_err(|_|"Commission proof input interrupted")?;input.shutdown().await.map_err(|_|"Commission proof input interrupted")?;drop(input);
+  let mut bytes=Vec::new();child.stdout.take().ok_or("Commission proof output unavailable")?.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Commission proof output interrupted")?;
+  if bytes.len()>4096||!child.wait().await.map_err(|_|"Commission proof exit unavailable")?.success(){return Err("Treasury phase unavailable; original request remains fenced")}
+  let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid commission proof; original request remains fenced")?;
+  decode_treasury_not_applied(&reply,wire)
+ };
+ let result=tokio::time::timeout(Duration::from_secs(120),result).await.map_err(|_|"Commission proof timed out; original request remains fenced".to_string()).and_then(|r|r.map_err(String::from));
+ drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
+}
+fn decode_treasury_not_applied(reply:&Value,wire:&Value)->Result<Value,&'static str>{
+ let expected=json!({"schema":"nodenetwork-treasury-send-not-applied-v1","challenge":wire["challenge"],"request_sha256":wire["context"]["request_sha256"],"nonce":wire["context"]["nonce"],"authorization_sha256":wire["context"]["authorization"]["sha256"],"not_applied":true,"mutation_performed":false});
+ if *reply!=json!({"version":1,"ok":true,"result":expected}){return Err("Exact treasury nonapplication proof unavailable; original request remains fenced")}Ok(expected)
+}
+
+pub(super) async fn inspect_treasury_phase(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:&Value)->Result<Value,String>{
+ target.validate()?;validate_operator(operator)?;
+ let initial=wire["context"]["initial_sha256"].as_str().ok_or("Original initial approval absent")?;
+ let script=bootstrap_script(&format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256={}\n{}",serde_json::to_string(initial).unwrap(),BOOTSTRAP))?;
+ let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --treasury-send-phase-proof",shell_quote_static(&script));
+ let _serial=node_controller::SERIAL.lock().await;
+ node_controller::close_connection_checked(target,control,"synergy-nodenetwork").await?;node_controller::close_connection_checked(target,control,operator).await?;
+ let mut cmd=node_controller::remote_command(target,control,operator,&command,known_hosts)?;
+ cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);let mut child=cmd.spawn().map_err(|_|"Cannot start pinned read-only proof")?;
+ let result=async{
+  let remote=json!({"context":wire["context"],"challenge":wire["challenge"]});let bytes=serde_json::to_vec(&remote).map_err(|_|"Cannot encode commission proof")?;if bytes.len()>65536{return Err("Commission proof input exceeds bound")}
+  let mut input=child.stdin.take().ok_or("Commission proof input unavailable")?;input.write_all(&bytes).await.map_err(|_|"Commission proof input interrupted")?;input.shutdown().await.map_err(|_|"Commission proof input interrupted")?;drop(input);
+  let mut bytes=Vec::new();child.stdout.take().ok_or("Commission proof output unavailable")?.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Commission proof output interrupted")?;
+  if bytes.len()>4096||!child.wait().await.map_err(|_|"Commission proof exit unavailable")?.success(){return Err("Treasury phase unavailable; original request remains fenced")}
+  let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid commission proof; original request remains fenced")?;
+  decode_treasury_phase(&reply,wire)
+ };
+ let result=tokio::time::timeout(Duration::from_secs(120),result).await.map_err(|_|"Commission proof timed out; original request remains fenced".to_string()).and_then(|r|r.map_err(String::from));
+ drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
+}
+#[cfg(test)]#[test]fn treasury_nonapplication_decoder_rejects_foreign_or_applied_claims(){
+ let wire=json!({"challenge":"a".repeat(64),"context":{"request_sha256":"b".repeat(64),"nonce":0,"authorization":{"sha256":"c".repeat(64)}}});let v=json!({"schema":"nodenetwork-treasury-send-not-applied-v1","challenge":"a".repeat(64),"request_sha256":"b".repeat(64),"nonce":0,"authorization_sha256":"c".repeat(64),"not_applied":true,"mutation_performed":false});let reply=|v:Value|json!({"version":1,"ok":true,"result":v});assert!(decode_treasury_not_applied(&reply(v.clone()),&wire).is_ok());
+ for(k,val)in[("challenge",json!("d".repeat(64))),("nonce",json!(1)),("authorization_sha256",json!("d".repeat(64))),("request_sha256",json!("d".repeat(64))),("mutation_performed",json!(true)),("not_applied",json!(false)),("extra",json!("private"))]{let mut bad=v.clone();bad[k]=val;assert!(decode_treasury_not_applied(&reply(bad),&wire).is_err(),"{k}")}
+}
+fn decode_treasury_phase(reply:&Value,wire:&Value)->Result<Value,&'static str>{
+ let fail="Unsupported treasury phase observation; original request remains fenced";
+ let v=&reply["result"];let files=&v["files"];
+ let pin=|v:&Value|v.as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)));
+ if !files.as_object().is_some_and(|o|o.len()==4&&["request","prepared","admission","dispatch"].iter().all(|k|o.get(*k).is_some_and(|v|v.is_null()||pin(v))))||!matches!(v["grant_state"].as_str(),Some("absent"|"exact"|"different"))||!matches!(v["audit_state"].as_str(),Some("not_consumed"|"consumed"))||!matches!(v["reservation"].as_str(),Some("absent"|"partial"|"complete_inventory_unverified"))||!(v["request_matches"].is_null()||v["request_matches"].is_boolean()){return Err(fail)}
+ let empty="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+ let absent=["request","prepared","admission","dispatch"].iter().all(|k|files[*k].is_null());
+ let complete=["request","prepared","admission"].iter().all(|k|files[*k].as_str().is_some_and(|h|h!=empty));
+ if (v["reservation"]=="absent"&&!absent)||(v["reservation"]=="complete_inventory_unverified")!=complete||files["request"].is_null()!=v["request_matches"].is_null()||(!files["request"].is_null()&&v["request_matches"].as_bool()!=Some(files["request"]==v["request_sha256"])){return Err(fail)}
+ let expected=json!({"schema":"nodenetwork-treasury-send-phase-v1","challenge":wire["challenge"],"request_sha256":wire["context"]["request_sha256"],"nonce":wire["context"]["nonce"],"authorization_sha256":wire["context"]["authorization"]["sha256"],"grant_state":v["grant_state"],"audit_state":v["audit_state"],"reservation":v["reservation"],"files":files,"request_matches":v["request_matches"],"mutation_performed":false});
+ if *reply!=json!({"version":1,"ok":true,"result":expected}){return Err(fail)}Ok(expected)
+}
+
+pub(super) async fn prove_commission_not_applied(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:&Value)->Result<Value,String>{
+ target.validate()?;validate_operator(operator)?;
+ let initial=wire["context"]["initial_sha256"].as_str().ok_or("Original initial approval absent")?;
+ let script=bootstrap_script(&format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256={}\n{}",serde_json::to_string(initial).unwrap(),BOOTSTRAP))?;
+ let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --commission-outcome-proof",shell_quote_static(&script));
+ let _serial=node_controller::SERIAL.lock().await;
+ node_controller::close_connection_checked(target,control,"synergy-nodenetwork").await?;node_controller::close_connection_checked(target,control,operator).await?;
+ let mut cmd=node_controller::remote_command(target,control,operator,&command,known_hosts)?;
+ cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);let mut child=cmd.spawn().map_err(|_|"Cannot start pinned read-only proof")?;
+ let result=async{
+  let remote=json!({"context":wire["context"],"challenge":wire["challenge"]});let bytes=serde_json::to_vec(&remote).map_err(|_|"Cannot encode commission proof")?;if bytes.len()>65536{return Err("Commission proof input exceeds bound")}
+  let mut input=child.stdin.take().ok_or("Commission proof input unavailable")?;input.write_all(&bytes).await.map_err(|_|"Commission proof input interrupted")?;input.shutdown().await.map_err(|_|"Commission proof input interrupted")?;drop(input);
+  let mut bytes=Vec::new();child.stdout.take().ok_or("Commission proof output unavailable")?.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Commission proof output interrupted")?;
+  if bytes.len()>4096||!child.wait().await.map_err(|_|"Commission proof exit unavailable")?.success(){return Err("Commission nonapplication not proven; original request remains fenced")}
+  let reply:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid commission proof; original request remains fenced")?;
+  decode_commission_proof(&reply,wire)
+ };
+ let result=tokio::time::timeout(Duration::from_secs(120),result).await.map_err(|_|"Commission proof timed out; original request remains fenced".to_string()).and_then(|r|r.map_err(String::from));
+ drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
+}
+#[cfg(test)]#[test]fn treasury_phase_decoder_is_bound_and_never_an_outcome(){
+ let wire=json!({"challenge":"a".repeat(64),"context":{"request_sha256":"b".repeat(64),"nonce":0,"authorization":{"sha256":"c".repeat(64)}}});
+ let v=json!({"schema":"nodenetwork-treasury-send-phase-v1","challenge":wire["challenge"],"request_sha256":wire["context"]["request_sha256"],"nonce":0,"authorization_sha256":"c".repeat(64),"grant_state":"exact","audit_state":"not_consumed","reservation":"absent","files":{"request":null,"prepared":null,"admission":null,"dispatch":null},"request_matches":null,"mutation_performed":false});
+ let reply=|v:Value|json!({"version":1,"ok":true,"result":v});assert!(decode_treasury_phase(&reply(v.clone()),&wire).is_ok());
+ let mut partial=v.clone();partial["reservation"]=json!("partial");assert!(decode_treasury_phase(&reply(partial.clone()),&wire).is_ok());partial["files"]["request"]=json!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");partial["request_matches"]=json!(false);assert!(decode_treasury_phase(&reply(partial),&wire).is_ok());
+ for(k,val)in[("challenge",json!("d".repeat(64))),("nonce",json!(1)),("authorization_sha256",json!("d".repeat(64))),("request_sha256",json!("d".repeat(64))),("mutation_performed",json!(true)),("reservation",json!("complete_inventory_unverified")),("request_matches",json!(false)),("extra",json!("private"))]{let mut bad=v.clone();bad[k]=val;assert!(decode_treasury_phase(&reply(bad),&wire).is_err(),"{k}")}
+}
+fn decode_commission_proof(reply:&Value,wire:&Value)->Result<Value,&'static str>{
+ let readiness=reply["result"]["readiness_sha256"].as_str().filter(|p|p.len()==64&&p.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))).ok_or("Commission nonapplication not proven; original request remains fenced")?;
+ let expected=json!({"schema":"nodenetwork-commission-not-applied-v1","challenge":wire["challenge"],"request_sha256":wire["context"]["request_sha256"],"authorization_sha256":wire["context"]["authorization"]["sha256"],"readiness_sha256":readiness,"not_applied":true,"mutation_performed":false});
+ if *reply!=json!({"version":1,"ok":true,"result":expected}){return Err("Exact commission nonapplication proof mismatch; original request remains fenced")}Ok(expected)
+}
+
+pub(super) async fn prove_transport_not_applied(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:&Value)->Result<Value,String>{prove_artifact_not_applied(target,operator,control,known_hosts,wire,false).await}
+pub(super) async fn prove_readiness_not_applied(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:&Value)->Result<Value,String>{prove_artifact_not_applied(target,operator,control,known_hosts,wire,true).await}
+async fn prove_artifact_not_applied(target:&Target,operator:&str,control:&Path,known_hosts:Option<&Path>,wire:&Value,readiness:bool)->Result<Value,String>{
+ target.validate()?;validate_operator(operator)?;
+ let initial=wire["context"]["initial_sha256"].as_str().ok_or("Initial scope unavailable")?;
+ let script=format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256={}\n{}",serde_json::to_string(initial).unwrap(),BOOTSTRAP);
+ let script=bootstrap_script(&script)?;
+ let flag=if readiness{"--prove-readiness-not-applied"}else{"--prove-transport-not-applied"};
+ let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {flag}",shell_quote_static(&script));
+ let _guard=node_controller::SERIAL.lock().await;
+ node_controller::close_connection_checked(target,control,"synergy-nodenetwork").await?;
+ node_controller::close_connection_checked(target,control,operator).await?;
+ let mut cmd=node_controller::remote_command(target,control,operator,&command,known_hosts)?;
+ cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+ let mut child=cmd.spawn().map_err(|_|"Cannot start pinned continuation proof")?;
+ let result=async{
+  let mut remote=wire.clone();remote.as_object_mut().ok_or("Malformed transport proof")?.remove("intent");
+  let bytes=serde_json::to_vec(&remote).map_err(|_|"Cannot encode continuation proof")?;if bytes.len()>131072{return Err("Continuation proof exceeds bound")}
+  let mut input=child.stdin.take().ok_or("Proof input unavailable")?;input.write_all(&bytes).await.map_err(|_|"Proof input interrupted")?;input.shutdown().await.map_err(|_|"Proof input interrupted")?;drop(input);
+  let mut bytes=Vec::new();child.stdout.take().ok_or("Proof output unavailable")?.take(4097).read_to_end(&mut bytes).await.map_err(|_|"Proof output interrupted")?;
+  if bytes.len()>4096||!child.wait().await.map_err(|_|"Proof exit unavailable")?.success(){return Err("Continuation nonapplication not proven; preserve pending intent")}
+  let expected=json!({"schema":if readiness{"nodenetwork-readiness-not-applied-v1"}else{"nodenetwork-transport-not-applied-v1"},"challenge":wire["challenge"],"pending_sha256":wire["context"]["pending_sha256"],"dispatch_sha256":wire["context"]["dispatch_sha256"],"parent_sha256":wire["context"]["authorization"]["sha256"],"not_applied":true,"mutation_performed":false});
+  if serde_json::from_slice::<Value>(&bytes).ok()!=Some(json!({"version":1,"ok":true,"result":expected})){return Err("Exact continuation proof mismatch; pending intent preserved")}
+  Ok(expected)
+ };
+ let result=tokio::time::timeout(Duration::from_secs(60),result).await.map_err(|_|"Continuation proof timed out; no local intent released".to_string()).and_then(|r|r.map_err(String::from));
+ drop(child);node_controller::close_connection_checked(target,control,operator).await?;result
+}
+
 #[cfg(test)] mod tests {
+    #[test]fn commission_proof_decoder_is_closed_and_never_accepts_applied_or_partial(){
+      let wire=serde_json::json!({"challenge":"a".repeat(64),"context":{"request_sha256":"b".repeat(64),"authorization":{"sha256":"c".repeat(64)}}});
+      let proof=serde_json::json!({"schema":"nodenetwork-commission-not-applied-v1","challenge":wire["challenge"],"request_sha256":wire["context"]["request_sha256"],"authorization_sha256":wire["context"]["authorization"]["sha256"],"readiness_sha256":"d".repeat(64),"not_applied":true,"mutation_performed":false});
+      let reply=serde_json::json!({"version":1,"ok":true,"result":proof});assert_eq!(super::decode_commission_proof(&reply,&wire).unwrap(),proof);
+      for field in ["challenge","request_sha256","authorization_sha256","readiness_sha256","not_applied","mutation_performed"]{let mut bad=reply.clone();bad["result"][field]=serde_json::Value::Null;assert!(super::decode_commission_proof(&bad,&wire).is_err());}
+      let mut extra=reply.clone();extra["result"]["commissioned"]=serde_json::json!(true);assert!(super::decode_commission_proof(&extra,&wire).is_err());
+      let private=serde_json::json!({"version":1,"ok":false,"error":{"message":"private raw output"}});assert!(!super::decode_commission_proof(&private,&wire).unwrap_err().contains("private"));
+    }
+
+    #[test]fn compressed_bootstrap_roundtrip_preserves_exact_source_globals_stdin_and_fail_closed(){
+     use std::io::Write;use sha2::Digest;
+     let source=format!("__name__='fixture'\nNATIVE_TEST_PIN='{}'\n{}\nimport sys\nassert NATIVE_TEST_PIN=='{}'\nassert sys.argv[1:] == ['fixed-flag']\nassert sys.stdin.buffer.read()==b'exact stdin'\nprint('verified-source-{}')\n", "a".repeat(64),super::BOOTSTRAP,"a".repeat(64),super::script_pin());
+     let encoded=super::bootstrap_script(&source).unwrap();assert!(encoded.len()<64*1024);assert!(encoded.contains("NATIVE_AUTHENTICATED_MANIFEST_SHA256="));
+     let run=|loader:&str|{let mut child=std::process::Command::new("python3").args(["-I","-B","-c",loader,"fixed-flag"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();child.stdin.take().unwrap().write_all(b"exact stdin").unwrap();child.wait_with_output().unwrap()};
+     let output=run(&encoded);assert!(output.status.success());assert_eq!(String::from_utf8(output.stdout).unwrap().trim(),format!("verified-source-{}",super::script_pin()));
+     let pin=format!("{:x}",sha2::Sha256::digest(source.as_bytes()));
+     for changed in [encoded.replace(&pin,&"0".repeat(64)),encoded.replacen("base64.b64decode('","base64.b64decode('A",1),format!("import builtins\n_original_import=__import__\ndef reject(name,*a,**k):\n if name=='zlib': raise ImportError('unavailable')\n return _original_import(name,*a,**k)\nbuiltins.__import__=reject\n{encoded}")]{let output=run(&changed);assert!(!output.status.success());assert!(output.stdout.is_empty());}
+     assert!(super::bootstrap_script("").is_err());assert!(super::bootstrap_script(&"x".repeat(2*1024*1024+1)).is_err());
+    }
     #[test]fn clean_bootstrap_proof_rejects_partial_state_and_active_bootstrap(){
      let fixture=r#"
 import tempfile
@@ -428,6 +811,31 @@ with tempfile.TemporaryDirectory() as temp:
         raise AssertionError('account or units accepted')
 "#;
      // Execute the same fixed checker, with only filesystem fixtures substituted.
+     let script=format!("scope={{'__name__':'fixture'}}\nexec({},scope)\nexec({},scope)",serde_json::to_string(CLEAN_BOOTSTRAP_PROOF).unwrap(),serde_json::to_string(fixture).unwrap());
+     let out=std::process::Command::new("/usr/bin/python3").args(["-I","-B","-c",&script]).output().unwrap();
+     assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+    }
+    #[test]fn clean_bootstrap_units_require_independent_inert_tombstone_proof(){
+     let fixture=r#"
+from unittest.mock import patch
+from subprocess import CompletedProcess
+values=dict(LoadState='not-found',ActiveState='failed',SubState='failed',MainPID='0',ControlPID='0',FragmentPath='',SourcePath='',DropInPaths='',UnitFileState='',Triggers='',TriggeredBy='',Job='')
+def check(changes=None,raw=None,status=0,stderr='',row='synergy-posy-old.service not-found failed failed old\n'):
+    data=dict(values);data.update(changes or {})
+    detail=''.join(k+'='+v+'\n' for k,v in data.items()) if raw is None else raw
+    with patch.object(subprocess,'run',side_effect=[CompletedProcess([],1,stdout='',stderr=''),CompletedProcess([],0,stdout=row,stderr=''),CompletedProcess([],status,stdout=detail,stderr=stderr)]):return units_absent()
+assert check()
+assert check({'ActiveState':'inactive','SubState':'dead'})
+for key,value in [('LoadState','loaded'),('ActiveState','active'),('SubState','auto-restart'),('MainPID','2'),('ControlPID','3'),('FragmentPath','/etc/old.service'),('SourcePath','/old'),('DropInPaths','/old.conf'),('UnitFileState','masked'),('Triggers','old.service'),('TriggeredBy','old.timer'),('Job','1')]:
+    try:check({key:value})
+    except ValueError:continue
+    raise AssertionError('unsafe tombstone '+key)
+exact=''.join(k+'='+v+'\n' for k,v in values.items())
+for args in [dict(raw=exact+'MainPID=0\n'),dict(raw=exact.replace('Job=\n','')),dict(raw=exact+'Unknown=\n'),dict(raw='x'*65537),dict(status=1),dict(stderr='warning'),dict(row='ssh.service not-found failed failed\n'),dict(row='synergy-node.service loaded failed failed\n')]:
+    try:check(**args)
+    except ValueError:continue
+    raise AssertionError('invalid tombstone accepted')
+"#;
      let script=format!("scope={{'__name__':'fixture'}}\nexec({},scope)\nexec({},scope)",serde_json::to_string(CLEAN_BOOTSTRAP_PROOF).unwrap(),serde_json::to_string(fixture).unwrap());
      let out=std::process::Command::new("/usr/bin/python3").args(["-I","-B","-c",&script]).output().unwrap();
      assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
@@ -494,6 +902,23 @@ with tempfile.TemporaryDirectory() as temp:
       if exit==0{assert_eq!(result.unwrap()["result"]["complete"],true)}else{assert!(result.unwrap_err().starts_with("Bootstrap transport failed"));}
      }
     }
+    #[tokio::test(flavor="current_thread")]
+    async fn bootstrap_transport_classifies_failed_sessions_without_exposing_remote_bytes(){
+     for (exit,output,expected) in [(255,"","Bootstrap SSH session unavailable."),(17,"private remote failure","Bootstrap transport failed during remote execution."),(0,"not-json","Invalid bootstrap response from a completed session.")]{
+      let script=format!("import sys\nsys.stdin.buffer.read()\nsys.stdout.write({output:?})\nsys.stderr.write('PRIVATE STDERR MUST NEVER ESCAPE')\nsys.exit({exit})\n");
+      let mut child=bootstrap_transport_child(&script);let input=child.stdin.take().unwrap();let output=child.stdout.take().unwrap();
+      let mut upload=tokio::spawn(async move{drop(input);Ok(())});
+      let error=super::bootstrap_transport_reply(output,&mut upload,&mut child).await.unwrap_err();
+      assert!(error.starts_with(expected),"{error}");assert!(!error.contains("private remote"));assert!(!error.contains("PRIVATE STDERR"));
+     }
+    }
+    #[cfg(unix)]
+    #[tokio::test(flavor="current_thread")]
+    async fn bootstrap_transport_signal_is_uncertain_not_malformed_response(){
+     let mut child=bootstrap_transport_child("import os,signal\nos.kill(os.getpid(),signal.SIGTERM)\n");
+     let input=child.stdin.take().unwrap();let output=child.stdout.take().unwrap();let mut upload=tokio::spawn(async move{drop(input);Ok(())});
+     assert!(super::bootstrap_transport_reply(output,&mut upload,&mut child).await.unwrap_err().starts_with("Bootstrap transport interrupted."));
+    }
     #[test]fn original_rollback_authorization_globals_preserve_bounded_exact_utf8_without_argument_embedding(){
      use std::io::Write;
      let raw=format!("{{\"public\":\"{}雪\"}}","x".repeat(64000));let sha=format!("{:x}",Sha256::digest(raw.as_bytes()));let prefix=super::bare_authorization_globals(&sha);
@@ -555,6 +980,33 @@ with tempfile.TemporaryDirectory() as temp:
 
 #[cfg(test)]mod update_tests{
  use super::*;
+ #[test]fn update_commission_grant_review_is_exact_expired_and_nonmutating(){
+  let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
+  let context=json!({"parent_sha256":"a".repeat(64)});let challenge="b".repeat(64);
+  let result=json!({"schema":"nodenetwork-update-commission-grant-v1","challenge":challenge,"parent_sha256":context["parent_sha256"],"authorization_sequence":21,"preservation":{"request_sha256":request.approval_id(),"grant_sha256":"c".repeat(64),"expires_at":999,"commissioning_sha256":"d".repeat(64)},"mutation_performed":false});
+  let reply=json!({"version":1,"ok":true,"result":result});
+  let mut refreshed=result.clone();refreshed["challenge"]=json!("e".repeat(64));assert!(same_update_commission_review(&result,&refreshed));
+  for (field,value) in [("parent_sha256",json!("e".repeat(64))),("authorization_sequence",json!(22)),("preservation",Value::Null)]{let mut changed=refreshed.clone();changed[field]=value;assert!(!same_update_commission_review(&result,&changed));}
+  assert!(decode_update_commission_grant(reply.clone(),&context,&challenge,1000).is_ok());
+  let mut empty=reply.clone();empty["result"]["preservation"]=Value::Null;assert!(decode_update_commission_grant(empty,&context,&challenge,1000).is_ok());
+  for (field,value) in [("challenge",json!("e".repeat(64))),("parent_sha256",json!("e".repeat(64))),("authorization_sequence",json!(0)),("mutation_performed",json!(true)),("extra",json!(false))]{let mut bad=reply.clone();bad["result"][field]=value;assert!(decode_update_commission_grant(bad,&context,&challenge,1000).is_err());}
+  for (field,value) in [("request_sha256",json!("e".repeat(64))),("grant_sha256",json!("invalid")),("expires_at",json!(1001)),("expires_at",json!("999")),("commissioning_sha256",json!("E".repeat(64))),("extra",json!(false))]{let mut bad=reply.clone();bad["result"]["preservation"][field]=value;assert!(decode_update_commission_grant(bad,&context,&challenge,1000).is_err());}
+  for field in ["preservation","mutation_performed"]{let mut bad=reply.clone();bad["result"].as_object_mut().unwrap().remove(field);assert!(decode_update_commission_grant(bad,&context,&challenge,1000).is_err());}
+  let refused=json!({"version":1,"ok":false,"error":{"code":"engineering_update_grant_audit_refused","message":"Engineering update refused at unused commissioning audit. Inspect and reconcile the exact target; no validator was activated."}});
+  assert!(decode_update_commission_grant(refused.clone(),&context,&challenge,1000).unwrap_err().starts_with("engineering_update_grant_audit_refused:"));
+  let mut foreign=refused;foreign["error"]["message"]=json!("PRIVATE CONTENT");let error=decode_update_commission_grant(foreign,&context,&challenge,1000).unwrap_err();assert!(!error.contains("PRIVATE"));
+ }
+ #[test]fn replacement_proof_is_bounded_stdin_not_ssh_script_context(){
+  let scope=json!({"initial_sha256":"a".repeat(64),"parent_sha256":"b".repeat(64),"formation_sha256":"c".repeat(64),"target":{"host":"exact"},"selection":{"manifest_sha256":"d".repeat(64)},"expires_at":1});
+  let mut context=scope.clone();context["release_id"]=json!("new");context["manifest_sha256"]=json!("e".repeat(64));
+  assert_eq!(update_replacement_wire(&context).unwrap(),(context.clone(),None));
+  context["superseded_upgrade"]=json!({"context":scope,"request":{"operation":"upgrade"},"verifier_conformance":"public native source"});
+  let (script,wire)=update_replacement_wire(&context).unwrap();assert!(script.get("superseded_upgrade").is_none());
+  let wire=wire.unwrap();assert_eq!(wire.last(),Some(&b'\n'));assert_eq!(serde_json::from_slice::<Value>(&wire).unwrap(),context["superseded_upgrade"]);
+  for field in ["initial_sha256","parent_sha256","formation_sha256","target","selection","expires_at"]{let mut changed=context.clone();changed["superseded_upgrade"]["context"][field]=Value::Null;assert!(update_replacement_wire(&changed).is_err());}
+  context["superseded_upgrade"]["verifier_conformance"]=json!("x".repeat(2*1024*1024));assert!(update_replacement_wire(&context).is_err());
+ }
+
  #[test]fn native_update_inventory_derives_digest_and_rejects_payload_substitution(){
   let base=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-update-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
   struct Cleanup(std::path::PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}let _cleanup=Cleanup(base.clone());
@@ -590,6 +1042,7 @@ pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&s
      bare_authorization_globals(&sha)
     }else{String::new()};
     let script=format!("NATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{pin}\"\n{authorization_globals}{BOOTSTRAP}");
+ let script=bootstrap_script(&script)?;
     let flag=if review.is_some(){"--bare-rollback-apply"}else{"--bare-rollback-preflight"};
     let remote=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {} {} {}{}",shell_quote_static(&script),flag,release,pin,review.map(|s|format!(" {s}")).unwrap_or_default());
     let mut command=node_controller::remote_command(&target,control,operator,&remote,None)?;
@@ -631,7 +1084,8 @@ pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&s
        let mut upload=tokio::spawn(async move {drop(input);Ok(())});
        let outcome=super::bootstrap_transport_reply(output,&mut upload,&mut child).await.map_err(String::from);
        assert!(outcome.is_err(),"{wire}");
-       let _=upload.await;let _=child.wait().await;
+       // The helper may already have joined upload on malformed stdout.
+       upload.abort();let _=child.wait().await;
        let base=std::env::temp_dir().canonicalize().unwrap().join(format!("synergy-bootstrap-envelope-{}-{}-{index}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
        let target=json!({"kind":"remote","host":"fixture.invalid","port":22,"root":"/opt/Synergy"});
        let request=json!({"version":1,"operation":"bootstrap"});
@@ -666,6 +1120,45 @@ pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&s
      assert!(validate_bootstrap_acknowledgement(&wrap(json!({})),release,&pin).is_err());
     }
 
+    #[test]
+    fn target_operator_identity_is_public_only_immutable_and_scopes_controller_argv() {
+      let folder=std::path::PathBuf::from("/private/tmp").join(format!("osi-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+      let target:Target=serde_json::from_value(json!({"kind":"remote","host":"fixture.invalid","port":22,"root":"/opt/synergy"})).unwrap();
+      assert!(controller_operator_identity(&target,&folder).unwrap().is_none());
+      assert_eq!(retain_operator_identity(&target,&folder,OPENSSH_VECTOR).unwrap()["canonicalSha256"],VECTOR_SHA256);
+      let path=controller_operator_identity(&target,&folder).unwrap().unwrap();
+      assert_eq!(fs::read_to_string(&path).unwrap(),format!("{OPENSSH_VECTOR}\n"));
+      assert!(!path.with_extension("").exists()); // no matching private-key path
+      retain_operator_identity(&target,&folder,OPENSSH_VECTOR).unwrap();
+      let mut bytes=STANDARD_NO_PAD.decode(OPENSSH_VECTOR.split_whitespace().nth(1).unwrap()).unwrap();bytes[50]^=1;
+      let changed=format!("ssh-ed25519 {}",STANDARD_NO_PAD.encode(bytes));
+      assert!(retain_operator_identity(&target,&folder,&changed).is_err());
+      assert!(require_selected_operator_identity(&target,&folder,&changed).is_err());
+      require_selected_operator_identity(&target,&folder,OPENSSH_VECTOR).unwrap();
+      let mut other=target.clone();other.host=Some("other.invalid".into());
+      assert!(controller_operator_identity(&other,&folder).unwrap().is_none());
+      let command=node_controller::remote_command(&target,&folder,"synergy-nodenetwork","fixed",Some(&folder.join("fixture-known-hosts"))).unwrap();
+      let args=command.as_std().get_args().map(|a|a.to_str().unwrap()).collect::<Vec<_>>();
+      assert!(args.contains(&"-oIdentitiesOnly=yes"));let identity=args.iter().position(|a|*a=="-i").unwrap();
+      assert_eq!(args[identity+1],path.to_str().unwrap());assert!(identity<args.iter().position(|a|*a=="--").unwrap());
+      assert!(args.contains(&"-oStrictHostKeyChecking=yes"));assert!(args.contains(&"-oForwardAgent=no"));
+      let admin=node_controller::remote_command(&target,&folder,"node","fixed",Some(&folder.join("fixture-known-hosts"))).unwrap();
+      let admin_args=admin.as_std().get_args().map(|a|a.to_str().unwrap()).collect::<Vec<_>>();assert!(admin_args.contains(&"-oIdentitiesOnly=yes"));assert!(admin_args.windows(2).any(|a|a==["-i",path.to_str().unwrap()]));
+      fs::remove_dir_all(folder).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn target_operator_identity_rejects_links_permissions_and_partial_publication() {
+      use std::os::unix::fs::{symlink,PermissionsExt};
+      let folder=std::env::temp_dir().canonicalize().unwrap().join(format!("operator-selection-negative-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+      let target:Target=serde_json::from_value(json!({"kind":"remote","host":"fixture.invalid","port":22,"root":"/opt/synergy"})).unwrap();
+      retain_operator_identity(&target,&folder,OPENSSH_VECTOR).unwrap();let path=controller_operator_identity(&target,&folder).unwrap().unwrap();
+      fs::set_permissions(&path,fs::Permissions::from_mode(0o644)).unwrap();assert!(controller_operator_identity(&target,&folder).is_err());
+      fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();fs::write(&path,b"partial").unwrap();assert!(controller_operator_identity(&target,&folder).is_err());
+      fs::remove_file(&path).unwrap();symlink("missing",&path).unwrap();assert!(controller_operator_identity(&target,&folder).is_err());
+      fs::remove_file(&path).unwrap();fs::write(path.with_extension("pending"),b"partial").unwrap();assert!(retain_operator_identity(&target,&folder,OPENSSH_VECTOR).is_err());
+      fs::remove_dir_all(folder).unwrap();
+    }
     #[test]
     fn operator_public_key_accepts_owner_and_openssh_fixture_with_only_canonical_digest() {
         // This public test vector passes pinned bootstrap.py::public_header and ssh-keygen -l.
@@ -717,4 +1210,39 @@ pub(super) async fn execute_bare_rollback(target:Target,operator:&str,release:&s
         assert!(review_operator_public_key(&path).is_err());
     }
 
+}
+
+#[cfg(test)]mod continuation_transport_size_tests{
+ use super::*;
+ #[test]fn embedded_bootstrap_remote_arguments_fit_linux_limit_including_maximum_guest_context(){
+  let pin="a".repeat(64);let host="h".repeat(253);let release="r".repeat(128);
+  let selection=json!({"release_id":release,"manifest_sha256":pin,"network_id":"n".repeat(128),"chain_id":u64::MAX,"node_name":"v".repeat(64)});
+  // Full permitted physical identity plus host-relative guest receipt; all
+  // reviewed public context fields are represented at their parser bounds.
+  let target=json!({"kind":"remote","host":host,"port":65535,"root":"/opt/synergy","host_key":format!("[{}]:65535 ssh-ed25519 {}",host,"A".repeat(68)),"machine_id_sha256":null,"guest":{"guest_id":"g".repeat(64),"create_request_sha256":pin,"ssh_host_public_key":format!("ssh-ed25519 {}","A".repeat(68)),"ssh_host_fingerprint":format!("SHA256:{}","A".repeat(43))}});
+  let context=json!({"initial_sha256":pin,"parent_sha256":pin,"formation_sha256":pin,"target":target,"selection":selection,"release_id":release,"manifest_sha256":pin,"expires_at":u64::MAX});
+  let globals=format!("NATIVE_AUTHENTICATED_SUPERSEDED_UPGRADE=True\nNATIVE_AUTHENTICATED_MANIFEST_SHA256=\"{pin}\"\nNATIVE_AUTHENTICATED_UPDATE_CONTEXT=__import__('json').loads({})\n",serde_json::to_string(&context.to_string()).unwrap());
+  let authorization=format!("NATIVE_AUTHENTICATED_AUTHORIZATION_SHA256=\"{pin}\"\nNATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256=\"{pin}\"\nNATIVE_AUTHENTICATED_AUTHORIZATION_PARENT_SHA256=\"{pin}\"\nNATIVE_AUTHENTICATED_AUTHORIZATION_FORMATION_SHA256=\"{pin}\"\n");
+  let proof=format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256=\"{pin}\"\n");
+  for (name,global,tail) in [("update",globals,format!("--stage-engineering-update {release} {pin} --reconcile")),("authorization",authorization,"--stage-engineering-authorization".into()),("proof",proof,"--continuation-not-applied-proof".into())]{
+   let script=bootstrap_script(&format!("{global}{BOOTSTRAP}")).unwrap();let command=format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {tail}",shell_quote_static(&script));
+   // Linux MAX_ARG_STRLEN includes its terminating NUL; ProxyCommand remains
+   // a separate bounded argv item, never wraps or re-quotes this remote command.
+   assert!(command.len()<96*1024,"{name} remote argument is {} bytes",command.len()+1);
+   println!("{name} remote argument bytes including NUL: {}",command.len()+1);
+  }
+ }
+}
+
+#[cfg(test)]mod upgrade_proof_error_tests{
+ use super::*;
+ #[test]fn only_closed_fixed_readonly_phase_errors_are_exposed(){
+  let expected=json!({"not_applied":true});assert_eq!(decode_upgrade_proof(json!({"version":1,"ok":true,"result":expected}),expected.clone()).unwrap(),expected);
+  for phase in ["entry","verifier","engine","scope","receipt","outcome","audit","package","guest","processes","conformance"]{
+   let reply=json!({"version":1,"ok":false,"error":{"code":format!("upgrade_proof_{phase}_refused"),"message":"Read-only upgrade proof refused"}});
+   let text=decode_upgrade_proof(reply.clone(),expected.clone()).unwrap_err();assert!(text.starts_with("Read-only upgrade proof refused at "));assert!(text.ends_with("no replacement stage was sent"));
+   for (key,value) in [("message",json!("PRIVATE stderr /sensitive/path")),("code",json!("upgrade_proof_PRIVATE_refused"))]{let mut bad=reply.clone();bad["error"][key]=value;let text=decode_upgrade_proof(bad,expected.clone()).unwrap_err();assert!(!text.contains("PRIVATE"));assert!(!text.contains("sensitive"));assert!(!text.starts_with("Read-only upgrade proof refused at "));}
+   let mut bad=reply;bad["extra"]=json!(true);assert!(!decode_upgrade_proof(bad,expected.clone()).unwrap_err().starts_with("Read-only upgrade proof refused at "));
+  }
+ }
 }

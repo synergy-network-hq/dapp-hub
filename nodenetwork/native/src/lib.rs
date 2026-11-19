@@ -35,4 +35,7 @@ pub mod guest_configuration;
 pub mod fleet_readiness;
 
 pub mod treasury;
+pub mod treasury_send;
 mod vpn_credential;
+
+pub mod consensus_observation;

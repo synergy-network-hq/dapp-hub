@@ -1,3 +1,4 @@
+import {ConsensusObservation} from './ConsensusObservation.jsx';
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {IdentityPreflight} from './IdentityPreflight.jsx';
 import {custodyStatusObservation} from './custody-status.js';
@@ -9,21 +10,23 @@ import {TargetInventoryEvidence} from './Offboarding.jsx';
 import {VpnStatus} from './VpnStatus.jsx';
 import {vpnStatusObservation} from './vpn-status.js';
 import {bootstrapObservation} from './bootstrap-observation.js';
+import {TreasurySend} from './TreasurySend.jsx';
 import {TreasuryFormation} from './TreasuryFormation.jsx';
 import {FleetReadiness} from './FleetReadiness.jsx';
 import {GuestHosts} from './GuestHosts.jsx';
 import {TransportFormation} from './TransportFormation.jsx';
 import {useEffect,useRef,useState} from 'react';
-import {nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap,nodeNetworkSelectGuest,nodeNetworkConfigureGuest} from './native-services.js';
+import {nodeNetworkReconcileContinuation,nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap,nodeNetworkSelectGuest,nodeNetworkConfigureGuest} from './native-services.js';
 import {Card,Detail,ErrorMessage,Table} from '@synergy-network/portal-native/dapp-sdk';
+import {bootPolicyParameters,bootPolicyView,bootPolicyStatusView,vpnStopView,vpnStopStatusView,vpnResumeView,vpnResumeStatusView,controllerDraftScope,retainedUpdateStageReceipt} from './operator-workflow.js';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
 import {installParameters} from './nodeNetwork.js';
-import {updateStageView,authorizationView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,vpnView,vpnDiagnosticsView,workflowGate} from './operator-workflow.js';
+import {updateStageView,authorizationView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,vpnView,vpnDiagnosticsView,unusedVpnCancellationView,workflowGate} from './operator-workflow.js';
 
-const MUTATIONS=new Set(['network_formation_prepare','network_formation_sign','authorization_stage','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_enroll','start','stop','restart','upgrade','uninstall']);
+const MUTATIONS=new Set(['network_formation_prepare','network_formation_sign','authorization_stage','bootstrap','install','identity_generate','formation_prepare','genesis_stage','genesis_stage_existing','genesis_bind','commission','register','vpn_stop','vpn_resume','boot_policy','vpn_enroll','start','stop','restart','upgrade','uninstall']);
 const PREFLIGHTS=new Set(['install_preflight','upgrade_preflight','uninstall_preflight']);
-const LABELS={bare_bootstrap_rollback:'Remove exact bare bootstrap',update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_diagnostics:'Read VPN diagnostics',vpn_reconcile:'Reconcile original VPN enrollment',vpn_revoke:'Cancel exact provider setup key',vpn_retire:'Retire exact VPN peer',vpn_status:'Read VPN status',start:'Start validator',health:'Read target health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
+const LABELS={boot_policy:'Change exact service boot policy',boot_policy_status:'Read or reconcile boot policy',bare_bootstrap_rollback:'Remove exact bare bootstrap',update_stage:'Select, approve and stage exact new master',network_formation_prepare:'Prepare unsigned engineering Genesis',network_formation_status:'Read or reconcile network formation',network_formation_sign:'Review and sign exact Genesis once',network_formation_export:'Export verified signed Genesis files',authorization_stage:'Stage exact approved formation authorization',authorization_status:'Read or reconcile staged authorization',target:'Inspect target',bootstrap:'Enroll clean host controller',install_preflight:'Verify staged installation',install:'Install approved node',identity_preflight:'Verify signed Genesis for custody',identity_generate:'Generate fresh APQE custody',identity_status:'Check pending APQE custody',formation_status:'Read or recover prepared identity',formation_preflight:'Review approved formation context',formation_prepare:'Prepare fresh APQE identity',formation_export:'Export public registration',genesis_stage:'Select signed Genesis authority folder',genesis_stage_existing:'Verify and stage existing network Genesis',genesis_binding_preflight:'Verify signed Genesis and identity',genesis_bind:'Bind existing identity to verified Genesis',bound_export:'Export bound public enrollment',commission:'Verify and commission custody',register:'Register services',vpn_enroll:'Enroll and start node VPN',vpn_resume:'Resume existing VPN only',vpn_resume_status:'Read or reconcile VPN resume',vpn_stop_status:'Read or reconcile VPN stop',vpn_stop:'Stop node VPN only',vpn_diagnostics:'Read VPN diagnostics',vpn_reconcile:'Reconcile original VPN enrollment',vpn_revoke:'Cancel exact provider setup key',vpn_cancel_unused:'Verify and cancel unused VPN attempt',vpn_retire:'Retire exact VPN peer',vpn_status:'Read VPN status',start:'Start validator',health:'Read target health',inventory:'Read installation inventory',diagnostics:'Read host diagnostics',stop:'Stop validator',restart:'Restart validator',recovery_preflight:'Check recovery readiness',upgrade_preflight:'Verify staged update',upgrade:'Apply approved update',uninstall_preflight:'Review removal scope',uninstall:'Remove installation'};
 
 export function NodeController({target,form,setForm,permitted,tab,master,localSupported,onSelectTarget,onOpenDiagnostics,targetScopeCurrent=()=>permitted}){
  const [operator,setOperator]=useState('');
@@ -34,15 +37,16 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
  const active=useRef(true),locked=useRef(false);
  useEffect(()=>{active.current=true;return()=>{active.current=false;};},[]);
  const targetKey=JSON.stringify(target);
- const scopeKey=JSON.stringify([targetKey,permitted,form.release_id,form.manifest_sha256,form.network_id,form.chain_id,form.node_name]);
+ const scopeKey=controllerDraftScope(targetKey,permitted,form);
+ const stagedAdoption=useRef(null),resetScope=useRef(scopeKey);
  const scopeContext=useRef({key:scopeKey});
  if(scopeContext.current.key!==scopeKey)scopeContext.current={key:scopeKey};
  const isCurrent=scope=>active.current&&scope===scopeContext.current&&targetScopeCurrent();
- useEffect(()=>{setState(null);setResults({});setLatest(null);setPending(null);setReview(null);setConfirmation('');setIdentityReview(null);setFormationReview(null);setFormationRecord(null);setBindingReview(null);locked.current=false;},[scopeKey]);
+ useEffect(()=>{const retained=retainedUpdateStageReceipt(stagedAdoption.current,resetScope.current,scopeKey);stagedAdoption.current=null;resetScope.current=scopeKey;setState(null);setResults({});setLatest(retained);setPending(null);setReview(null);setConfirmation('');setIdentityReview(null);setFormationReview(null);setFormationRecord(null);setBindingReview(null);locked.current=false;},[scopeKey]);
  useEffect(()=>{setNetworkReview(null);},[targetKey]);
  const gateFor=operation=>workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus:results.vpn_status?.response,identityReview,formationReview,formationRecord,bindingReview,networkReview});
 
- async function perform(operation){
+ async function perform(operation,parameterOverride){
   const scope=scopeContext.current;
   if(!permitted||locked.current)return;
   if(!targetScopeCurrent()){setError('The selected target scope changed. Inspect the original target before another operation.');return;}
@@ -55,7 +59,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     parameters=installParameters(form);
    }else if(operation!=='target'){
     const gate=gateFor(operation);if(!gate.available)throw Error(gate.blocker);
-    parameters=gate.parameters;
+    parameters=operation==='boot_policy'?bootPolicyParameters(parameterOverride,target):gate.parameters;
    }
   }catch(failure){setError(failure.message);return;}
   locked.current=true;setPending(operation);setError('');setLatest(null);
@@ -77,7 +81,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     setReview({target:targetKey,scope:approvedReviewScope(operation,parameters)});
    }
    if(operation==='bootstrap')bootstrapObservation(raw,parameters);
-   const response=operation.startsWith('network_formation_')?networkFormationView(raw,operation==='network_formation_sign'?networkReview:null):operation==='authorization_stage'||operation==='authorization_status'?authorizationView(raw):operation==='diagnostics'?diagnosticsView(raw):operation==='vpn_diagnostics'?vpnDiagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
+   const response=operation.startsWith('network_formation_')?networkFormationView(raw,operation==='network_formation_sign'?networkReview:null):operation==='authorization_stage'||operation==='authorization_status'?authorizationView(raw):operation==='diagnostics'?diagnosticsView(raw):operation==='boot_policy'?bootPolicyView(raw,parameters):operation==='boot_policy_status'?bootPolicyStatusView(raw):operation==='vpn_resume'?vpnResumeView(raw):operation==='vpn_resume_status'?vpnResumeStatusView(raw):operation==='vpn_stop_status'?vpnStopStatusView(raw):operation==='vpn_stop'?vpnStopView(raw):operation==='vpn_diagnostics'?vpnDiagnosticsView(raw):(operation==='vpn_status'||operation==='vpn_enroll')?vpnView(raw):
     operation==='identity_status'?identityStatusView(raw):
     operation==='identity_preflight'||operation==='identity_generate'?identityView(raw,operation==='identity_generate'):
     operation==='formation_preflight'?formationView(raw):
@@ -96,7 +100,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    if(operation==='genesis_binding_preflight'||operation==='genesis_bind')setBindingReview({target:targetKey,...response});
 
    const record={operation,parameters,response,evidence,receivedAt:Date.now()};
-   setResults(previous=>({...previous,[operation]:record}));setLatest(record);
+   setResults(previous=>{const next={...previous,[operation]:record};if(operation==='vpn_stop'||operation==='vpn_resume'){delete next.vpn_status;delete next.vpn_diagnostics;}if(operation==='boot_policy')delete next.boot_policy_status;return next;});setLatest(record);
   }catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)}${MUTATIONS.has(operation)?' Inspect the target to reconcile its state before repeating this operation.':''}`);}
   finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
@@ -107,9 +111,20 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   try{const value=await nodeNetworkVpn(target,operation);if(!isCurrent(scope)||value===null)return;
    if(operation==='retire'){if(value.retired!==true||value.absence_verified!==true)throw Error('Provider retirement was not verified.');setLatest({operation:'vpn_retire',parameters:{},response:value,receivedAt:Date.now()});}
    else if(operation==='revoke'){if(value.setup_key_absent!==true)throw Error('Provider did not verify setup-key absence.');setLatest({operation:'vpn_revoke',parameters:{},response:{setup_key_absent:true},receivedAt:Date.now()});}
+   else if(operation==='cancel_unused'){const response=unusedVpnCancellationView(value);setResults(old=>{const next={...old};delete next.vpn_status;return next;});setLatest({operation:'vpn_cancel_unused',parameters:{},response,receivedAt:Date.now()});}
    else{const response=vpnView(value),evidence=vpnStatusObservation(value);setResults(old=>({...old,vpn_status:{operation:'vpn_status',response,evidence,receivedAt:Date.now()}}));setLatest({operation:`vpn_${operation}`,parameters:{},response,receivedAt:Date.now()});}
    setState(null);
   }catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
+  finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
+ }
+ async function reconcileContinuation(){
+  const scope=scopeContext.current;
+  if(!permitted||locked.current||!state)return;
+  locked.current=true;setPending('continuation_not_applied');setError('');
+  try{const response=await nodeNetworkReconcileContinuation(target);if(!isCurrent(scope)||response===null)return;
+   setState(null);setResults({});setReview(null);setIdentityReview(null);setFormationReview(null);setBindingReview(null);
+   setLatest({operation:'continuation_not_applied',parameters:{},response,receivedAt:Date.now()});
+  }catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)} Pending intent remains fenced; no operation was retried.`);}
   finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  async function rollbackBare(){
@@ -124,7 +139,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
   const scope=scopeContext.current;
   if(!permitted||!state||locked.current)return;
   locked.current=true;setPending('update_stage');setError('');setReview(null);
-  try{const value=await stageNodeNetworkUpdate(target);if(!isCurrent(scope)||value===null)return;const response=updateStageView(value);setForm(current=>({...current,release_id:response.release_id,manifest_sha256:response.manifest_sha256}));setState(null);setLatest({operation:'update_stage',parameters:{},response,receivedAt:Date.now()});}
+  try{const value=await stageNodeNetworkUpdate(target);if(!isCurrent(scope)||value===null)return;const response=updateStageView(value);const record={operation:'update_stage',parameters:{},response,receivedAt:Date.now()};const adopted={...form,release_id:response.release_id,manifest_sha256:response.manifest_sha256};stagedAdoption.current={fromScope:scope.key,toScope:controllerDraftScope(targetKey,permitted,adopted),record};setForm(current=>controllerDraftScope(targetKey,permitted,current)===scope.key?{...current,release_id:response.release_id,manifest_sha256:response.manifest_sha256}:current);setState(null);setLatest(record);}
   catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)} Read authorization status to reconcile before repeating.`);}
   finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
@@ -177,6 +192,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <p>The isolated native build independently pins up to five exact initial host authorization documents. Select the matching document and fixed-name inputs through native review. Later native-confirmed operations can use short-lived one-request continuations bound to that same target, master and formation. This does not approve production, membership or stake.</p>
     <button type="button" disabled={!permitted||!!pending||!state||!operator} onClick={()=>perform('authorization_stage')}>{LABELS.authorization_stage}</button>
     {action('authorization_status')}
+    <button type="button" disabled={!permitted||!!pending||!state} onClick={reconcileContinuation}>Verify pending continuation not applied</button>
+    <p>This read-only native review releases only an exact unapplied local continuation. It never reports operation success or retries a mutation. Inspect again before a separate next action.</p>
     <p>After an interrupted result, read the target authorization receipt. No grant is recreated and no operation is replayed. A different initial host authorization requires a separately reviewed native build pin. A confirmed continuation never regenerates custody or replays an uncertain operation.</p>
    </Card>
    <Card title="4. Install the approved validator software">
@@ -198,6 +215,8 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
     <button type="button" disabled={!!pending||!exportRegistration.available} onClick={()=>exportPublic('formation')}>{LABELS.formation_export}</button>
     <p>After an interrupted response, inspect and read formation status to recover the same identity. Do not prepare another one.</p>
    </Card>
+   <ConsensusObservation target={target} disabled={!permitted||!state||!!pending}/>
+   <TreasurySend target={target} disabled={!permitted||!state||!!pending}/>
    <TreasuryFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
    <Card title="Create fresh engineering Genesis from five prepared validators">
     <p>On the selected formation coordinator, choose recipe.json and registration-1.json through registration-5.json in one public input folder. The native master verifies each APQE possession proof and exact formation membership. New encrypted authority custody remains inside this managed root.</p>
@@ -223,14 +242,26 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
      <FleetReadiness target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
      <TransportFormation target={target} disabled={!permitted||!state||!!pending} onMutation={()=>setState(null)}/>
     <p>{vpn?.connected&&vpn?.server_bound?'VPN connected and server binding observed':vpn?'VPN enrollment or connection pending':'VPN status not verified'}</p>
-    {['register','vpn_diagnostics','commission','start','health'].map(action)}
-    {['enroll','reconcile','revoke','retire'].map(op=><button key={op} type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn(op)}>{op==='enroll'?'Authorize provider and enroll VPN once':op==='reconcile'?'Reconcile and verify original VPN enrollment':op==='retire'?'Retire exact VPN peer for removal':'Cancel exact provider setup key'}</button>)}
+    {['register','vpn_stop','vpn_resume','vpn_stop_status','vpn_resume_status','vpn_diagnostics','commission','start','health'].map(action)}
+    {['enroll','reconcile','revoke','cancel_unused','retire'].map(op=><button key={op} type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn(op)}>{op==='enroll'?'Authorize provider and enroll VPN once':op==='reconcile'?'Reconcile and verify original VPN enrollment':op==='retire'?'Retire exact VPN peer for removal':op==='cancel_unused'?'Verify and cancel unused VPN attempt':'Cancel exact provider setup key'}</button>)}
+    <p>An unused attempt can be cancelled only after the provider and target verify that it never enrolled. Cancellation does not enroll the node. A new attempt requires a separate native confirmation.</p>
     <p>{results.commission?.response?.commissioned===true?'Commissioning confirmed by the target.':'Validator commissioning not verified.'} A start response does not establish running, admitted, participating, synchronized or healthy status. Verify runtime evidence independently.</p>
    </Card>
   </div>}
   {tab==='Management'&&<Card title="Node lifecycle and diagnostics">
-   {['authorization_status','health','vpn_diagnostics','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
+   <button type="button" disabled={!permitted||!!pending||!state} onClick={reconcileContinuation}>Verify pending continuation not applied</button>
+   {['authorization_status','health','vpn_stop','vpn_resume','vpn_stop_status','vpn_resume_status','vpn_diagnostics','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
    <p>Use health to verify the result after a start or restart. Recovery remains a separately qualified operation. This workspace does not offer arbitrary shell or checkpoint access.</p>
+  </Card>}
+  {tab==='Management'&&state?.operations?.some(row=>row.operation==='boot_policy_status'&&row.kind==='read')&&<Card title="Explicit service boot policy">
+   <p>Change one attributed service at a time. This never starts or stops a service now. Enabling validator boot also starts its existing VPN dependency at boot, even when VPN's own boot link is disabled. Managed guest boot enablement is unavailable.</p>
+   {action('boot_policy_status')}
+   {results.boot_policy_status?<Detail data={{nodeBootEnabled:results.boot_policy_status.response.node_enabled,vpnBootEnabled:results.boot_policy_status.response.vpn_enabled,exactAuditedChangeObserved:results.boot_policy_status.response.applied}}/>:<p>Current boot policy has not been observed.</p>}
+   {['node','vpn'].map(service=><div className="button-row" key={service}>
+    {!target.guest&&<button type="button" disabled={!!pending||!gateFor('boot_policy').available} onClick={()=>perform('boot_policy',{service,enabled:true})}>Enable {service==='node'?'validator':'VPN'} at boot</button>}
+    <button type="button" disabled={!!pending||!gateFor('boot_policy').available} onClick={()=>perform('boot_policy',{service,enabled:false})}>Disable {service==='node'?'validator':'VPN'} at boot</button>
+   </div>)}
+   <p>After a lost reply, read boot policy status to reconcile the original exact request before another change.</p>
   </Card>}
   {tab==='Validator setup'&&<IdentityPreflight actions={<>{['identity_preflight','formation_preflight','genesis_binding_preflight'].map(action)}</>}
    bindingAcknowledged={preparation?.operation==='genesis_bind'} observation={preparation?.evidence} receipt={preparation&&<ControllerReceipt receivedAt={preparation.receivedAt}/>}
@@ -253,7 +284,7 @@ export function NodeController({target,form,setForm,permitted,tab,master,localSu
    <ControllerReceipt receivedAt={results.health.receivedAt}/>
    <Table columns={[{key:'id',label:'Service'},{key:'state',label:'Lifecycle'},{key:'health',label:'Health'},{key:'readiness',label:'Service readiness'}]}
     rows={results.health.evidence} empty="The controller returned no service observations."/>
-   <p>Service readiness describes each reported service. Consensus readiness and validator membership have separate checks.</p>
+   <p>Consensus not observed. This service-health response supplies no authenticated roster, online peer count, quorum or cluster assignment; service readiness does not establish consensus participation.</p>
   </Card>}
   {['Management','Installation isolation'].includes(tab)&&results.inventory?.evidence&&<Card title="Node inventory">
    <TargetInventoryEvidence report={{result:results.inventory.evidence,receivedAt:results.inventory.receivedAt}}/>

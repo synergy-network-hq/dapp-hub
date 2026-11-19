@@ -1,3 +1,4 @@
+import {consensusObservation,consensusTransactionSelector} from './consensus-observation.js';
 import {isTauri,invoke} from "@tauri-apps/api/core";
 import {parseRequestHistory} from './request-history.js';
 import {genesisStageLocalReview} from './genesis-stage-files.js';
@@ -47,13 +48,29 @@ export async function nodeNetworkReviewSoftwareReceipt(target,recordId,operation
  }
  return reply.status;
 }
+export async function nodeNetworkReconcileContinuation(target){
+ if(!isTauri())throw Error('Pending continuation reconciliation requires native Portal.');
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_reconcile_continuation',{target}));
+ if(reply===null)return null;
+ const fields=['schema','challenge','pending_sha256','request_sha256','parent_sha256','not_applied','mutation_performed'];
+ if(!reply||typeof reply!=='object'||Array.isArray(reply)||Object.keys(reply).length!==fields.length||!fields.every(k=>Object.hasOwn(reply,k))||reply.schema!=='nodenetwork-continuation-not-applied-v1'||reply.not_applied!==true||reply.mutation_performed!==false||!['challenge','pending_sha256','request_sha256','parent_sha256'].every(k=>typeof reply[k]==='string'&&/^[a-f0-9]{64}$/.test(reply[k])))throw Error('Unsupported pending continuation nonapplication proof.');
+ return {...reply};
+}
+export async function nodeNetworkUpgradeNotApplied(target,recordId,selection) {
+ if(!isTauri())throw Error('Upgrade reconciliation requires native Portal.');
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_upgrade_not_applied',{target,recordId,releaseId:selection.release_id,manifestSha256:selection.manifest_sha256}));
+ if(reply===null)return null;
+ const fields=['schema','challenge','request_sha256','old_manifest_sha256','candidate_manifest_sha256','not_applied','mutation_performed'];
+ if(!reply||typeof reply!=='object'||Object.keys(reply).length!==fields.length||!fields.every(k=>Object.hasOwn(reply,k))||reply.schema!=='nodenetwork-upgrade-not-applied-v1'||reply.not_applied!==true||reply.mutation_performed!==false||!['challenge','request_sha256','old_manifest_sha256','candidate_manifest_sha256'].every(k=>typeof reply[k]==='string'&&/^[a-f0-9]{64}$/.test(reply[k]))||reply.candidate_manifest_sha256!==selection.manifest_sha256)throw Error('Unsupported unchanged upgrade proof.');
+ return reply;
+}
 // First-party native extension only; remote community HTML has no Tauri bridge.
 export async function nodeNetworkHostStatus(){if(!isTauri())throw new Error('Open the native Portal app to inspect this machine.');return invoke('portal_nodenetwork_status');}
 export async function nodeNetworkReviewMaster(){if(!isTauri())throw new Error('Open the native Portal app to inspect the node master.');return invoke('portal_nodenetwork_review_master');}
-export async function nodeNetworkReviewOperatorKey(){
+export async function nodeNetworkReviewOperatorKey(target=null){
  if(!isTauri())throw Error('Open the native Portal app to inspect an operator public key.');
  let reply;
- try{reply=await invoke('portal_nodenetwork_review_operator_key');}
+ try{reply=await (target?withNodeChange(()=>invoke('portal_nodenetwork_review_operator_key',{target})):invoke('portal_nodenetwork_review_operator_key'));}
  catch{throw Error('The public key could not be reviewed. Select one OpenSSH Ed25519 .pub file.');}
  if(reply===null)return null;
  if(!reply || Object.keys(reply).length!==3 || reply.schema!=='nodenetwork-operator-public-key-v1'
@@ -100,7 +117,7 @@ export async function exportNodeNetworkPublicArtifact(target,kind,expectedAddres
 // Survives controller component remounts; does not replace native grants or locks.
 let changePending=false;
 async function withNodeChange(task){if(changePending)throw Error('A NodeNetwork change is still pending. Wait for its result and inspect the target before repeating an uncertain operation.');changePending=true;try{return await task();}finally{changePending=false;}}
-const readOperations=new Set(['network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','vpn_diagnostics','diagnostics','genesis_stage_preflight']);
+const readOperations=new Set(['network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','vpn_stop_status','vpn_resume_status','boot_policy_status','vpn_diagnostics','diagnostics','genesis_stage_preflight']);
 
 
 export async function stageNodeNetworkSignedGenesis(target,expectedAddress){
@@ -145,7 +162,7 @@ export async function stageNodeNetworkUpdate(target){
 
 export async function nodeNetworkVpn(target,operation){
  if(!isTauri())throw Error('VPN provider authorization requires the native Portal app.');
- if(!['enroll','reconcile','revoke','retire'].includes(operation))throw Error('Unsupported VPN action.');
+ if(!['enroll','reconcile','revoke','retire','cancel_unused'].includes(operation))throw Error('Unsupported VPN action.');
  const reply=await withNodeChange(()=>invoke('portal_nodenetwork_vpn',{target,operation}));
  if(reply===null)return null;
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid native VPN response.');
@@ -155,21 +172,45 @@ export async function nodeNetworkVpn(target,operation){
 
 export async function nodeNetworkTransport(target,operation,reviewSha256=null){
  if(!isTauri())throw Error('Transport registry formation requires native Portal.');
- if(!['status','prepare','sign','export','stage'].includes(operation))throw Error('Unsupported transport operation.');
+ if(!['status','prepare','sign','export','stage','reconcile_stage'].includes(operation))throw Error('Unsupported transport operation.');
  const call=()=>invoke('portal_nodenetwork_transport',{target,operation,reviewSha256});
  const reply=await(operation==='status'?call():withNodeChange(call));
  if(reply===null)return null;
- if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid transport response.');
- if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Transport operation refused.'}`);
- return reply.result;
+ // This dedicated native command returns Option<validated public DTO>, not a controller envelope.
+ if(!reply||typeof reply!=='object'||Array.isArray(reply)||Object.hasOwn(reply,'version')||Object.hasOwn(reply,'ok'))throw Error('Invalid transport response.');
+ if(operation==='reconcile_stage'){
+  const keys=['schema','not_applied','staged','dispatch_sha256','authorization_sha256','automatic_retry'];
+  if(Object.keys(reply).length!==keys.length||!keys.every(k=>Object.hasOwn(reply,k))||reply.schema!=='nodenetwork-native-transport-not-applied-v1'||reply.not_applied!==true||reply.staged!==false||reply.automatic_retry!==false||!['dispatch_sha256','authorization_sha256'].every(k=>typeof reply[k]==='string'&&/^[a-f0-9]{64}$/.test(reply[k])))throw Error('Invalid transport nonapplication proof response.');
+ }else if(operation==='export'){
+  const keys=['review_sha256','registry_sha256','issuer_root_sha256','node_count','fleet_readiness_verified','runtime_admission','exported_directory'];
+  if(Object.keys(reply).length!==keys.length||!keys.every(k=>Object.hasOwn(reply,k))||!['review_sha256','registry_sha256','issuer_root_sha256'].every(k=>typeof reply[k]==='string'&&/^[a-f0-9]{64}$/.test(reply[k]))||reply.node_count!==5||reply.fleet_readiness_verified!==false||reply.runtime_admission!==false||typeof reply.exported_directory!=='string'||!reply.exported_directory)throw Error('Invalid public transport export.');
+ }else if(operation==='stage'){
+  if(reply.schema!=='nodenetwork-native-transport-staged-v1'||reply.staged!==true||reply.fleet_readiness_verified!==false||reply.runtime_admission!==false||reply.commissioned!==false)throw Error('Invalid transport staging response.');
+ }else{
+  const keys=['schema','pending','signed','formation_sha256','genesis_review_sha256','target_provider_report_sha256','network_id','chain_id','request_sha256','review_sha256','genesis_sha256','authority_sha256','issuer_root_sha256','valid_from_unix','expires_at_unix','validator_addresses','runtime_admission','fleet_readiness_verified','registry_sha256','sign_request_sha256'];
+  if(Object.keys(reply).some(k=>!keys.includes(k))||reply.schema!=='nodenetwork-network-transport-v1'||typeof reply.pending!=='boolean'||(reply.pending&&(typeof reply.signed!=='boolean'||reply.runtime_admission!==false||reply.fleet_readiness_verified!==false)))throw Error('Invalid transport review.');
+ }
+ return reply;
 }
 
 export async function nodeNetworkGuest(target,operation,guestId){
  if(!isTauri())throw Error('Managed guests require the native Portal app.');
- if(!['status','preflight','create','stop','remove'].includes(operation)||typeof guestId!=='string'||!/^[a-z][a-z0-9-]{0,31}$/.test(guestId))throw Error('Unsupported guest operation or ID.');
+ if(!['status','preflight','connection','boot_diagnostics','create','stop','resume','remove'].includes(operation)||typeof guestId!=='string'||!/^[a-z][a-z0-9-]{0,31}$/.test(guestId))throw Error('Unsupported guest operation or ID.');
  const call=()=>invoke('portal_nodenetwork_guest',{target,operation,guestId});
- const reply=await(['status','preflight'].includes(operation)?call():withNodeChange(call));
+ const reply=await(['status','preflight','connection','boot_diagnostics'].includes(operation)?call():withNodeChange(call));
  if(reply===null)return null;
+ if(operation==='connection'){
+  const codes=['physical_controller_unavailable','physical_mux_unavailable','guest_inactive','guest_ssh_unavailable','guest_sudo_unavailable','ready'];
+  const fields=['schema','guest_id','request_sha256','ssh_host_fingerprint','ready','code','mutation_performed'];
+  if(!reply||Object.keys(reply).length!==fields.length||fields.some(k=>!Object.hasOwn(reply,k))||reply.schema!=='nodenetwork-guest-connection-v1'||reply.guest_id!==guestId||!codes.includes(reply.code)||reply.ready!==(reply.code==='ready')||reply.mutation_performed!==false||!(reply.request_sha256===null||typeof reply.request_sha256==='string'&&/^[a-f0-9]{64}$/.test(reply.request_sha256))||!(reply.ssh_host_fingerprint===null||typeof reply.ssh_host_fingerprint==='string'&&/^SHA256:[A-Za-z0-9+/]{43}$/.test(reply.ssh_host_fingerprint))||reply.ready&&(reply.request_sha256===null||reply.ssh_host_fingerprint===null))throw Error('Invalid native guest connection observation.');
+  return reply;
+ }
+ if(operation==='boot_diagnostics'){
+  const fields=['schema','guest_id','request_sha256','runtime_version','sampled_bytes','log_size_bytes','categories','mutation_performed'];
+  const categories=['firmware_started','boot_device_attempted','boot_device_failed','firmware_asset_missing','kernel_started','cloud_init_observed','ssh_started','ssh_failed','kernel_panic','login_prompt'];
+  if(!reply||Object.keys(reply).length!==fields.length||fields.some(k=>!Object.hasOwn(reply,k))||reply.schema!=='nodenetwork-guest-boot-diagnostics-v1'||reply.guest_id!==guestId||!/^[a-f0-9]{64}$/.test(reply.request_sha256)||![1,2].includes(reply.runtime_version)||!Number.isSafeInteger(reply.sampled_bytes)||reply.sampled_bytes<0||reply.sampled_bytes>65536||!Number.isSafeInteger(reply.log_size_bytes)||reply.log_size_bytes<reply.sampled_bytes||reply.mutation_performed!==false||!reply.categories||Object.keys(reply.categories).length!==categories.length||categories.some(k=>typeof reply.categories[k]!=='boolean'))throw Error('Invalid native guest boot diagnostic.');
+  return reply;
+ }
  const preflight=operation==='preflight';
  if(reply?.schema!==(preflight?'nodenetwork-guest-preflight-v1':'nodenetwork-guest-status-v1')||(preflight?reply.selection?.guest_id:reply.guest_id)!==guestId)throw Error('Invalid native guest response for the selected guest.');
  return reply;
@@ -197,9 +238,23 @@ export async function nodeNetworkConfigureGuest(target){
 
 export async function nodeNetworkFleetReadiness(target,operation,targets=null,reviewSha256=null){
  if(!isTauri())throw Error('Fleet readiness requires native Portal and authenticated controllers.');
- if(!['collect','stage','reconcile'].includes(operation)||(operation==='collect'?(!Array.isArray(targets)||targets.length!==5||reviewSha256!==null):(targets!==null||(operation==='stage'?!/^[a-f0-9]{64}$/.test(reviewSha256):reviewSha256!==null))))throw Error('Unsupported bounded fleet readiness request.');
+ if(!['collect','stage','reconcile','verify_not_applied','verify_commission_not_applied'].includes(operation)||(operation==='collect'?(!Array.isArray(targets)||(targets.length<4||targets.length>5)||reviewSha256!==null):(targets!==null||(operation==='stage'?!/^[a-f0-9]{64}$/.test(reviewSha256):reviewSha256!==null))))throw Error('Unsupported bounded fleet readiness request.');
  const reply=await withNodeChange(()=>invoke('portal_nodenetwork_fleet_readiness',{target,operation,targets,reviewSha256}));if(reply===null)return null;
- const schema=operation==='collect'?'nodenetwork-native-fleet-readiness-v1':operation==='stage'?'nodenetwork-native-fleet-readiness-staged-v1':'nodenetwork-native-fleet-readiness-reconciled-v1';
+ if(operation==='verify_commission_not_applied'){
+  const fields=['schema','not_applied','commissioned','record_id','request_sha256','readiness_sha256','automatic_retry'];
+  if(!reply||Object.keys(reply).length!==fields.length||!fields.every(k=>Object.hasOwn(reply,k))||reply.schema!=='nodenetwork-native-commission-not-applied-v1'||reply.not_applied!==true||reply.commissioned!==false||reply.automatic_retry!==false||!['record_id','request_sha256','readiness_sha256'].every(k=>typeof reply[k]==='string'&&/^[a-f0-9]{64}$/.test(reply[k])))throw Error('Unsupported commission nonapplication response; original request remains fenced.');return reply;
+ }
+ if(operation==='verify_not_applied'){
+  const fields=['schema','not_applied','readiness_staged','dispatch_sha256','authorization_sha256','automatic_retry'];
+  if(!reply||Object.keys(reply).length!==fields.length||!fields.every(k=>Object.hasOwn(reply,k))||reply.schema!=='nodenetwork-native-readiness-not-applied-v1'||reply.not_applied!==true||reply.readiness_staged!==false||reply.automatic_retry!==false||!['dispatch_sha256','authorization_sha256'].every(k=>typeof reply[k]==='string'&&/^[a-f0-9]{64}$/.test(reply[k])))throw Error('Unsupported readiness nonapplication response; original intent remains fenced.');
+  return reply;
+ }
+ const schema=operation==='collect'?'nodenetwork-native-fleet-readiness-v2':operation==='stage'?'nodenetwork-native-fleet-readiness-staged-v1':'nodenetwork-native-fleet-readiness-reconciled-v1';
+ if(operation==='collect'){
+  const fields=['schema','review_sha256','observations','online_addresses','excluded_addresses','scope','runtime_participation_verified','finality_verified'];
+  const strings=v=>Array.isArray(v)&&v.every(s=>typeof s==='string'&&s.length>0&&s.length<=256&&!/[\u0000-\u001f\u007f]/.test(s))&&v.every((s,i)=>i===0||v[i-1]<s);
+  if(!reply||Object.keys(reply).length!==fields.length||!fields.every(k=>Object.hasOwn(reply,k))||!strings(reply.online_addresses)||!strings(reply.excluded_addresses)||reply.online_addresses.length!==targets.length||reply.online_addresses.length+reply.excluded_addresses.length!==5||reply.excluded_addresses.some(a=>reply.online_addresses.includes(a))||!Array.isArray(reply.observations)||reply.observations.length!==targets.length||reply.observations.some((v,i)=>v?.address!==reply.online_addresses[i]||v?.observation_kind!=='prestart_vpn'||JSON.stringify(v.online_addresses)!==JSON.stringify(reply.online_addresses))||reply.scope!=='commissioning_and_prestart_vpn_only')throw Error('Unsupported native selected-roster readiness response.');
+ }
  if(reply?.schema!==schema||(operation==='reconcile'&&(reply.pending!==false||typeof reply.original_stage_verified!=='boolean'||reply.freshness_verified!==false||reply.commissioned!==false||(reply.review_sha256!==null&&!/^[a-f0-9]{64}$/.test(reply.review_sha256))))||(operation!=='reconcile'&&(!/^[a-f0-9]{64}$/.test(reply.review_sha256)||reply.finality_verified!==false||reply.runtime_participation_verified!==false)))throw Error('Unsupported native commissioning readiness response.');return reply;
 }
 
@@ -220,4 +275,17 @@ export async function nodeNetworkRequestScope(target){
  const value=await invoke('portal_nodenetwork_request_scope',{target});
  if(!value||Object.keys(value).length!==1||typeof value.targetDigest!=='string'||!/^[0-9a-f]{64}$/.test(value.targetDigest))throw Error('Native target request scope is unavailable.');
  return value;
+}
+
+export async function nodeNetworkTreasurySend(target,operation,parameters){
+ if(!isTauri())throw Error('Ordinary test treasury sending requires the native Portal app.');
+ if(!['quote','prepare','submit','status','phase','verify_not_applied'].includes(operation))throw Error('Unsupported treasury send operation.');
+ return withNodeChange(()=>invoke('portal_nodenetwork_treasury_send',{target,operation,parameters}));
+}
+
+export async function nodeNetworkConsensus(target,operation,value=null){
+ if(!isTauri())throw Error('Current-network consensus observations require native Portal.');
+ if(operation==='transaction')consensusTransactionSelector(value);else if(!['telemetry','finality','epoch'].includes(operation)||(operation==='telemetry'?value!==null:!Number.isSafeInteger(value)||value<=0))throw Error('Unsupported consensus observation.');
+ const view=consensusObservation(await invoke('portal_nodenetwork_consensus',{target,operation,value}));
+ if(operation==='transaction'&&(view.evidence?.kind!=='transaction'||['transaction_id','sender','receiver','height'].some(k=>view.evidence.selector[k]!==value[k])))throw Error('Transaction observation differs from the exact requested selector.');return view;
 }

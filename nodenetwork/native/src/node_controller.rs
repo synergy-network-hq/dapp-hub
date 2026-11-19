@@ -185,16 +185,22 @@ impl Target {
 impl Request {
     pub fn validate(&self) -> Result<bool, String> {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
+        if self.operation.starts_with("treasury_send_"){return crate::treasury_send::validate(self)}
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"vpn_diagnostics"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_preflight"|"guest_resources"|"commissioning_observation"|"treasury_preflight"|"treasury_status"|"treasury_export" => false,
-            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_remove"|"treasury_prepare" => true,
+            "target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"vpn_unused_preflight"|"vpn_stop_status"|"vpn_resume_status"|"boot_policy_status"|"vpn_diagnostics"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_boot_diagnostics"|"guest_preflight"|"guest_resources"|"commissioning_observation"|"treasury_preflight"|"treasury_status"|"treasury_export" => false,
+            "install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"vpn_cancel_unused"|"vpn_stop"|"vpn_resume"|"boot_policy"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_resume"|"guest_remove"|"treasury_prepare" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
         };
+        if matches!(self.operation.as_str(),"vpn_enroll"|"vpn_cancel_unused")&&p.get("attempt_sha256").is_some_and(|v|!v.as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))){return Err("Invalid exact native VPN attempt commitment".into())}
         let expected: &[&str] = match self.operation.as_str() {
             "install"|"install_preflight" => &["release_id","manifest_sha256","network_id","chain_id","node_name"],
             "upgrade"|"upgrade_preflight" => &["release_id","manifest_sha256"],
             "uninstall" => &["confirmation"],
+            "boot_policy" => &["service","enabled"],
+            "commissioning_observation" if p.contains_key("online_addresses") => &["online_addresses"],
+            "vpn_cancel_unused" => &["attempt_sha256"],
+            "vpn_enroll" if p.contains_key("attempt_sha256") => &["attempt_sha256"],
             "identity_generate"|"genesis_bind" => &["genesis_sha256"],
             "formation_prepare" => &["formation_sha256"],
             "treasury_prepare" => &["formation_sha256","effective_at_unix"],
@@ -203,16 +209,23 @@ impl Request {
             "network_formation_sign" => &["review_sha256"],
             "network_transport_prepare" => &["formation_sha256","genesis_review_sha256","target_provider_report_sha256","valid_from_unix","expires_at_unix","members"],
             "network_transport_sign" => &["review_sha256"],
-            "guest_status"|"guest_preflight"|"guest_stop"|"guest_remove" => &["guest_id"],
+            "guest_status"|"guest_boot_diagnostics"|"guest_preflight"|"guest_stop"|"guest_remove" => &["guest_id"],
+            "guest_resume" => &["guest_id","resume_sequence","create_request_sha256"],
             "guest_create" => &["guest_id","image_sha256","cpu_count","memory_mib","disk_gib"],
             _ => &[],
         };
         if p.len() != expected.len() || expected.iter().any(|k| !p.contains_key(*k)) {
             return Err("Unexpected controller parameters; paths, secrets and shell commands are forbidden.".into());
         }
+        if self.operation=="commissioning_observation"&&p.contains_key("online_addresses"){
+            let addresses=p["online_addresses"].as_array().filter(|v|v.len()<=5&&v.iter().all(|a|a.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=128&&s.is_ascii()&&!s.bytes().any(|b|b.is_ascii_control())))).ok_or("Invalid exact online validator selection")?;
+            if addresses.windows(2).any(|p|p[0].as_str()>=p[1].as_str()){return Err("Online validator selection must be sorted and unique".into())}
+        }
+        if self.operation=="boot_policy"&&(!matches!(p["service"].as_str(),Some("node"|"vpn"))||!p["enabled"].is_boolean()){return Err("Choose one exact node or VPN boot policy boolean".into())}
         if self.operation.starts_with("guest_")&&self.operation!="guest_resources" {
             let id=p["guest_id"].as_str().ok_or("Guest ID required")?;
             if id.is_empty()||id.len()>32||!id.as_bytes()[0].is_ascii_lowercase()||!id.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'){return Err("Invalid guest ID".into())}
+            if self.operation=="guest_resume"&&(!p["create_request_sha256"].as_str().is_some_and(|v|v.len()==64&&v.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))||!p["resume_sequence"].as_u64().is_some_and(|v|(1..=128).contains(&v))){return Err("Bounded guest resume sequence and creation binding required".into())}
             if self.operation=="guest_create" {
                 if !p["image_sha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Pinned guest image required".into())}
                 for (key,lo,hi)in[("cpu_count",1,32),("memory_mib",1024,65536),("disk_gib",8,512)]{if !p[key].as_u64().is_some_and(|n|(lo..=hi).contains(&n)){return Err("Guest resources outside approved bounds".into())}}
@@ -345,7 +358,8 @@ pub(super) fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path
     Ok(path)
 }
 pub(super) fn remote_command(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>)->Result<tokio::process::Command,String>{
-    remote_command_with_identity(target,directory,account,remote,known_hosts,None)
+    let selected=if target.guest.is_none(){crate::node_bootstrap::controller_operator_identity(target,directory)?}else{None};
+    remote_command_with_identity(target,directory,account,remote,known_hosts,selected.as_deref())
 }
 pub(super) fn remote_command_with_identity(target:&Target,directory:&Path,account:&str,remote:&str,known_hosts:Option<&Path>,identity:Option<&Path>)->Result<tokio::process::Command,String>{
     target.validate()?;
@@ -1219,6 +1233,33 @@ fn health_reply(reply: &Value) -> Result<Value, &'static str> {
 
 // Validate compatible owner acknowledgements before a mutation can close its
 // journal fence. Keep the current full public DTO; projections are read models.
+pub(super) fn vpn_stop_reconciliation(reply:&Value)->Result<Option<String>,String>{
+ let result=&reply["result"];
+ let request=Request{version:1,operation:"vpn_stop".into(),parameters:json!({})};
+ if reply["version"]!=1||reply["ok"]!=true||reply.as_object().is_none_or(|v|v.len()!=3)||result.as_object().is_none_or(|v|v.len()!=5)||result["schema"]!="nodenetwork-vpn-stop-status-v1"||result["attempt_preserved"]!=true||result["provider_action"]!=false{return Err("Unsupported VPN stop observation; no journal outcome was changed".into())}
+ if result["stopped"]==false&&result["request_sha256"].is_null(){return Ok(None)}
+ if result["stopped"]==true&&result["request_sha256"]==request.approval_id(){return Ok(Some(request.approval_id()))}
+ Err("VPN stop observation does not bind the exact consumed request".into())
+}
+
+pub(super) fn vpn_resume_reconciliation(reply:&Value)->Result<Option<String>,String>{
+ let r=&reply["result"];let request=Request{version:1,operation:"vpn_resume".into(),parameters:json!({})};
+ if reply["version"]!=1||reply["ok"]!=true||reply.as_object().is_none_or(|v|v.len()!=3)||r.as_object().is_none_or(|v|v.len()!=5||!["schema","resumed","request_sha256","validator_started","enrollment_preserved"].iter().all(|k|v.contains_key(*k)))||r["schema"]!="nodenetwork-vpn-resume-status-v1"||r["validator_started"]!=false||r["enrollment_preserved"]!=true{return Err("Unsupported VPN resume observation; no journal outcome changed".into())}
+ if r["resumed"]==false&&r["request_sha256"].is_null(){return Ok(None)}
+ if r["resumed"]==true&&r["request_sha256"]==request.approval_id(){return Ok(Some(request.approval_id()))}
+ Err("VPN resume observation does not bind the exact consumed request".into())
+}
+
+pub(super) fn boot_policy_reconciliation(reply:&Value)->Result<Option<String>,String>{
+ let invalid=||"Unsupported boot policy observation; no journal outcome changed".to_string();let r=&reply["result"];
+ if reply["version"]!=1||reply["ok"]!=true||reply.as_object().is_none_or(|v|v.len()!=3)||r.as_object().is_none_or(|v|v.len()!=6||!["schema","node_enabled","vpn_enabled","applied","request_sha256","runtime_changed"].iter().all(|k|v.contains_key(*k)))||r["schema"]!="nodenetwork-boot-policy-status-v1"||!r["node_enabled"].is_boolean()||!r["vpn_enabled"].is_boolean()||r["runtime_changed"]!=false{return Err(invalid())}
+ if r["applied"]==false&&r["request_sha256"].is_null(){return Ok(None)}
+ if r["applied"]==true{for service in ["node","vpn"]{
+  let request=Request{version:1,operation:"boot_policy".into(),parameters:json!({"service":service,"enabled":r[format!("{service}_enabled")]})};
+  if r["request_sha256"]==request.approval_id(){return Ok(Some(request.approval_id()))}
+ }}Err(invalid())
+}
+
 pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Value,String>{
  if !request.validate()? {return Ok(reply)}
  if !exact_genesis_mutation_reply(&reply){return Err("Controller mutation acknowledgement is ambiguous; inspect the original target before another change.".into())}
@@ -1227,6 +1268,21 @@ pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Val
   "install"=>install_reply(request,&reply),
   "upgrade"=>upgrade_reply(request,&reply),
   "register"=>register_service_reply(&reply),
+  "vpn_stop"=>{
+   if reply["ok"]==false {Err("VPN stop was refused; inspect target diagnostics before another action.")}
+   else if reply["result"]==json!({"schema":"nodenetwork-vpn-stop-v1","stopped":true,"attempt_preserved":true,"provider_action":false}) {Ok(reply.clone())}
+   else {Err("VPN stop outcome is uncertain; read target diagnostics before another action.")}
+  },
+  "vpn_resume"=>{
+   if reply["ok"]==false&&reply["error"]["code"]=="vpn_resume_not_started"&&reply["error"]["message"]=="Active unresponsive VPN must be inspected; resume never restarts it"{Ok(reply.clone())}
+   else if reply["ok"]==false{Err("VPN resume was refused; inspect original enrollment and diagnostics.")}
+   else if reply["result"]==json!({"schema":"nodenetwork-vpn-resume-v1","resumed":true,"validator_started":false,"enrollment_preserved":true}){Ok(reply.clone())}
+   else{Err("VPN resume outcome uncertain; read resume status before another action.")}
+  },
+  "boot_policy"=>{
+   if reply["ok"]==true&&reply["result"]==json!({"schema":"nodenetwork-boot-policy-v1","service":request.parameters["service"],"enabled":request.parameters["enabled"],"runtime_changed":false}){Ok(reply.clone())}
+   else{Err("Boot policy outcome uncertain; read boot policy status before another change.")}
+  },
   "commission"=>commissioning_reply(&reply),
   "start"|"stop"|"restart"=>node_service_reply(&request.operation,&reply),
   "identity_generate"=>identity_generation_reply(request,&reply),
@@ -1252,8 +1308,8 @@ pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Val
 pub(super) async fn execute_pinned(target:Target,request:Request,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
     target.validate()?;request.validate()?;
     let wire=request.canonical().to_string();
-    let input_limit=if request.operation=="genesis_stage"{12*1024*1024}else if matches!(request.operation.as_str(),"network_formation_prepare"|"network_transport_prepare"){2*1024*1024}else{REQUEST_LIMIT};
-    let output_limit=if request.operation=="network_transport_export"{4*1024*1024+16384}else if request.operation=="network_formation_export"{2*1024*1024}else{LIMIT};
+    let input_limit=if request.operation=="genesis_stage"{12*1024*1024}else if matches!(request.operation.as_str(),"network_formation_prepare"|"network_transport_prepare"|"treasury_send_prepare"){2*1024*1024}else{REQUEST_LIMIT};
+    let output_limit=if request.operation=="network_transport_export"{4*1024*1024+16384}else if matches!(request.operation.as_str(),"network_formation_export"|"treasury_send_preflight"){2*1024*1024}else{LIMIT};
     if wire.len()>=input_limit{return Err("Controller request exceeds the operation's safe wire limit.".into())}
     let _serial=SERIAL.lock().await;
     let reply=exchange(&target,wire.as_bytes(),if request.operation=="vpn_enroll"{240}else{180},control_dir,known_hosts,true,output_limit).await?;
@@ -1315,7 +1371,7 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         let mut c=tokio::process::Command::new("/usr/bin/sudo");
         c.args(["-n","/usr/bin/python3","-I","-B",CONTROLLER]); c
     } else {
-        remote_command(&target,control_dir,"synergy-nodenetwork",
+        remote_command(target,control_dir,"synergy-nodenetwork",
             "/usr/bin/sudo -n /usr/bin/python3 -I -B /opt/synergy/tmp/controller/controller.py",known_hosts)?
     };
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
@@ -2265,4 +2321,65 @@ async fn exchange(target:&Target,wire:&[u8],deadline:u64,control_dir:&Path,known
         assert_ne!(pin,request.approval_id());
         assert!(serde_json::from_value::<Request>(json!({"version":1,"operation":"start","parameters":{},"shell":"reboot"})).is_err());
     }
+}
+
+#[cfg(test)]
+mod vpn_stop_tests {
+ use super::*;
+ #[test]fn vpn_stop_status_reconciles_only_exact_consumed_request(){
+  let request=Request{version:1,operation:"vpn_stop".into(),parameters:json!({})};
+  let status=Request{version:1,operation:"vpn_stop_status".into(),parameters:json!({})};assert!(!status.validate().unwrap());
+  let reply=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-stop-status-v1","stopped":true,"request_sha256":request.approval_id(),"attempt_preserved":true,"provider_action":false}});
+  assert_eq!(vpn_stop_reconciliation(&reply).unwrap(),Some(request.approval_id()));
+  for(field,value)in[("request_sha256",json!("f".repeat(64))),("stopped",json!(false)),("provider_action",json!(true)),("unknown",json!(true))]{let mut bad=reply.clone();bad["result"][field]=value;assert!(vpn_stop_reconciliation(&bad).is_err());}
+  let mut absent=reply;absent["result"]["stopped"]=json!(false);absent["result"]["request_sha256"]=Value::Null;assert_eq!(vpn_stop_reconciliation(&absent).unwrap(),None);
+ }
+ #[test]fn vpn_stop_requires_parameterless_mutation_and_exact_acknowledgement(){
+  let mut request=Request{version:1,operation:"vpn_stop".into(),parameters:json!({})};
+  assert!(request.validate().unwrap());
+  let reply=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-stop-v1","stopped":true,"attempt_preserved":true,"provider_action":false}});
+  assert!(mutation_acknowledgement(&request,reply.clone()).is_ok());
+  for field in ["provider_action","stopped","attempt_preserved"] {let mut bad=reply.clone();bad["result"][field]=json!(field=="provider_action");assert!(mutation_acknowledgement(&request,bad).is_err());}
+  let mut bad=reply;bad["result"]["unexpected"]=json!(true);assert!(mutation_acknowledgement(&request,bad).is_err());
+  request.parameters=json!({"unit":"foreign.service"});assert!(request.validate().is_err());
+ }
+}
+#[cfg(test)]mod vpn_resume_tests{
+ use super::*;
+ #[test]fn vpn_resume_is_exact_parameterless_and_ack_cannot_start_validator(){
+ let request=Request{version:1,operation:"vpn_resume".into(),parameters:json!({})};assert!(request.validate().unwrap());
+ let refusal=json!({"version":1,"ok":false,"error":{"code":"vpn_resume_not_started","message":"Active unresponsive VPN must be inspected; resume never restarts it"}});assert_eq!(mutation_acknowledgement(&request,refusal.clone()).unwrap()["ok"],false);
+ for(field,value)in[("code",json!("operation_refused")),("message",json!("VPN resume outcome uncertain; read exact resume status before another action"))]{let mut bad=refusal.clone();bad["error"][field]=value;assert!(mutation_acknowledgement(&request,bad).is_err())}
+ let ack=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-resume-v1","resumed":true,"validator_started":false,"enrollment_preserved":true}});assert!(mutation_acknowledgement(&request,ack.clone()).is_ok());
+ for(field,value)in[("validator_started",json!(true)),("enrollment_preserved",json!(false)),("resumed",json!(false)),("extra",json!(true))]{let mut bad=ack.clone();bad["result"][field]=value;assert!(mutation_acknowledgement(&request,bad).is_err())}
+ for parameters in [json!({"provider":"new"}),json!({"setup_key":"forbidden"}),json!({"restart":true})]{assert!(Request{version:1,operation:"vpn_resume".into(),parameters}.validate().is_err())}
+ }
+ #[test]fn vpn_resume_status_closes_only_exact_consumed_connected_proof(){
+ let request=Request{version:1,operation:"vpn_resume".into(),parameters:json!({})};let read=Request{version:1,operation:"vpn_resume_status".into(),parameters:json!({})};assert!(!read.validate().unwrap());
+ let status=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-resume-status-v1","resumed":true,"request_sha256":request.approval_id(),"validator_started":false,"enrollment_preserved":true}});assert_eq!(vpn_resume_reconciliation(&status).unwrap(),Some(request.approval_id()));
+ for(field,value)in[("request_sha256",json!("f".repeat(64))),("validator_started",json!(true)),("enrollment_preserved",json!(false)),("resumed",json!(false)),("extra",json!(true))]{let mut bad=status.clone();bad["result"][field]=value;assert!(vpn_resume_reconciliation(&bad).is_err())}
+ let mut absent=status;absent["result"]["resumed"]=json!(false);absent["result"]["request_sha256"]=Value::Null;assert_eq!(vpn_resume_reconciliation(&absent).unwrap(),None);
+ }
+}
+
+#[cfg(test)]mod boot_policy_tests{
+ use super::*;
+ #[test]fn boot_policy_requests_and_acknowledgements_bind_exact_service_and_boolean(){
+  let mut digests=std::collections::BTreeSet::new();
+  for service in ["node","vpn"]{for enabled in [false,true]{
+   let r=Request{version:1,operation:"boot_policy".into(),parameters:json!({"service":service,"enabled":enabled})};assert!(r.validate().unwrap());assert!(digests.insert(r.approval_id()));
+   let reply=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-boot-policy-v1","service":service,"enabled":enabled,"runtime_changed":false}});assert!(mutation_acknowledgement(&r,reply.clone()).is_ok());
+   for(field,value)in[("enabled",json!(!enabled)),("service",json!("other")),("runtime_changed",json!(true)),("extra",json!(true))]{let mut bad=reply.clone();bad["result"][field]=value;assert!(mutation_acknowledgement(&r,bad).is_err());}
+  }}assert_eq!(digests.len(),4);
+  for parameters in [json!({}),json!({"service":"node","enabled":"true"}),json!({"service":"guest","enabled":true}),json!({"service":"vpn","enabled":false,"start":true})]{assert!(Request{version:1,operation:"boot_policy".into(),parameters}.validate().is_err());}
+ }
+ #[test]fn boot_policy_status_reconciles_only_matching_current_enabled_state(){
+  let read=Request{version:1,operation:"boot_policy_status".into(),parameters:json!({})};assert!(!read.validate().unwrap());
+  for service in ["node","vpn"]{for enabled in [false,true]{let r=Request{version:1,operation:"boot_policy".into(),parameters:json!({"service":service,"enabled":enabled})};
+   let mut reply=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-boot-policy-status-v1","node_enabled":false,"vpn_enabled":false,"applied":true,"request_sha256":r.approval_id(),"runtime_changed":false}});reply["result"][format!("{service}_enabled")]=json!(enabled);assert_eq!(boot_policy_reconciliation(&reply).unwrap(),Some(r.approval_id()));
+   reply["result"][format!("{service}_enabled")]=json!(!enabled);assert!(boot_policy_reconciliation(&reply).is_err());
+  }}
+  let status=json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-boot-policy-status-v1","node_enabled":false,"vpn_enabled":false,"applied":false,"request_sha256":null,"runtime_changed":false}});assert_eq!(boot_policy_reconciliation(&status).unwrap(),None);
+  for(field,value)in[("applied",json!(true)),("node_enabled",json!(null)),("request_sha256",json!("a".repeat(64))),("runtime_changed",json!(true)),("extra",json!(false))]{let mut bad=status.clone();bad["result"][field]=value;assert!(boot_policy_reconciliation(&bad).is_err());}
+ }
 }
