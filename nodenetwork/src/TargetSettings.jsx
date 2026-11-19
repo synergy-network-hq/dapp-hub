@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react';
 import {Card, Detail, ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {readTargetSelection, saveTargetSelection, targetSelectionDraft, targetSelectionKey, TargetSelectionChanged} from './target-selection.js';
+import {hostCompatibility,requireTargetMode} from './host-compatibility.js';
 
 function initialSelection() {
  try {
@@ -51,10 +52,10 @@ export function useTargetSelection() {
   }
  }
 
- function save(localUnsupported) {
+ function save(compatibility) {
   if (!snapshot) return;
   try {
-   if (draft.kind === 'local' && localUnsupported) throw Error('This machine does not support a local validator.');
+   requireTargetMode(compatibility,draft.kind);
    const saved = saveTargetSelection(draft, snapshot.raw);
    setDraft(targetSelectionDraft(saved.target));
    setSelection({snapshot: saved, target: saved.target, error: '',
@@ -84,15 +85,15 @@ export function useTargetSelection() {
 
 export function TargetSettings({selection, local}) {
  const {target, draft, snapshot, updateDraft, loadSavedChoice, save, error, notice} = selection;
- const localUnsupported = local.data?.localValidatorSupported === false;
+ const compatibility = hostCompatibility(local);
  const monitorOnly = draft.kind === 'monitor';
  return <Card title="Validator target">
-  <form onSubmit={event => {event.preventDefault(); save(localUnsupported);}}>
+  <form onSubmit={event => {event.preventDefault(); save(compatibility);}}>
    <label>Target mode
     <select aria-label="Validator target type" value={draft.kind} onChange={event => updateDraft('kind', event.target.value)}>
      <option value="monitor">Monitor public network only</option>
-     <option value="local" disabled={localUnsupported}>This machine · Linux x86_64 required</option>
-     <option value="remote">Remote headless machine</option>
+     <option value="local" disabled={!compatibility.local}>This machine · Linux x86_64 required</option>
+     <option value="remote" disabled={!compatibility.remote}>Remote headless machine</option>
     </select>
    </label>
    {draft.kind === 'remote' && <>
@@ -104,7 +105,7 @@ export function TargetSettings({selection, local}) {
     </label>
    </>}
    {monitorOnly && target && <p>Saving monitor-only mode detaches the target from Portal. The node keeps running and submitted operations can still finish.</p>}
-   <button disabled={!snapshot || (draft.kind === 'local' && localUnsupported)}>
+   <button disabled={!snapshot || (!monitorOnly && !(draft.kind==='local'?compatibility.local:draft.kind==='remote'&&compatibility.remote))}>
     {monitorOnly ? 'Save monitor-only mode' : 'Save validator target'}
    </button>
   </form>
@@ -113,6 +114,7 @@ export function TargetSettings({selection, local}) {
   {notice && <p role="status">{notice}</p>}
   <Detail data={{target: target?.kind === 'local' ? 'This machine' : target?.host ?? 'Host selection deferred', root: target?.root}}/>
   <p>Managed targets require operator and host authentication and an approved release before installation.</p>
-  {localUnsupported && <p>{local.data.reason}</p>}
+  <p role="status">{compatibility.message}</p>
+  {local.error&&local.reload&&<button type="button" onClick={local.reload}>Check native platform compatibility again</button>}
  </Card>;
 }

@@ -45,6 +45,7 @@ import {VpnStatus} from './VpnStatus.jsx';
 import {CustodyStatus} from './CustodyStatus.jsx';
 import {OffboardingChecklist} from './Offboarding.jsx';
 import {TargetSettings, useTargetSelection} from './TargetSettings.jsx';
+import {hostCompatibility,hostTargetSupported} from './host-compatibility.js';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
 import {readNodeNetwork,provisioningChecks} from './nodeNetwork.js';
 
@@ -64,7 +65,7 @@ export function NodeNetworkApp(){
  const tab=({overview:'Network',operations:operationsTab,monitoring:'Management',settings:settingsTab})[section];
  const permitted=n.permit('node','readNetwork');
  const inspectMasterPermitted=permitted&&!n.recoverySuspended;
- const targetScopeCurrent=()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&targetSettings.targetIsCurrent();
+ const targetScopeCurrent=()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&hostTargetSupported(hostControl,target)&&targetSettings.targetIsCurrent();
  const indexAvailable=permitted&&isCanonicalTestnetRpc(profile);
  const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,profile.genesisHash,permitted]);
  const masterScope=useRef({permitted:inspectMasterPermitted,generation:0});
@@ -83,6 +84,8 @@ export function NodeNetworkApp(){
   if(!permitted)throw new Error('Allow NodeNetwork inspection in Security & permissions.');
   return nodeNetworkHostStatus();
  },`${permitted}`);
+ const hostControl=hostCompatibility(local);
+ const targetSupported=hostTargetSupported(hostControl,target);
  const processing=useResource(async signal=>{
   if(!permitted||profile.id!==CANARY_PROFILE.id)return null;
   return canaryProcessingStatus(await canaryRead('synergy_getProcessingContextV1',{}, {signal}));
@@ -196,7 +199,8 @@ export function NodeNetworkApp(){
   {['Management','Validator setup'].includes(tab)&&!target&&<VpnStatus onOpenDiagnostics={()=>setSection('logs')}/>}
   {tab==='Management'&&!target&&<CustodyStatus onOpenHistory={()=>setSection('logs')}/>}
   {(tab==='Management'||section==='logs')&&<RequestHistory permitted={permitted} target={target} targetScopeCurrent={targetScopeCurrent}/>}
-  {target&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={local.data?.localValidatorSupported===true} operatorCredentialSupported={local.data?.platform==='macos'} onOpenDiagnostics={()=>setSection('logs')}
+  {target&&tab&&tab!=='Network'&&!targetSupported&&<Card title="Target management unavailable"><p>{hostControl.message}</p><p>The saved target is retained. No target operation was resumed.</p></Card>}
+  {target&&targetSupported&&tab&&tab!=='Network'&&<NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={hostControl.local} operatorCredentialSupported={local.data?.platform==='macos'} onOpenDiagnostics={()=>setSection('logs')}
    onSelectTarget={targetSettings.selectTarget} targetScopeCurrent={targetScopeCurrent}/>}
  </NodeNetworkPanelFrame>;
 }
