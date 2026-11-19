@@ -20,6 +20,21 @@ struct Grant{operation:String,request_sha256:String}
 struct Document {version:u8,profile:String,target:BoundTarget,release_id:String,manifest_sha256:String,
  network_id:String,chain_id:u64,node_name:String,sequence:u64,expires_at:u64,
  artifacts:BTreeMap<String,String>,requests:Vec<Grant>,genesis_pins:Option<BTreeMap<String,String>>}
+const GATEWAY_PUBLIC_INPUTS:&[&str]=&["formation-context.json","commissioning/network/genesis.json","commissioning/network/authority.json","commissioning/network/authority-root.pub","commissioning/network/network-manifest.json","commissioning/network/transport-registry.json","commissioning/network/transport-root.pub"];
+fn initial_gateway_profile(d:&Document)->Result<(),String>{
+ if d.requests.iter().any(|r|r.operation=="gateway_install"||r.operation.starts_with("gateway_target_")){
+  if d.requests.len()!=1||d.requests[0].operation!="gateway_install"||d.chain_id!=99999||!d.network_id.starts_with("synergy-posy-canary-")
+   ||d.artifacts.len()!=GATEWAY_PUBLIC_INPUTS.len()||GATEWAY_PUBLIC_INPUTS.iter().any(|name|!d.artifacts.get(*name).is_some_and(|value|pin(value)))
+   ||!d.genesis_pins.as_ref().is_some_and(|pins|pins.len()==3&&["genesis.json","authority.json","authority-root.pub"].iter().all(|name|pins.get(*name)==d.artifacts.get(&format!("commissioning/network/{name}")))){
+   return Err("Initial gateway authorization requires one exact install and only the existing public formation plus six pinned signed-origin files".into())
+  }
+ }Ok(())
+}
+pub(super) fn require_gateway_initial(doc:&Value)->Result<(),String>{
+ let d:Document=serde_json::from_value(doc.clone()).map_err(|_|"Unsupported gateway initial authorization")?;
+ if !d.requests.iter().any(|r|r.operation=="gateway_install"){return Err("Gateway target operations require their own independently approved initial installation".into())}
+ initial_gateway_profile(&d)
+}
 pub struct Prepared {wire:Zeroizing<Vec<u8>>,pub summary:Value,pub host_key:Option<String>,pub sha256:String,pub(super) document:String,pub(super) continuation:Option<(String,String,String)>}
 fn digest(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
 fn pin(s:&str)->bool{s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))}
@@ -62,7 +77,7 @@ fn validate(raw:&str,target:&Target,expected:&str,now:u64)->Result<Document,Stri
  Request{version:1,operation:"install_preflight".into(),parameters:json!({"release_id":d.release_id,"manifest_sha256":d.manifest_sha256,"network_id":d.network_id,"chain_id":d.chain_id,"node_name":d.node_name})}.validate()?;
  if d.artifacts.len()>10||d.artifacts.iter().any(|(n,p)|limit(n).is_none()||!pin(p))||d.requests.is_empty()||d.requests.len()>16{return Err("Authorization inputs or requests exceed exact fixed scope".into());}
  let mut requests=std::collections::BTreeSet::new();
- for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"vpn_cancel_unused"|"vpn_stop"|"vpn_resume"|"boot_policy"|"gateway_admission_prepare"|"gateway_admission_sign"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"treasury_prepare"|"treasury_send_prepare"|"treasury_send_submit"|"guest_create"|"guest_stop"|"guest_resume"|"guest_remove"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
+ for r in &d.requests{if !matches!(r.operation.as_str(),"install"|"commission"|"register"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"vpn_cancel_unused"|"vpn_stop"|"vpn_resume"|"boot_policy"|"gateway_admission_prepare"|"gateway_admission_sign"|"gateway_install"|"gateway_target_generate"|"gateway_target_commission"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"identity_generate"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"treasury_prepare"|"treasury_send_prepare"|"treasury_send_submit"|"guest_create"|"guest_stop"|"guest_resume"|"guest_remove"|"formation_prepare"|"genesis_stage"|"genesis_bind")||!pin(&r.request_sha256)||!requests.insert(&r.request_sha256){return Err("Only unique exact supported mutation digests may be authorized".into());}}
  if d.genesis_pins.as_ref().is_some_and(|p|p.len()!=3||!["genesis.json","authority.json","authority-root.pub"].iter().all(|n|p.get(*n).is_some_and(|s|pin(s)))){return Err("Exact independently approved Genesis pins required".into());}
  Ok(d)
 }
@@ -75,6 +90,7 @@ pub fn prepare(path:&Path,target:&Target)->Result<Prepared,String>{
 fn prepare_pinned(path:&Path,target:&Target,expected:&str,now:u64)->Result<Prepared,String>{
  let raw=read(path,65536)?;let text=std::str::from_utf8(&raw).map_err(|_|"Authorization must be exact UTF8 JSON")?;
  let d=validate(text,target,expected,now)?;
+ initial_gateway_profile(&d)?;
  if target.kind=="local"{let machine=read(Path::new("/etc/machine-id"),128)?;if Some(digest(&machine))!=d.target.machine_id_sha256{return Err("Local machine identity differs from the approved document".into());}}
  let mut artifacts=BTreeMap::new();
  for (name,pin) in &d.artifacts{let bytes=read(&path.parent().unwrap().join(name),limit(name).unwrap())?;if digest(&bytes)!=*pin{return Err("Selected authorization artifact digest differs".into());}artifacts.insert(name.clone(),Zeroizing::new(STANDARD.encode(&bytes)));}
@@ -140,7 +156,7 @@ pub(super) fn verify_initial(raw:&str,target:&Target)->Result<Value,String>{
  // Expiry limits the original one-use grants. Explicitly confirmed continuations
  // have their own short expiry; the immutable host/formation pin is retained.
  let when=v["expires_at"].as_u64().and_then(|n|n.checked_sub(1)).ok_or("Invalid initial expiry")?;
- validate(raw,target,&hash,when)?;Ok(v)
+ initial_gateway_profile(&validate(raw,target,&hash,when)?)?;Ok(v)
 }
 pub(super) fn continuation(doc:Value,target:&Target,initial:&str,parent:&str,formation:&str)->Result<Prepared,String>{
  if !initial_pin_allowed(initial)||!pin(parent)||!pin(formation){return Err("Unapproved continuation origin".into())}
@@ -226,6 +242,17 @@ pub(super) fn transport_continuation(mut doc:Value,target:&Target,initial:&str,p
 #[cfg(test)]mod tests{
  use super::*;
  fn fixture()->(Target,Value){let t=Target{kind:"remote".into(),host:Some("127.0.0.1".into()),port:Some(22281),root:"/opt/synergy".into(),guest:None};let d=json!({"version":1,"profile":PROFILE,"target":{"kind":t.kind,"host":t.host,"port":t.port,"root":t.root,"machine_id_sha256":null,"host_key":format!("[127.0.0.1]:22281 ssh-ed25519 {}",STANDARD.encode([b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[0u8;32]].concat()))},"release_id":"reviewed-master","manifest_sha256":"a".repeat(64),"network_id":"nodenetwork-formation-disposable-test","chain_id":99999,"node_name":"validator-test","sequence":1,"expires_at":1060,"artifacts":{},"requests":[{"operation":"stop","request_sha256":"c".repeat(64)}],"genesis_pins":null});(t,d)}
+ #[test]fn gateway_initial_uses_only_existing_public_formation_and_six_signed_origin_inputs(){
+  let(_,mut d)=fixture();d["network_id"]=json!("synergy-posy-canary-test");d["requests"]=json!([{"operation":"gateway_install","request_sha256":"a".repeat(64)}]);
+  d["artifacts"]=json!(GATEWAY_PUBLIC_INPUTS.iter().map(|name|(*name,"a".repeat(64))).collect::<BTreeMap<_,_>>());
+  d["genesis_pins"]=json!(["genesis.json","authority.json","authority-root.pub"].into_iter().map(|name|(name,"a".repeat(64))).collect::<BTreeMap<_,_>>());
+  assert!(require_gateway_initial(&d).is_ok());
+  for key in GATEWAY_PUBLIC_INPUTS{let mut bad=d.clone();bad["artifacts"].as_object_mut().unwrap().remove(*key);assert!(require_gateway_initial(&bad).is_err())}
+  let mut private=d.clone();private["artifacts"]["keys/apqe/custody.unlock"]=json!("b".repeat(64));assert!(require_gateway_initial(&private).is_err());
+  let mut drift=d.clone();drift["genesis_pins"]["authority-root.pub"]=json!("b".repeat(64));assert!(require_gateway_initial(&drift).is_err());
+  let mut mixed=d;mixed["requests"].as_array_mut().unwrap().push(json!({"operation":"install","request_sha256":"c".repeat(64)}));assert!(require_gateway_initial(&mixed).is_err());
+  let(_,validator)=fixture();assert!(initial_gateway_profile(&serde_json::from_value(validator.clone()).unwrap()).is_ok());assert!(require_gateway_initial(&validator).is_err());
+ }
  #[test]fn guest_authorization_cannot_be_reused_for_host_or_another_creation(){
   let(mut t,mut d)=fixture();let bytes=[b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[7u8;32]].concat();
   let g=crate::managed_guest::GuestBinding{guest_id:"validator-guest".into(),create_request_sha256:"a".repeat(64),ssh_host_public_key:format!("ssh-ed25519 {}",STANDARD.encode(&bytes)),ssh_host_fingerprint:format!("SHA256:{}",STANDARD.encode(Sha256::digest(&bytes)).trim_end_matches('='))};

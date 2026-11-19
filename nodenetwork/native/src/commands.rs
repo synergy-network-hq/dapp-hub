@@ -351,6 +351,11 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let reply=controller(&app,target.clone(),gateway_query(&request),&directory).await?;
   Some(crate::gateway_admission::reviewed_mutation(&request,&reply)?)
  }else{None};
+ let gateway_target_review=if matches!(request.operation.as_str(),"gateway_install"|"gateway_target_generate"|"gateway_target_commission"){
+  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+  let reply=controller(&app,target.clone(),crate::gateway_target::query(&request),&directory).await?;
+  Some(crate::gateway_target::reviewed_mutation(&request,&reply)?)
+ }else{None};
 
  let mut genesis_review=None;
  if request.operation=="network_formation_sign" {
@@ -362,9 +367,10 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  }
  if mutation {
   let title=format!("Authorize NodeNetwork {}",request.operation);
-  let parameters=if gateway_review.is_some(){serde_json::json!({"reviewed_public_scope":gateway_review})}else{request.parameters.clone()};
+  let parameters=if gateway_review.is_some(){serde_json::json!({"reviewed_public_scope":gateway_review})}else if gateway_target_review.is_some(){serde_json::json!({"reviewed_public_scope":gateway_target_review})}else{request.parameters.clone()};
   let message=format!("Target: {}\nRoot: /opt/synergy\nOperation: {}\nParameters: {}\nExact request approval ID: {}\n\nThis action changes the selected validator. A separate matching host grant is required. In an independently approved debug formation, this confirmation can stage a short-lived exact continuation for the same target/master/network; production remains denied. Uninstall destroys the node, keys and signing-safety state. No action is retried automatically.",target.label(),request.operation,parameters,request.approval_id());
   let message=if gateway_review.is_some(){format!("{message}\n\nENGINEERING GATEWAY ADMISSION ONLY. Approve only this exact additional issuer purpose, public gateway enrollment and signed network origin. Preparation stages the fixed public purpose approval; signing is a separate action using role-bound issuer custody. This does not commission or start a gateway, expose validator RPC, migrate Wallet trust, or approve production. If the reply is lost, reconcile this exact request ID; never regrant blindly.")}else{message};
+  let message=if gateway_target_review.is_some(){format!("{message}\n\nENGINEERING GATEWAY TARGET ONLY. Fresh custody is generated only on this selected target; no private material is imported or exported. Commissioning verifies the exact public admission, configuration and target custody. Services remain stopped, boot disabled and public RPC closed. This does not sign an admission, change Wallet trust or approve production. Reconcile the original request if its response is lost; never regenerate blindly.")}else{message};
   let message=if request.operation=="vpn_stop"{format!("{message}\n\nStop ONLY the attributed node VPN. The validator must already be stopped. Original enrollment attempts, custody and VPN state are preserved. This does not revoke a key, delete a peer or contact the provider. If the reply is lost, read diagnostics; do not repeat blindly.")}else{message};
   let message=if request.operation=="vpn_resume"{format!("{message}\n\nResume ONLY the already enrolled, independently server-bound node VPN using its existing private identity. The validator stays stopped. No setup key, provider API, new enrollment, or validator start is requested. Issuance approval expiry does not replace the existing peer. If the reply is lost, read Resume status; do not repeat blindly.")}else{message};
   let message=if request.operation=="boot_policy"{format!("{message}\n\nChange ONLY the selected service's boot enablement. This does not start or stop either service, enroll VPN, or create custody. Enabling requires the exact commissioned signed-roster identity and existing bound VPN; observed policy is read from attributed systemd units. The node service Requires=VPN: enabling node at boot also starts its existing VPN dependency at boot even when VPN's own boot link is disabled. If a reply is lost, read boot policy status; never regrant blindly.")}else{message};
@@ -379,12 +385,17 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  let target_for_eligibility=target.clone();
  let target_identity=target.journal_identity();
  let resume_base=app.path().app_local_data_dir().map_err(|_|"Portal journal unavailable")?;
- let _resume_transaction=if matches!(operation.as_str(),"vpn_resume"|"vpn_resume_status"|"boot_policy"|"boot_policy_status"|"commission")||operation.starts_with("gateway_admission_"){Some(crate::authorization_lifecycle::continuation_lock(&resume_base,&target)?)}else{None};
+ let _resume_transaction=if matches!(operation.as_str(),"vpn_resume"|"vpn_resume_status"|"boot_policy"|"boot_policy_status"|"commission"|"gateway_install"|"gateway_install_status")||operation.starts_with("gateway_admission_")||operation.starts_with("gateway_target_"){Some(crate::authorization_lifecycle::continuation_lock(&resume_base,&target)?)}else{None};
  if let Some(reviewed)=&gateway_review{
   request_journal::require_resumable_scope(&resume_base,&target_identity)?;
   let reply=controller(&app,target.clone(),gateway_query(&request),&directory).await?;
   if &crate::gateway_admission::reviewed_mutation(&request,&reply)?!=reviewed{return Err("Gateway admission scope changed after review; no grant or mutation was sent".into())}
   crate::authorization_lifecycle::gateway_grant_locked(&resume_base,&target,&request,&directory,_resume_transaction.as_ref().ok_or("Gateway transaction unavailable")?).await?;
+ }else if let Some(reviewed)=&gateway_target_review{
+  request_journal::require_resumable_scope(&resume_base,&target_identity)?;
+  let reply=controller(&app,target.clone(),crate::gateway_target::query(&request),&directory).await?;
+  if &crate::gateway_target::reviewed_mutation(&request,&reply)?!=reviewed{return Err("Gateway target scope changed after review; no grant or mutation was sent".into())}
+  crate::authorization_lifecycle::gateway_target_grant_locked(&resume_base,&target,&request,&directory,_resume_transaction.as_ref().ok_or("Gateway target transaction unavailable")?).await?;
  }else if matches!(operation.as_str(),"vpn_resume"|"boot_policy"|"commission"){
   request_journal::require_resumable_scope(&resume_base,&target_identity)?;
   crate::authorization_lifecycle::grant_locked(&resume_base,&target,&request,&directory,None,_resume_transaction.as_ref().ok_or("Service-policy transaction unavailable")?).await?;
@@ -394,6 +405,18 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  let result=controller(&app,target,request,&directory).await.and_then(|reply|node_controller::mutation_acknowledgement(&dispatched_request,reply)).and_then(|reply|if operation=="uninstall"{crate::authorization_lifecycle::verify_removal(&target_for_eligibility,reply)}else{Ok(reply)});
  if let Some(dispatch)=dispatch {dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;}
  let mut result=result?;
+ if operation.starts_with("gateway_target_")&&result["ok"]==true{
+  result["result"]=if operation=="gateway_target_commission_preflight"{crate::gateway_target::commission_preflight(&dispatched_request,&result["result"])?}else{crate::gateway_target::review(&result["result"],operation=="gateway_target_export")?};
+  if operation=="gateway_target_reconcile"{
+   let original_operation=crate::gateway_target::reconciliation(&dispatched_request,&result["result"])?;
+   request_journal::reconcile_verified(&resume_base,&target_identity,original_operation,dispatched_request.parameters["request_sha256"].as_str().ok_or("Exact gateway target request required")?)?;
+  }
+ }
+ if operation=="gateway_install_preflight"{return node_controller::install_preflight_reply(&dispatched_request,&result).map_err(String::from)}
+ if operation=="gateway_install_status"&&result["ok"]==true{
+  result["result"]=crate::gateway_target::installation_status(&dispatched_request,&result["result"])?;
+  request_journal::reconcile_verified(&resume_base,&target_identity,"gateway_install",dispatched_request.parameters["request_sha256"].as_str().ok_or("Exact original gateway installation request required")?)?;
+ }
  if operation.starts_with("gateway_admission_")&&result["ok"]==true{
   result["result"]=if operation=="gateway_admission_preflight"{crate::gateway_admission::preflight(&dispatched_request,&result["result"])?}else{crate::gateway_admission::review(&result["result"],operation=="gateway_admission_export")?};
   if operation=="gateway_admission_reconcile"{if let Some(original_operation)=crate::gateway_admission::reconciliation(&dispatched_request,&result["result"])?{

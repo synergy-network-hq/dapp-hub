@@ -166,6 +166,12 @@ pub(super) async fn gateway_grant_locked(base:&Path,target:&Target,request:&Requ
  if !cfg!(debug_assertions)||!initial_path(base,target)?.exists(){return Err("Gateway admission requires an independently pinned engineering target".into())}
  grant_with_gateway_purpose(base,target,request,control,None,transaction,request.operation=="gateway_admission_prepare").await
 }
+pub(super) async fn gateway_target_grant_locked(base:&Path,target:&Target,request:&Request,control:&Path,transaction:&ContinuationLock)->Result<(),String>{
+ if !cfg!(debug_assertions)||!initial_path(base,target)?.exists(){return Err("Gateway target requires an independently pinned engineering host authorization".into())}
+ crate::gateway_target::validate(request)?;
+ let(_,doc)=initial(base,target)?;authorization::require_gateway_initial(&doc)?;
+ grant_with_gateway_purpose(base,target,request,control,None,transaction,false).await
+}
 async fn grant_with_gateway_purpose(base:&Path,target:&Target,request:&Request,control:&Path,pins:Option<&Value>,_transaction:&ContinuationLock,gateway_purpose:bool)->Result<(),String>{
  if !cfg!(debug_assertions){return Ok(())}
  let path=initial_path(base,target)?;if !path.exists(){return Ok(())}

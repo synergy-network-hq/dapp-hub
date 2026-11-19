@@ -185,6 +185,7 @@ impl Target {
 impl Request {
     pub fn validate(&self) -> Result<bool, String> {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
+        if self.operation.starts_with("gateway_target_")||matches!(self.operation.as_str(),"gateway_install"|"gateway_install_preflight"|"gateway_install_status"){return crate::gateway_target::validate(self)}
         if self.operation.starts_with("gateway_"){return crate::gateway_admission::validate(self)}
         if self.operation.starts_with("treasury_send_"){return crate::treasury_send::validate(self)}
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
@@ -570,6 +571,12 @@ pub(super) fn register_service_reply(reply: &Value) -> Result<Value, &'static st
 }
 
 pub(super) fn install_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    install_role_reply(request,reply,"validator","nodenetwork-installed-validator-v1")
+}
+pub(super) fn gateway_install_reply(request: &Request, reply: &Value) -> Result<Value, &'static str> {
+    install_role_reply(request,reply,"rpc_gateway","nodenetwork-installed-gateway-v1")
+}
+fn install_role_reply(request: &Request, reply: &Value, role:&str, schema:&str) -> Result<Value, &'static str> {
     const UNCERTAIN: &str = "Installation outcome is uncertain. Inspect the selected target before another change.";
     if !reply.as_object().is_some_and(|fields| fields.len() == 3) || reply["version"] != 1 {
         return Err(UNCERTAIN);
@@ -592,7 +599,7 @@ pub(super) fn install_reply(request: &Request, reply: &Value) -> Result<Value, &
     let members = result["package_files"].as_object().filter(|files| !files.is_empty() && files.len() <= 4096
         && files.values().all(lowercase_digest)).ok_or(UNCERTAIN)?;
     if reply["ok"] != true || !result.as_object().is_some_and(|fields| fields.len() == 10)
-        || result["format"] != "synergy-universal-linux-v1" || result["root"] != ROOT || result["role"] != "validator"
+        || result["format"] != "synergy-universal-linux-v1" || result["root"] != ROOT || result["role"] != role
         || ["network_id", "chain_id", "node_name"].iter().any(|key| result[*key] != p[*key])
         || result["package_sha256"] != p["manifest_sha256"] || result["consensus_started"] != false
         || !result["host_integrations"].as_array().is_some_and(Vec::is_empty) {
@@ -600,7 +607,7 @@ pub(super) fn install_reply(request: &Request, reply: &Value) -> Result<Value, &
     }
     let chain = p["chain_id"].as_u64().ok_or(UNCERTAIN)?.to_string();
     Ok(json!({"version":1,"ok":true,"result":{
-        "schema":"nodenetwork-installed-validator-v1","root":ROOT,"role":"validator","release_id":p["release_id"],
+        "schema":schema,"root":ROOT,"role":role,"release_id":p["release_id"],
         "manifest_sha256":p["manifest_sha256"],"network_id":p["network_id"],"chain_id":chain,"node_name":p["node_name"],
         "declared_members":members.len(),"host_integrations_registered":false,"consensus_started":false
     }}))
@@ -1285,6 +1292,7 @@ pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Val
    else{Err("Boot policy outcome uncertain; read boot policy status before another change.")}
   },
   "gateway_admission_prepare"|"gateway_admission_sign"=>crate::gateway_admission::acknowledgement(request,&reply).map_err(|_|"Gateway admission outcome uncertain; reconcile the exact original request before another change."),
+  "gateway_install"|"gateway_target_generate"|"gateway_target_commission"=>crate::gateway_target::acknowledgement(request,&reply).map_err(|_|"Gateway target outcome uncertain; reconcile the exact original request before another change."),
   "commission"=>commissioning_reply(&reply),
   "start"|"stop"|"restart"=>node_service_reply(&request.operation,&reply),
   "identity_generate"=>identity_generation_reply(request,&reply),
@@ -1310,7 +1318,7 @@ pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Val
 pub(super) async fn execute_pinned(target:Target,request:Request,control_dir:&Path,known_hosts:Option<&Path>)->Result<Value,String>{
     target.validate()?;request.validate()?;
     let wire=request.canonical().to_string();
-    let input_limit=if request.operation=="genesis_stage"{12*1024*1024}else if matches!(request.operation.as_str(),"network_formation_prepare"|"network_transport_prepare"|"treasury_send_prepare"|"gateway_admission_prepare"|"gateway_admission_preflight"){2*1024*1024}else{REQUEST_LIMIT};
+    let input_limit=if request.operation=="genesis_stage"{12*1024*1024}else if matches!(request.operation.as_str(),"network_formation_prepare"|"network_transport_prepare"|"treasury_send_prepare"|"gateway_admission_prepare"|"gateway_admission_preflight"|"gateway_target_commission"|"gateway_target_commission_preflight"){2*1024*1024}else{REQUEST_LIMIT};
     let output_limit=if request.operation=="network_transport_export"{4*1024*1024+16384}else if matches!(request.operation.as_str(),"network_formation_export"|"treasury_send_preflight"){2*1024*1024}else{LIMIT};
     if wire.len()>=input_limit{return Err("Controller request exceeds the operation's safe wire limit.".into())}
     let _serial=SERIAL.lock().await;
