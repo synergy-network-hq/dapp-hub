@@ -1,7 +1,16 @@
 //! Separate, one-use credential-access purpose. Never authorizes peer deletion.
 use crate::gateway_admission::{exact,pin};
+use base64::Engine as _;
+use serde::Deserialize;
 use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
 const REFUSED:&str="Legacy peer account read refused; no retirement or enrollment was attempted";
+const KEY_REFUSED: &str = "Exact legacy peer key observation unavailable";
+const ACCOUNT: &str = "da99e12f611ghl16dvjg";
+const PEER: &str = "dboqb9if611ohpqo0e1g";
+const KEY: &str = "5e781088b3b0a7cd2862ee1010b5f84ce4f91ebc1abbbce92a10a0dc8563159f";
+const BINARY: &str = "e01941ced937e0a5dff7b02b8ae2be38b6efa6b3be03ec9b89d0b7f52a16c292";
+const REVISION: &str = "79a06720b684768b421f0a54f3bb14f22704994f";
 pub(super) fn scope(plan:&Value,policy:&Value,provider:&str,locator:&str,expires:u64)->Result<Value,String>{
  let b=&plan["legacy"]["vpn_binding"];
  if plan["schema"]!="nodenetwork-legacy-canary-retirement-plan-v1"||!pin(&plan["plan_sha256"])||plan["removal_authorized"]!=false||plan["mutation_performed"]!=false
@@ -22,6 +31,67 @@ pub(super) fn result(value:&Value,scope:&Value)->Result<Value,String>{
   ||value["schema"]!="nodenetwork-legacy-peer-retirement-preflight-v1"||["plan_sha256","provider_sha256","account_id","peer_id"].iter().any(|k|value[*k]!=scope[*k])
   ||["ready","public_key_verified","mutation_performed","retirement_authorized"].iter().any(|k|value[*k]!=false)
   ||value["account_verified"]!=true||value["peer_verified"]!=true||value["blocker"]!="independent_peer_key_binding_unavailable"{return Err(REFUSED.into())}Ok(value.clone())
+}
+
+pub(super) fn key_request(plan: &Value, expires_at: u64) -> Result<Value,String> {
+    let binding = &plan["legacy"]["vpn_binding"];
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(binding["wireguard_public_key"].as_str().ok_or(KEY_REFUSED)?)
+        .map_err(|_| KEY_REFUSED)?;
+    if plan["schema"] != "nodenetwork-legacy-canary-retirement-plan-v1"
+        || !pin(&plan["plan_sha256"]) || !pin(&plan["challenge"])
+        || plan["removal_authorized"] != false || plan["mutation_performed"] != false
+        || binding["peer_id"] != PEER || binding["retirement_verified"] != false
+        || key.len() != 32 || format!("{:x}", Sha256::digest(&key)) != KEY
+    {
+        return Err(KEY_REFUSED.into());
+    }
+    Ok(json!({"context":{"account_id":ACCOUNT,"peer_id":PEER,
+        "wireguard_public_key_sha256":KEY,"expires_at":expires_at},"challenge":plan["challenge"]}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyReply {
+    version: u8,
+    ok: bool,
+    result: KeyObservation,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyObservation {
+    schema: String,
+    challenge: String,
+    account_id: String,
+    peer_id: String,
+    wireguard_public_key_sha256: String,
+    ip: String,
+    peer_name: String,
+    provider_binary_sha256: String,
+    provider_revision: String,
+    verified: bool,
+    mutation_performed: bool,
+}
+
+pub(super) fn key_result(raw: &[u8], request: &Value, plan: &Value) -> Result<Value,String> {
+    let KeyReply { version, ok, result } = serde_json::from_slice(raw).map_err(|_| KEY_REFUSED)?;
+    let binding = &plan["legacy"]["vpn_binding"];
+    if version != 1 || !ok || result.schema != "nodenetwork-legacy-peer-key-proof-v1"
+        || request["challenge"] != result.challenge || plan["challenge"] != result.challenge
+        || result.account_id != ACCOUNT || result.peer_id != PEER
+        || result.wireguard_public_key_sha256 != KEY
+        || binding["ip"] != result.ip || binding["peer_name"] != result.peer_name
+        || result.provider_binary_sha256 != BINARY || result.provider_revision != REVISION
+        || !result.verified || result.mutation_performed
+    {
+        return Err(KEY_REFUSED.into());
+    }
+    Ok(json!({"schema":result.schema,"plan_sha256":plan["plan_sha256"],"account_id":result.account_id,
+        "peer_id":result.peer_id,"wireguard_public_key_sha256":result.wireguard_public_key_sha256,
+        "ip":result.ip,"peer_name":result.peer_name,"provider_binary_sha256":result.provider_binary_sha256,
+        "provider_revision":result.provider_revision,"verified":true,"mutation_performed":false,
+        "retirement_authorized":false}))
 }
 // Appended to the already authenticated provider library. Only GETs; no
 // Authorization/issuance state is instantiated and no private data is exported.
@@ -56,6 +126,50 @@ except Exception:
 "#;
 #[cfg(test)]mod tests{
  use super::*;
+ #[test]
+ fn legacy_peer_key_read_uses_only_the_reviewed_challenge_and_public_binding() {
+     let mut plan = json!({"schema":"nodenetwork-legacy-canary-retirement-plan-v1",
+         "plan_sha256":"a".repeat(64),"challenge":"b".repeat(64),
+         "mutation_performed":false,"removal_authorized":false,
+         "legacy":{"vpn_binding":{"peer_id":PEER,"retirement_verified":false,"ip":"10.69.51.205",
+         "peer_name":"synergy-canary-rpc-99999","wireguard_public_key":"EhHDd/L7fXX+c8x2nyJx8wWUwGRij3AmioVZKiH4/2M="}}});
+     let request = key_request(&plan, 123).unwrap();
+     assert_eq!(request, json!({"context":{"account_id":ACCOUNT,"peer_id":PEER,
+         "wireguard_public_key_sha256":KEY,"expires_at":123},"challenge":"b".repeat(64)}));
+     let reply = json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-legacy-peer-key-proof-v1",
+         "challenge":"b".repeat(64),"account_id":ACCOUNT,"peer_id":PEER,"wireguard_public_key_sha256":KEY,
+         "ip":"10.69.51.205","peer_name":"synergy-canary-rpc-99999","provider_binary_sha256":BINARY,
+         "provider_revision":REVISION,"verified":true,"mutation_performed":false}});
+     let check = |value: &Value| key_result(&serde_json::to_vec(value).unwrap(), &request, &plan);
+     let view = check(&reply).unwrap();
+     assert!(view.get("challenge").is_none());
+     assert_eq!(view["plan_sha256"], plan["plan_sha256"]);
+     assert_eq!(view["retirement_authorized"], false);
+     for (key, value) in [
+         ("challenge",json!("stale")),("account_id",json!("foreign")),("peer_id",json!("foreign")),
+         ("wireguard_public_key_sha256",json!("foreign")),("ip",json!("10.0.0.1")),
+         ("peer_name",json!("foreign")),("provider_binary_sha256",json!("foreign")),
+         ("provider_revision",json!("foreign")),("verified",json!(false)),
+         ("mutation_performed",json!(true)),("retirement_authorized",json!(true)),
+     ] {
+         let mut changed = reply.clone();
+         changed["result"][key] = value;
+         assert!(check(&changed).is_err(), "{key}");
+     }
+     let duplicate = reply.to_string().replace("\"verified\":true", "\"verified\":false,\"verified\":true");
+     assert!(key_result(duplicate.as_bytes(), &request, &plan).is_err());
+     plan["legacy"]["vpn_binding"]["wireguard_public_key"] = json!("bad");
+     assert!(key_request(&plan, 123).is_err());
+ }
+
+ #[test]
+ fn legacy_peer_key_read_rejects_renderer_parameters() {
+     use crate::node_controller::Request;
+     let mut request = Request { version: 1, operation: "legacy_peer_key_read".into(), parameters: json!({}) };
+     assert_eq!(request.validate(), Ok(true));
+     request.parameters = json!({"host":"foreign","challenge":"forged"});
+     assert!(request.validate().is_err());
+ }
  fn fixture()->Value{json!({"schema":"nodenetwork-legacy-peer-retirement-preflight-v1","plan_sha256":"a".repeat(64),"provider_sha256":"b".repeat(64),"account_id":"account","peer_id":"dboqb9if611ohpqo0e1g","ready":false,"account_verified":true,"peer_verified":true,"public_key_verified":false,"blocker":"independent_peer_key_binding_unavailable","mutation_performed":false,"retirement_authorized":false})}
  #[test]fn legacy_peer_preflight_never_authorizes_or_infers_key_proof(){let v=fixture();assert!(result(&v,&v).is_ok());for k in ["ready","public_key_verified","mutation_performed","retirement_authorized"]{let mut b=v.clone();b[k]=json!(true);assert!(result(&b,&v).is_err())}for k in ["plan_sha256","provider_sha256","account_id","peer_id"]{let mut b=v.clone();b[k]=json!("foreign");assert!(result(&b,&v).is_err())}let mut b=v.clone();b["extra"]=json!("private");assert!(result(&b,&v).is_err());}
  #[test]fn legacy_peer_preflight_runner_cannot_issue_or_delete(){assert!(!RUNNER.contains("DELETE"));assert!(!RUNNER.contains("POST"));assert!(!RUNNER.contains("Authorization("));assert!(RUNNER.contains("client.request('GET',path)"));assert!(RUNNER.contains("public_key_verified':False"));}

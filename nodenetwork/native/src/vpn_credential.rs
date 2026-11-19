@@ -3,7 +3,7 @@ use crate::node_controller::{self, Target};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::{Path,PathBuf}, process::Stdio, time::Duration};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt,AsyncWriteExt};
 use zeroize::Zeroizing;
 
 const PROFILE: &str = "nodenetwork-remote-vpn-credential-v1";
@@ -110,8 +110,34 @@ pub(super) async fn load(raw: Zeroizing<Vec<u8>>, provider: &str, controlled: bo
     // Existing private-file provider credentials remain supported for isolated tests.
     if raw.first() != Some(&b'{') { return Ok(raw); }
     if !controlled { return Err("Remote credential access is restricted to its controlled Canary provider".into()); }
-    let locator = decode(&raw, option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256"), provider, cfg!(all(debug_assertions, unix)))?;
-    let locator_pin=digest(&raw);
+    coordinator_read(&raw, provider, control, Read::Credential).await
+}
+
+enum Read<'a> {
+    Credential,
+    LegacyPeerProof(&'a [u8]),
+}
+
+pub(super) async fn legacy_peer_proof(raw: &[u8], provider: &str, control: &Path, request: &[u8]) -> Result<Zeroizing<Vec<u8>>,String> {
+    if request.is_empty() || request.len() > 4096 { return Err("Invalid bounded peer proof request".into()); }
+    coordinator_read(raw, provider, control, Read::LegacyPeerProof(request)).await
+}
+
+async fn coordinator_read(raw: &[u8], provider: &str, control: &Path, read: Read<'_>) -> Result<Zeroizing<Vec<u8>>, String> {
+    let locator = decode(raw, option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256"), provider, cfg!(all(debug_assertions, unix)))?;
+    let locator_pin = digest(raw);
+    let (command, input) = match read {
+        Read::Credential => {
+            let script = READ_PRIVATE.replace('\'', "'\\''");
+            (format!("/usr/bin/python3 -I -B -c '{script}' '{}'", locator.credential_file), None)
+        }
+        Read::LegacyPeerProof(request) => {
+            if locator.host != "68.183.139.56" || locator.port != 22 {
+                return Err("Exact legacy coordinator SSH endpoint required".into());
+            }
+            (crate::node_bootstrap::legacy_peer_key_proof_command()?, Some(request))
+        }
+    };
     let identity = Path::new(&locator.identity_file);
     let metadata = std::fs::symlink_metadata(identity).map_err(|_| "Approved coordinator SSH identity is unavailable")?;
     #[cfg(unix)] {
@@ -133,20 +159,28 @@ pub(super) async fn load(raw: Zeroizing<Vec<u8>>, provider: &str, controlled: bo
         node_controller::close_connection_checked(&target,control,&locator.account).await?;
         sessions.remove(&socket);
     }
-    let script = READ_PRIVATE.replace('\'', "'\\''");
-    let command = format!("/usr/bin/python3 -I -B -c '{script}' '{}'", locator.credential_file);
     let mut process = node_controller::remote_command_with_identity(&target, control, &locator.account, &command, Some(&known), Some(identity))?;
-    process.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
-    let mut child = process.spawn().map_err(|_| "Approved coordinator credential connection is unavailable")?;
-    let mut stdout = child.stdout.take().ok_or("Private coordinator stream unavailable")?.take(4099);
+    process.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    let mut child = process.spawn().map_err(|_| "Approved coordinator connection is unavailable")?;
     let result=tokio::time::timeout(Duration::from_secs(30), async {
+        if let Some(request) = input {
+            let mut stream = child.stdin.take().ok_or("Coordinator proof request stream unavailable")?;
+            stream.write_all(request).await.map_err(|_| "Coordinator proof request interrupted")?;
+            stream.shutdown().await.map_err(|_| "Coordinator proof request interrupted")?;
+        }
+        let mut stdout = child.stdout.take().ok_or("Coordinator result stream unavailable")?.take(4099);
         let mut bytes = Zeroizing::new(Vec::new());
-        stdout.read_to_end(&mut bytes).await.map_err(|_| "Private coordinator read interrupted")?;
-        if bytes.is_empty() || bytes.len() > 4098 || !child.wait().await.map_err(|_| "Private coordinator outcome unavailable")?.success() {
-            return Err("Approved coordinator credential read refused; no enrollment was issued".into());
+        stdout.read_to_end(&mut bytes).await.map_err(|_| "Coordinator read interrupted")?;
+        if bytes.is_empty() || bytes.len() > 4098 {
+            return Err("Coordinator read outside the approved response bound".into());
+        }
+        if !child.wait().await.map_err(|_| "Coordinator read outcome unavailable")?.success() {
+            return Err("Approved coordinator read refused".into());
         }
         Ok(bytes)
-    }).await.map_err(|_| "Coordinator credential deadline exceeded; no enrollment was issued".to_string())?;
+    }).await.unwrap_or_else(|_| Err("Coordinator read deadline exceeded".into()));
+    drop(child);
     match result {
         Ok(bytes) => {
             let pid=master_pid(&target,control,&locator.account).await?.ok_or("Pinned coordinator session did not persist")?;

@@ -212,6 +212,57 @@ pub(super) async fn legacy_read(window:&tauri::WebviewWindow,_app:&tauri::AppHan
  if now()? >= expires||config(&folder)?.raw!=current.raw||read(&locator_path,16384,true)?.as_slice()!=locator.as_slice(){return Err("Legacy prerequisite observation expired or approval inputs changed; no retirement was attempted".into())}
  Ok(serde_json::json!({"version":1,"ok":true,"result":result}))
 }
+pub(super) async fn legacy_peer_key_read(window: &tauri::WebviewWindow, target: Target, control: &Path) -> Result<Value,String> {
+    use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+    use std::time::{SystemTime,UNIX_EPOCH};
+    if !cfg!(all(debug_assertions, unix)) {
+        return Err("Legacy peer key verification requires the isolated engineering native app".into());
+    }
+    let provider = option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256")
+        .ok_or("No approved coordinator profile is compiled into this app")?;
+    let plan = crate::legacy_gateway_plan::inspect(&target, "root", control).await?;
+    let now = || SystemTime::now().duration_since(UNIX_EPOCH).map(|v| v.as_secs()).map_err(|_| "Local clock unavailable");
+    let request = crate::legacy_peer_preflight::key_request(&plan, now()? + 120)?;
+    let select = window.clone();
+    let locator_path = tauri::async_runtime::spawn_blocking(move || {
+        select.dialog().file().add_filter("Public credential locator", &["json"]).set_parent(&select)
+            .set_title("Choose approved public credential-locator.json").blocking_pick_file()
+            .ok_or("Legacy peer key verification cancelled")?.into_path()
+            .map_err(|_| "Local approved public locator required")
+    }).await.map_err(|_| "Legacy peer key selection interrupted")??;
+    if locator_path.file_name().and_then(|v| v.to_str()) != Some("credential-locator.json") {
+        return Err("Select the approved public credential-locator.json".into());
+    }
+    let locator = read(&locator_path, 16384, true)?;
+    let coordinator = crate::vpn_credential::public_review(&locator, provider)?;
+    if coordinator["host"] != "68.183.139.56" || coordinator["port"] != 22 || coordinator["account"] != "root" {
+        return Err("Exact legacy coordinator SSH endpoint required".into());
+    }
+    let prompt = window.clone();
+    let message = format!("Verify one public WireGuard key binding on the pinned VPN coordinator?\nTarget: {}\nObsolete network: posy-apqe-canary-process-49028\nPlan SHA256: {}\nAccount: {}\nPeer: {}\nKey SHA256: {}\nCoordinator: {}:{}\nLocator SHA256: {}\nThe installed provider's exact public peer row is read once through the approved SSH session. No management token, enrollment, removal or host changes.",
+        target.label(), plan["plan_sha256"], request["context"]["account_id"], request["context"]["peer_id"],
+        request["context"]["wireguard_public_key_sha256"], coordinator["host"], coordinator["port"], coordinator["locator_sha256"]);
+    let accepted = tauri::async_runtime::spawn_blocking(move || {
+        prompt.dialog().message(message).parent(&prompt).title("Verify exact legacy VPN peer key")
+            .buttons(MessageDialogButtons::OkCancelCustom("Verify one public peer key".into(), "Cancel".into())).blocking_show()
+    }).await.map_err(|_| "Legacy peer key review interrupted")?;
+    if !accepted { return Err("Legacy peer key verification cancelled".into()); }
+    let expires_at = now()? + 120;
+    let _serial = SERIAL.lock().await;
+    let fresh = crate::legacy_gateway_plan::inspect(&target, "root", control).await?;
+    let current_locator = read(&locator_path, 16384, true)?;
+    if fresh["plan_sha256"] != plan["plan_sha256"] || current_locator.as_slice() != locator.as_slice() || now()? >= expires_at {
+        return Err("Legacy scope changed or review expired before the public key read".into());
+    }
+    let request = crate::legacy_peer_preflight::key_request(&fresh, expires_at)?;
+    let wire = serde_json::to_vec(&request).map_err(|_| "Cannot encode exact legacy peer scope")?;
+    let raw = crate::vpn_credential::legacy_peer_proof(&current_locator, provider, control, &wire).await?;
+    if now()? >= expires_at || read(&locator_path, 16384, true)?.as_slice() != locator.as_slice() {
+        return Err("Legacy peer observation expired or the locator changed".into());
+    }
+    Ok(json!({"version":1,"ok":true,"result":crate::legacy_peer_preflight::key_result(&raw, &request, &fresh)?}))
+}
+
 #[cfg(test)]pub(super) fn legacy_preflight_test_script(fake:&str)->String{format!("{PROVIDER}\n{fake}\n{}",crate::legacy_peer_preflight::RUNNER)}
 async fn legacy_account_reads(config:&Config,credential:&[u8],scope:&Value)->Result<Value,String>{
  let refused="Legacy peer account read unavailable; no retirement or enrollment was attempted";

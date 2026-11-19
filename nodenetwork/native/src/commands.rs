@@ -375,6 +375,10 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
   return crate::vpn_enrollment::legacy_read(&window,&app,target,&directory).await;
  }
+ if request.operation=="legacy_peer_key_read"{
+  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+  return crate::vpn_enrollment::legacy_peer_key_read(&window,target,&directory).await;
+ }
  if request.operation=="operator_auth_load"{
   #[cfg(target_os="macos")]{
    let home=app.path().home_dir().map_err(|_|"Operator home unavailable")?;
