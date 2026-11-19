@@ -34,6 +34,12 @@ fn runtime_probe_refusal(reply:&Value)->String{
 }
 #[cfg(test)]use crate::genesis_stage::GENESIS_STAGE_UNCERTAIN;
 #[tauri::command]
+pub async fn portal_nodenetwork_legacy_gateway_plan(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,operator:String)->Result<Value,String>{
+ main_only(&window)?;
+ let control=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+ crate::legacy_gateway_plan::inspect(&target,&operator,&control).await
+}
+#[tauri::command]
 pub fn portal_nodenetwork_request_scope(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target)->Result<Value,String>{
  main_only(&window)?; target.validate()?;
  let base=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable.")?;

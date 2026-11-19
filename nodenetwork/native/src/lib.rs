@@ -49,3 +49,4 @@ mod gateway_vpn;
 mod operator_credential;
 
 mod runtime_probe;
+mod legacy_gateway_plan;

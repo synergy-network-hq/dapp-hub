@@ -1,4 +1,5 @@
 import {consensusObservation,consensusTransactionSelector} from './consensus-observation.js';
+import {legacyGatewayPlanView,legacyGatewayPlanTarget} from './legacy-gateway-plan.js';
 import {isTauri,invoke} from "@tauri-apps/api/core";
 import {parseRequestHistory} from './request-history.js';
 import {genesisStageLocalReview} from './genesis-stage-files.js';
@@ -66,6 +67,11 @@ export async function nodeNetworkUpgradeNotApplied(target,recordId,selection) {
 }
 // First-party native extension only; remote community HTML has no Tauri bridge.
 export async function nodeNetworkHostStatus(){if(!isTauri())throw new Error('Open the native Portal app to inspect this machine.');return invoke('portal_nodenetwork_status');}
+export async function nodeNetworkLegacyGatewayPlan(target,operator){
+ if(!isTauri())throw Error('Legacy gateway scope review requires native Portal.');
+ if(!legacyGatewayPlanTarget(target,operator))throw Error('Select the pinned legacy gateway and its existing root account for this read only.');
+ return legacyGatewayPlanView(await invoke('portal_nodenetwork_legacy_gateway_plan',{target,operator}),target);
+}
 export async function nodeNetworkReviewMaster(){if(!isTauri())throw new Error('Open the native Portal app to inspect the node master.');return invoke('portal_nodenetwork_review_master');}
 export async function nodeNetworkReviewOperatorKey(target=null){
  if(!isTauri())throw Error('Open the native Portal app to inspect an operator public key.');
