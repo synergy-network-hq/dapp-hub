@@ -1,6 +1,7 @@
 import {RpcReadiness} from './RpcReadiness.jsx';
+import {CanaryRuntime} from './CanaryRuntime.jsx';
 import {NetworkComparison} from './NetworkComparison.jsx';
-import {chainIdNumber,isCanonicalTestnetRpc,CANARY_PROFILE,canaryRead,canaryProcessingStatus} from '@synergy-network/portal-native/dapp-sdk';
+import {chainIdNumber,isCanonicalTestnetRpc,CURRENT_CANARY_READ_PROFILE as CANARY_PROFILE,currentCanaryRead as canaryRead,currentCanaryProcessingStatus as canaryProcessingStatus} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {emptyProvisioningDraft,readProvisioningSnapshot,saveProvisioningDraft} from './provisioning-draft.js';
 import './monitor.css';
@@ -92,7 +93,8 @@ export function NodeNetworkApp(){
  },JSON.stringify([profile.id,permitted]));
  const live=useResource(signal=>{
   if(!permitted)throw new Error('Allow NodeNetwork to read public network data in Security & permissions.');
-  return readNodeNetwork(rpc,profile,signal);
+  const read=profile.id===CANARY_PROFILE.id?(method,params,options)=>canaryRead(method,params,{signal:options?.signal}):rpc;
+  return readNodeNetwork(read,profile,signal);
  },nodeNetworkObservationScope(profile,permitted));
  const validators=useResource(async signal=>{
   if(!indexAvailable)return null;
@@ -153,7 +155,7 @@ export function NodeNetworkApp(){
      ? <><p>A target is configured. Open Monitoring to inspect its native controller.</p><button onClick={()=>setSection('monitoring')}>Open target monitoring</button></>
      : <><p>Monitor-only · Host selection deferred.</p><button onClick={()=>setSection('settings')}>Review target settings</button></>}
    </Card>
-   <RpcReadiness profile={profile} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>
+   {profile.id===CANARY_PROFILE.id?<CanaryRuntime observation={live} permitted={permitted&&!n.recoverySuspended}/>:<RpcReadiness profile={profile} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>}
    <NetworkComparison profile={profile} profiles={profiles} permitted={permitted} onOpenEndpoints={()=>n.navigate('network/endpoints')}/>
    <div className="node-read-monitor"><Card title="Public validator index">
     {indexAvailable ? <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>

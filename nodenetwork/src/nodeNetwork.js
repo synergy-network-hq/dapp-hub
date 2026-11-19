@@ -1,6 +1,7 @@
 // Public observations never grant enrollment, installation or signing authority.
 import {rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {confirmReportedGenesis,genesisDigest} from './genesis-pin.js';
+import {isCurrentCanaryReadProfile,canaryRuntimeObservation} from './canary-runtime.js';
 export const CANARY_PROFILE = Object.freeze({
  id:'posy-canary', name:'PoSy Canary', chainId:99999,
  rpc:'https://canary-rpc.synergy-network.io',
@@ -41,8 +42,13 @@ export async function readNodeNetwork(request, profile, signal) {
   throw new Error(`Network mismatch: expected chain ${expected}. No node operations are authorized.`);
  }
  const chainReceivedAt=Date.now();
- let reportedNetwork=null;
- if(pin){
+ let reportedNetwork=null,canaryRuntime=null;
+ if(isCurrentCanaryReadProfile(profile)){
+  const value=await request('synergy_chainTelemetry',{},options);
+  signal?.throwIfAborted();
+  canaryRuntime=canaryRuntimeObservation(value,profile);
+  reportedNetwork={chainId:canaryRuntime.chainId,network:canaryRuntime.networkId,genesis:canaryRuntime.genesisHash};
+ }else if(pin){
   const readiness=await request('synergy_getReadiness',[],options);
   signal?.throwIfAborted();
   const report=rpcReadinessObservation(readiness,expected);
@@ -61,7 +67,7 @@ export async function readNodeNetwork(request, profile, signal) {
   if(result.status==='fulfilled'){observations[names[index]]=result.value.value;receivedAt[names[index]]=result.value.receivedAt;}
   else errors[names[index]]=String(result.reason?.message||result.reason);
  });
- return {chain,chainReceivedAt,configuredGenesis:pin,reportedNetwork,observations,receivedAt,errors,checkedAt:Date.now()};
+ return {chain,chainReceivedAt,configuredGenesis:pin,reportedNetwork,canaryRuntime,observations,receivedAt,errors,checkedAt:Date.now()};
 }
 
 export const R5_BASELINE=Object.freeze({release_id:'synergy-linux-389c509e47e55219',manifest_sha256:'43eae3fdc42a2bff9e0ba2fa369d708fb60d14e90c6e18a6f344f5071c6cb23b'});
