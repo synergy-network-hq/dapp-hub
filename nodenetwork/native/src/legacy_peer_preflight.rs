@@ -1,4 +1,4 @@
-//! Separate, one-use credential-access purpose. Never authorizes peer deletion.
+//! Exact legacy peer attribution and isolated native retirement scope.
 use crate::gateway_admission::{exact,pin};
 use base64::Engine as _;
 use serde::Deserialize;
@@ -93,6 +93,48 @@ pub(super) fn key_result(raw: &[u8], request: &Value, plan: &Value) -> Result<Va
         "provider_revision":result.provider_revision,"verified":true,"mutation_performed":false,
         "retirement_authorized":false}))
 }
+
+pub(super) fn retirement_scope(plan: &Value, policy: &Value, provider: &str, locator: &str, expires: u64) -> Result<Value,String> {
+    let mut scope = scope(plan, policy, provider, locator, expires)?;
+    key_request(plan, expires)?;
+    let fields = scope.as_object_mut().ok_or(KEY_REFUSED)?;
+    fields.remove("wireguard_public_key");
+    fields.insert("purpose".into(), json!("nodenetwork-legacy-vpn-peer-retirement-v1"));
+    fields.insert("wireguard_public_key_sha256".into(), json!(KEY));
+    fields.insert("management_origin".into(), policy["management_origin"].clone());
+    for name in ["enrollment_sha256", "binding_sha256"] {
+        fields.insert(name.into(), plan["legacy"]["vpn_binding"][name].clone());
+    }
+    Ok(scope)
+}
+
+pub(super) fn retirement_result(value: Value, scope: &Value) -> Result<Value,String> {
+    let fields = ["account_id", "peer_id", "peer_name", "hostname", "ip", "management_origin", "enrollment_sha256", "binding_sha256"];
+    if !exact(&value, &["format", "account_id", "peer_id", "peer_name", "hostname", "ip", "management_origin",
+        "enrollment_sha256", "binding_sha256", "retired", "absence_verified"])
+        || value["format"] != "synergy-vpn-retirement-v1"
+        || fields.iter().any(|key| value[*key] != scope[*key])
+        || value["retired"] != true || value["absence_verified"] != true
+    {
+        return Err("Exact provider retirement receipt unavailable".into());
+    }
+    Ok(value)
+}
+
+pub(super) const RETIREMENT_RUNNER: &str = r#"
+import base64,sys
+try:
+ wire=decode(sys.stdin.buffer.read(256*1024+1))
+ scope=wire['scope']
+ require(scope['provider_sha256']==wire['pin'],'Native provider pin differs')
+ ca=base64.b64decode(wire['ca'],validate=True)
+ policy=provider_policy(wire['policy'].encode(),wire['pin'],ca,int(time.time()),cleanup_action='retire')
+ client=HttpsProvider(policy,ca,wire['token'])
+ receipt=retire_verified_legacy_peer(wire['directory'],policy,client.request,scope,reconcile_only=wire['reconcile_only'])
+ sys.stdout.buffer.write(encode(receipt))
+except Exception:
+ sys.exit(1)
+"#;
 // Appended to the already authenticated provider library. Only GETs; no
 // Authorization/issuance state is instantiated and no private data is exported.
 pub(super) const RUNNER:&str=r#"
@@ -165,10 +207,29 @@ except Exception:
  #[test]
  fn legacy_peer_key_read_rejects_renderer_parameters() {
      use crate::node_controller::Request;
-     let mut request = Request { version: 1, operation: "legacy_peer_key_read".into(), parameters: json!({}) };
-     assert_eq!(request.validate(), Ok(true));
-     request.parameters = json!({"host":"foreign","challenge":"forged"});
-     assert!(request.validate().is_err());
+     for operation in ["legacy_peer_key_read","legacy_peer_retire","legacy_peer_retire_status"] {
+         let mut request = Request { version: 1, operation: operation.into(), parameters: json!({}) };
+         assert_eq!(request.validate(), Ok(true));
+         request.parameters = json!({"host":"foreign","challenge":"forged"});
+         assert!(request.validate().is_err());
+     }
+ }
+
+ #[test]
+ fn legacy_peer_retirement_requires_exact_absence_receipt() {
+     let mut receipt = json!({
+         "format":"synergy-vpn-retirement-v1","account_id":ACCOUNT,"peer_id":PEER,
+         "peer_name":"synergy-canary-rpc-99999","hostname":"vmi3381382","ip":"10.69.51.205",
+         "management_origin":"https://vpn-coordinator.synergy-network.io",
+         "enrollment_sha256":"a".repeat(64),"binding_sha256":"b".repeat(64),"retired":true,"absence_verified":true,
+     });
+     let expected = receipt.clone();
+     assert_eq!(retirement_result(receipt.clone(),&expected).unwrap(), expected);
+     receipt["absence_verified"] = json!(false);
+     assert!(retirement_result(receipt,&expected).is_err());
+     let mut other = expected.clone();
+     other["peer_id"] = json!("neighbor");
+     assert!(retirement_result(other,&expected).is_err());
  }
  fn fixture()->Value{json!({"schema":"nodenetwork-legacy-peer-retirement-preflight-v1","plan_sha256":"a".repeat(64),"provider_sha256":"b".repeat(64),"account_id":"account","peer_id":"dboqb9if611ohpqo0e1g","ready":false,"account_verified":true,"peer_verified":true,"public_key_verified":false,"blocker":"independent_peer_key_binding_unavailable","mutation_performed":false,"retirement_authorized":false})}
  #[test]fn legacy_peer_preflight_never_authorizes_or_infers_key_proof(){let v=fixture();assert!(result(&v,&v).is_ok());for k in ["ready","public_key_verified","mutation_performed","retirement_authorized"]{let mut b=v.clone();b[k]=json!(true);assert!(result(&b,&v).is_err())}for k in ["plan_sha256","provider_sha256","account_id","peer_id"]{let mut b=v.clone();b[k]=json!("foreign");assert!(result(&b,&v).is_err())}let mut b=v.clone();b["extra"]=json!("private");assert!(result(&b,&v).is_err());}

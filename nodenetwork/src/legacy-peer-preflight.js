@@ -23,3 +23,17 @@ export function legacyPeerKeyView(value) {
  }
  return structuredClone(value);
 }
+
+export function legacyPeerRetirementView(value) {
+ const fields = ['format','account_id','peer_id','peer_name','hostname','ip','management_origin',
+  'enrollment_sha256','binding_sha256','retired','absence_verified'];
+ if (!exact(value, fields) || value.format !== 'synergy-vpn-retirement-v1'
+  || value.account_id !== 'da99e12f611ghl16dvjg' || value.peer_id !== 'dboqb9if611ohpqo0e1g'
+  || value.peer_name !== 'synergy-canary-rpc-99999' || value.hostname !== 'vmi3381382' || value.ip !== '10.69.51.205'
+  || value.management_origin !== 'https://vpn-coordinator.synergy-network.io'
+  || !pin(value.enrollment_sha256) || !pin(value.binding_sha256)
+  || value.retired !== true || value.absence_verified !== true) {
+  throw Error('The coordinator did not return a verified obsolete peer retirement receipt.');
+ }
+ return structuredClone(value);
+}

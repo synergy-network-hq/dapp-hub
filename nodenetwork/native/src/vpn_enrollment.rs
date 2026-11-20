@@ -184,14 +184,7 @@ pub(super) async fn legacy_read(window:&tauri::WebviewWindow,_app:&tauri::AppHan
  use std::time::{SystemTime,UNIX_EPOCH};
  if !cfg!(all(debug_assertions,unix)){return Err("Legacy peer prerequisites require the isolated engineering native app".into())}
  let reviewed=crate::legacy_gateway_plan::inspect(&target,"root",control).await?;
- let select=window.clone();
- let picked=tauri::async_runtime::spawn_blocking(move||{
-  let Some(folder)=select.dialog().file().set_parent(&select).set_title("Choose approved coordinator transport folder (public provider.json and CA)").blocking_pick_folder()else{return Ok(None)};
-  let Some(locator)=select.dialog().file().add_filter("Public credential locator",&["json"]).set_parent(&select).set_title("Choose approved credential-locator.json, never a token or key file").blocking_pick_file()else{return Ok(None)};
-  Ok::<_,String>(Some((folder.into_path().map_err(|_|"Local public provider folder required")?,locator.into_path().map_err(|_|"Local approved credential locator required")?)))
- }).await.map_err(|_|"Legacy prerequisite selection interrupted")??;
- let Some((folder,locator_path))=picked else{return Err("Legacy peer prerequisite review cancelled; no provider contacted".into())};
- if locator_path.file_name().and_then(|v|v.to_str())!=Some("credential-locator.json"){return Err("Select only the approved public credential-locator.json; no private credential was read".into())}
+ let (folder,locator_path)=legacy_provider_inputs(window).await?;
  let approved=config(&folder)?;let locator=read(&locator_path,16384,true)?;
  let coordinator=crate::vpn_credential::public_review(&locator,&approved.pin)?;
  let now=||SystemTime::now().duration_since(UNIX_EPOCH).map(|v|v.as_secs()).map_err(|_|"Local clock unavailable");
@@ -211,6 +204,88 @@ pub(super) async fn legacy_read(window:&tauri::WebviewWindow,_app:&tauri::AppHan
  let result=legacy_account_reads(&current,&credential,&scope).await?;
  if now()? >= expires||config(&folder)?.raw!=current.raw||read(&locator_path,16384,true)?.as_slice()!=locator.as_slice(){return Err("Legacy prerequisite observation expired or approval inputs changed; no retirement was attempted".into())}
  Ok(serde_json::json!({"version":1,"ok":true,"result":result}))
+}
+
+async fn legacy_provider_inputs(window: &tauri::WebviewWindow) -> Result<(std::path::PathBuf,std::path::PathBuf),String> {
+    use tauri_plugin_dialog::DialogExt;
+    let select = window.clone();
+    let (folder, locator) = tauri::async_runtime::spawn_blocking(move || {
+        let cancelled = "Legacy peer review cancelled before provider contact";
+        let folder = select.dialog().file().set_parent(&select)
+            .set_title("Choose approved public coordinator provider.json and CA folder")
+            .blocking_pick_folder().ok_or(cancelled)?.into_path().map_err(|_| "Local public provider folder required")?;
+        let locator = select.dialog().file().add_filter("Public credential locator", &["json"]).set_parent(&select)
+            .set_title("Choose approved public credential-locator.json")
+            .blocking_pick_file().ok_or(cancelled)?.into_path().map_err(|_| "Local approved credential locator required")?;
+        Ok::<_,&str>((folder, locator))
+    }).await.map_err(|_| "Legacy provider selection interrupted")??;
+    if locator.file_name().and_then(|v| v.to_str()) != Some("credential-locator.json") {
+        return Err("Select the approved public credential-locator.json".into());
+    }
+    Ok((folder, locator))
+}
+
+pub(super) async fn legacy_retire(window: &tauri::WebviewWindow, target: Target, control: &Path, base: &Path, reconcile_only: bool) -> Result<Value,String> {
+    use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+    use std::time::{SystemTime,UNIX_EPOCH};
+    if !cfg!(all(debug_assertions, unix)) {
+        return Err("Legacy peer retirement requires the isolated engineering native app".into());
+    }
+    let directory = base.join("nodenetwork-legacy-canary-peer-retirement-v1");
+    let intent = directory.join("retire-intent.json");
+    match (intent.symlink_metadata(), reconcile_only) {
+        (Ok(_), false) => return Err("Retirement already dispatched. Check the original provider result.".into()),
+        (Err(error), false) if error.kind() == std::io::ErrorKind::NotFound => {},
+        (Ok(meta), true) if meta.is_file() => {},
+        _ => return Err("An exact native retirement intent is unavailable".into()),
+    }
+    let now = || SystemTime::now().duration_since(UNIX_EPOCH).map(|v|v.as_secs()).map_err(|_| "Local clock unavailable");
+    let plan = crate::legacy_gateway_plan::inspect(&target, "root", control).await?;
+    let (folder, locator_path) = legacy_provider_inputs(window).await?;
+    let approved = config(&folder)?;
+    let locator = read(&locator_path, 16384, true)?;
+    let coordinator = crate::vpn_credential::public_review(&locator, &approved.pin)?;
+    if coordinator["host"] != "68.183.139.56" || coordinator["port"] != 22 || coordinator["account"] != "root" {
+        return Err("Exact legacy coordinator SSH endpoint required".into());
+    }
+    let locator_pin = coordinator["locator_sha256"].as_str().ok_or("Exact coordinator locator required")?;
+    let scope = crate::legacy_peer_preflight::retirement_scope(&plan, &approved.policy, &approved.pin, locator_pin, now()? + 120)?;
+    let prompt = window.clone();
+    let (verb, action, explanation) = if reconcile_only {
+        ("Check original peer retirement", "Verify peer absence", "Provider reads verify absence only.")
+    } else {
+        ("Retire exact obsolete VPN peer", "Retire this peer once", "After verifying the public key, Portal will send one DELETE for this exact peer and verify absence. An interrupted removal can only be reconciled.")
+    };
+    let message = format!("{verb}?\nTarget: {}\nObsolete network: posy-apqe-canary-process-49028\nPlan SHA256: {}\nAccount: {}\nPeer: {} · {}\nWireGuard SHA256: {}\nCoordinator: vpn-coordinator.synergy-network.io\n{explanation}\nExisting coordinator credential is used in memory for up to 120 seconds. No enrollment or gateway filesystem operation is included.",
+        target.label(), scope["plan_sha256"], scope["account_id"], scope["peer_id"], scope["ip"], scope["wireguard_public_key_sha256"]);
+    let accepted = tauri::async_runtime::spawn_blocking(move || {
+        prompt.dialog().message(message).parent(&prompt).title(verb)
+            .buttons(MessageDialogButtons::OkCancelCustom(action.into(), "Cancel".into())).blocking_show()
+    }).await.map_err(|_| "Legacy retirement review interrupted")?;
+    if !accepted { return Err("Legacy retirement review cancelled before provider contact".into()); }
+
+    let expires = now()? + 120;
+    let _serial = SERIAL.lock().await;
+    let fresh = crate::legacy_gateway_plan::inspect(&target, "root", control).await?;
+    let current = config(&folder)?;
+    let current_locator = read(&locator_path, 16384, true)?;
+    if fresh["plan_sha256"] != plan["plan_sha256"] || current.raw != approved.raw
+        || current.ca.as_slice() != approved.ca.as_slice() || current_locator.as_slice() != locator.as_slice() || now()? >= expires
+    {
+        return Err("Legacy retirement scope changed before provider contact".into());
+    }
+    let scope = crate::legacy_peer_preflight::retirement_scope(&fresh, &current.policy, &current.pin, locator_pin, expires)?;
+    if !reconcile_only {
+        let request = crate::legacy_peer_preflight::key_request(&fresh, expires)?;
+        let wire = serde_json::to_vec(&request).map_err(|_| "Cannot encode reviewed legacy peer key request")?;
+        let raw = crate::vpn_credential::legacy_peer_proof(&current_locator, &current.pin, control, &wire).await?;
+        crate::legacy_peer_preflight::key_result(&raw, &request, &fresh)?;
+    }
+    if now()? >= expires { return Err("Legacy retirement review expired before credential access".into()); }
+    let credential = crate::vpn_credential::load(current_locator, &current.pin, true, control).await?;
+    let retirement = legacy_provider_exchange(&current, &credential, &scope, Some((&directory, reconcile_only))).await?;
+    let receipt = crate::legacy_peer_preflight::retirement_result(retirement, &scope)?;
+    Ok(json!({"version":1,"ok":true,"result":receipt}))
 }
 pub(super) async fn legacy_peer_key_read(window: &tauri::WebviewWindow, target: Target, control: &Path) -> Result<Value,String> {
     use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
@@ -265,20 +340,30 @@ pub(super) async fn legacy_peer_key_read(window: &tauri::WebviewWindow, target: 
 
 #[cfg(test)]pub(super) fn legacy_preflight_test_script(fake:&str)->String{format!("{PROVIDER}\n{fake}\n{}",crate::legacy_peer_preflight::RUNNER)}
 async fn legacy_account_reads(config:&Config,credential:&[u8],scope:&Value)->Result<Value,String>{
- let refused="Legacy peer account read unavailable; no retirement or enrollment was attempted";
+ let value=legacy_provider_exchange(config,credential,scope,None).await?;
+ crate::legacy_peer_preflight::result(&value,scope)
+}
+
+async fn legacy_provider_exchange(config:&Config,credential:&[u8],scope:&Value,retirement:Option<(&Path,bool)>)->Result<Value,String>{
+ let refused=if retirement.is_some(){"No verified retirement receipt. If the original request was dispatched, check its result without repeating removal."}
+  else{"Legacy peer account read unavailable; no retirement or enrollment was attempted"};
  let token=std::str::from_utf8(credential).map_err(|_|refused)?.trim_end_matches(['\r','\n']);
  if token.is_empty()||token.len()>4096||!token.bytes().all(|c|(33..=126).contains(&c)){return Err(refused.into())}
- #[derive(serde::Serialize)]struct LegacyReadWire<'a>{policy:&'a str,pin:&'a str,ca:String,token:&'a str,scope:&'a Value}
- let wire=Zeroizing::new(serde_json::to_vec(&LegacyReadWire{policy:&config.raw,pin:&config.pin,ca:STANDARD.encode(config.ca.as_slice()),token,scope}).map_err(|_|refused)?);
- let script=format!("{PROVIDER}\n{}",crate::legacy_peer_preflight::RUNNER);
+ #[derive(serde::Serialize)]struct LegacyReadWire<'a>{
+  policy:&'a str,pin:&'a str,ca:String,token:&'a str,scope:&'a Value,
+  #[serde(skip_serializing_if="Option::is_none")]directory:Option<&'a Path>,
+  #[serde(skip_serializing_if="Option::is_none")]reconcile_only:Option<bool>,
+ }
+ let wire=Zeroizing::new(serde_json::to_vec(&LegacyReadWire{policy:&config.raw,pin:&config.pin,ca:STANDARD.encode(config.ca.as_slice()),token,scope,
+  directory:retirement.map(|(path,_)|path),reconcile_only:retirement.map(|(_,reconcile)|reconcile)}).map_err(|_|refused)?);
+ let script=format!("{PROVIDER}\n{}",if retirement.is_some(){crate::legacy_peer_preflight::RETIREMENT_RUNNER}else{crate::legacy_peer_preflight::RUNNER});
  let mut command=tokio::process::Command::new("/usr/bin/python3");command.args(["-I","-B","-c",&script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
  let mut child=command.spawn().map_err(|_|refused)?;
  let response=tokio::time::timeout(std::time::Duration::from_secs(40),async{
   let mut input=child.stdin.take().ok_or(refused)?;input.write_all(&wire).await.map_err(|_|refused)?;drop(input);
   let mut bytes=Vec::new();child.stdout.take().ok_or(refused)?.take(8193).read_to_end(&mut bytes).await.map_err(|_|refused)?;
   if bytes.len()>8192||!child.wait().await.map_err(|_|refused)?.success(){return Err(refused.to_string())}
-  let value=serde_json::from_slice(&bytes).map_err(|_|refused)?;
-  crate::legacy_peer_preflight::result(&value,scope)
+  serde_json::from_slice(&bytes).map_err(|_|refused.to_owned())
  }).await.map_err(|_|refused.to_owned())?;
  response
 }
