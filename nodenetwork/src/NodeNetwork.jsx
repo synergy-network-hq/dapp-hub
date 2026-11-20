@@ -164,7 +164,7 @@ export function NodeNetworkApp(){
      : <><p>Monitor-only · Host selection deferred.</p><button onClick={()=>setSection('settings')}>Review target settings</button></>}
    </Card>
    {profile.id===CANARY_PROFILE.id?<CanaryRuntime observation={live} permitted={permitted&&!n.recoverySuspended}/>:<RpcReadiness profile={profile} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>}
-   <NetworkComparison profile={profile} profiles={profiles} permitted={permitted} onOpenEndpoints={()=>n.navigate('network/endpoints')}/>
+   <NetworkComparison profile={profile} profiles={n.endpoints} permitted={permitted} onOpenEndpoints={()=>n.navigate('network/endpoints')}/>
    <div className="node-read-monitor"><Card title="Public validator index">
     {indexAvailable ? <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
      : <p>{permitted?'Select the canonical Synergy Testnet RPC to view the Atlas validator index.':'Allow NodeNetwork public-network reads in Security & permissions.'}</p>}
