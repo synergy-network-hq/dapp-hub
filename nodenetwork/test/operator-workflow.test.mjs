@@ -28,7 +28,8 @@ test('identity generation sends only the digest reviewed on this target',()=>{
 
 test('validator role comes first and blank draft cannot select an observation network',()=>{
  assert.equal(NODE_ROLES[0].id,'validator');
- assert.ok(NODE_ROLES.slice(1).every(role=>role.description.includes('unavailable')));
+ assert.match(NODE_ROLES.find(role=>role.id==='rpc_gateway').description,/signed admission and VPN enrollment/);
+ assert.match(NODE_ROLES.find(role=>role.id==='observer_light').description,/unavailable/);
  assert.deepEqual(nodeRoleCatalog(['archive','validator','observer_light']).map(role=>role.id),['validator','archive','observer_light']);
  assert.equal(nodeRoleCatalog(['validator','validator']),NODE_ROLES);
  assert.equal(emptyProvisioningDraft().chain_id,'');

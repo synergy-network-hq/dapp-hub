@@ -5,7 +5,7 @@ import {controllerOperation,installParameters,provisioningChecks} from './nodeNe
 
 export const NODE_ROLES=Object.freeze([
  Object.freeze({id:'validator',label:'Validator',description:'Run PoSy consensus on an admitted host with its own APQE custody.'}),
- Object.freeze({id:'rpc_gateway',label:'RPC gateway',description:'A relay with separately approved gateway custody. Public exposure remains unavailable.'}),
+ Object.freeze({id:'rpc_gateway',label:'RPC gateway',description:'Configure a PoSy RPC relay with its own APQE custody, signed admission and VPN enrollment.'}),
  Object.freeze({id:'observer_light',label:'Light observer',description:'A non-voting node. Provisioning is unavailable through this controller.'}),
 ]);
 

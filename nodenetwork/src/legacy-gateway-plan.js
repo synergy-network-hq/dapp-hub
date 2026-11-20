@@ -19,6 +19,19 @@ export function legacyGatewayServiceView(value, stopping) {
  return value;
 }
 
+export function legacyGatewayRemovalView(value) {
+ const removed = value?.removed_units;
+ if (!exact(value,['schema','reviewed_sha256','removed_root','removed_units'])
+     || value.schema !== 'nodenetwork-legacy-canary-root-removed-v1' || !pin(value.reviewed_sha256)
+     || value.removed_root !== '/opt/Synergy' || !Array.isArray(removed) || removed.length<2 || removed.length>3
+     || !obsoleteUnits.every(unit=>removed.includes(unit))
+     || new Set(removed).size!==removed.length
+     || removed.some(unit=>!obsoleteUnits.includes(unit)&&unit!=='synergy-node.service')) {
+  throw Error('Obsolete Canary root removal could not be verified.');
+ }
+ return value;
+}
+
 export function legacyGatewayPlanTarget(target,operator){return target?.kind==='remote'&&target.host==='167.86.83.83'&&(target.port??22)===22&&target.root==='/opt/synergy'&&!target.guest&&operator==='root';}
 export function legacyGatewayPlanView(v,target){
  const refuse=()=>{throw Error('Unsupported legacy gateway handoff observation. No retirement or route change is authorized.');};

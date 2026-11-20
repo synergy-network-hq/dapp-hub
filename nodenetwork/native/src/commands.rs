@@ -389,6 +389,11 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   let base=app.path().app_local_data_dir().map_err(|_|"Portal operation directory unavailable")?;
   return crate::legacy_gateway_plan::quiesce(&window, &target, &directory, &base, mutation).await;
  }
+ if request.operation=="legacy_gateway_root_retire" {
+  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+  let base=app.path().app_local_data_dir().map_err(|_|"Portal operation directory unavailable")?;
+  return crate::legacy_gateway_plan::retire_root(&window, &target, &directory, &base).await;
+ }
  if request.operation=="operator_auth_load"{
   #[cfg(target_os="macos")]{
    let home=app.path().home_dir().map_err(|_|"Operator home unavailable")?;

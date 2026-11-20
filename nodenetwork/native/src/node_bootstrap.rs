@@ -268,6 +268,11 @@ pub(super) fn legacy_canary_quiesce_command(apply: bool) -> Result<String, Strin
     Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {action}",
         shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))
 }
+pub(super) fn legacy_canary_root_command(apply: bool) -> Result<String, String> {
+    let action = if apply { "--legacy-canary-root-retire" } else { "--legacy-canary-root-plan" };
+    Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {action}",
+        shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))
+}
 pub(super) fn legacy_peer_key_proof_command() -> Result<String,String> {
     Ok(format!("/usr/bin/python3 -I -B -c {} --legacy-peer-key-proof", shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))
 }

@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt,AsyncWriteExt};
 const MACHINE:&str="8683ea9f4da9e9c05c26b6d8070cc13c0f5f75b0cd4a4de863492164f4c1e26d";
 const REFUSED:&str="Legacy gateway handoff observation unavailable; no resources or authority were changed";
 const QUIESCENCE_REFUSED: &str = "Obsolete Canary service state could not be verified. Read the current service state before another stop.";
+const REMOVAL_REFUSED: &str = "Obsolete Canary removal is unverified. Inspect the original root and service registrations before continuing.";
 const RETIREMENT_RECEIPT: &str = "e88b81a2ea6e12ef767eb65e14e0aedbe88be8bb6b6b26bfd362dba1e791b9ee";
 const REQUIRED:&[&str]=&["explicit_retirement_approval_required","legacy_inventory_requires_attribution","metrics_resolution_required"];
 const BLOCKERS:&[&str]=&["explicit_retirement_approval_required","foreign_resources","inventory_bound_exceeded","legacy_attribution_failed","legacy_inventory_requires_attribution","metrics_resolution_required","protected_attribution_failed","legacy_peer_retirement_required"];
@@ -72,10 +73,13 @@ fn validate_old_scope(v:&Value)->Result<(),String>{
  Ok(())
 }
 
+#[derive(Clone, Copy)]
 enum LegacyMode<'a> {
     Plan,
     ReviewStop,
     Stop(&'a str),
+    ReviewRoot,
+    RemoveRoot(&'a str),
 }
 
 async fn exchange(target:&Target,operator:&str,control:&Path,mode:LegacyMode<'_>)->Result<(Value,Value),String>{
@@ -96,6 +100,12 @@ async fn exchange(target:&Target,operator:&str,control:&Path,mode:LegacyMode<'_>
         wire["retirement_receipt_sha256"] = json!(RETIREMENT_RECEIPT);
         wire["reviewed_sha256"] = json!(reviewed);
         (node_bootstrap::legacy_canary_quiesce_command(reviewed.is_some())?, QUIESCENCE_REFUSED)
+    }
+    LegacyMode::ReviewRoot | LegacyMode::RemoveRoot(_) => {
+        let reviewed = match mode { LegacyMode::RemoveRoot(digest) => Some(digest), _ => None };
+        wire["retirement_receipt_sha256"] = json!(RETIREMENT_RECEIPT);
+        wire["reviewed_sha256"] = json!(reviewed);
+        (node_bootstrap::legacy_canary_root_command(reviewed.is_some())?, REMOVAL_REFUSED)
     }
  };
  let mut cmd=node_controller::remote_command_with_identity(target,control,operator,&command,Some(&known_hosts),Some(&identity))?;
@@ -125,6 +135,13 @@ fn quiescence_scope(value: &Value) -> Value {
     Value::Object(fields.into_iter().map(|field| (field.into(), value[field].clone())).collect())
 }
 
+fn checked_retirement_receipt(base: &Path) -> Result<(), String> {
+    if crate::vpn_enrollment::legacy_retirement_receipt_sha256(base)? != RETIREMENT_RECEIPT {
+        return Err("The exact verified obsolete VPN peer receipt is required.".into());
+    }
+    Ok(())
+}
+
 fn active_units(value: &Value) -> Vec<&'static str> {
     ["canary_active", "vpn_active"].into_iter().zip(&UNITS[1..])
         .filter_map(|(field, unit)| (value["legacy"][field] == true).then_some(*unit)).collect()
@@ -145,8 +162,8 @@ fn decode_quiescence(reply: &Value, wire: &Value) -> Result<Value, String> {
         || ["canary_active", "vpn_active"].iter().any(|key| !value["legacy"][*key].is_boolean())
         || ["canary_executable_sha256", "canary_unit_sha256", "vpn_unit_sha256", "lower_root_entries_sha256"]
             .iter().any(|key| !pin(&value["legacy"][*key]))
-        || ["tunnel_active", "rpc_listener_owned", "ws_listener_owned"].iter().any(|key| value["preserved"][*key] != true)
-        || value["metrics"]["listener_owned"] != true || value["metrics"]["service_active"] != true
+        || ["tunnel_active", "rpc_listener_owned", "ws_listener_owned"].iter().any(|key| !value["preserved"][*key].is_boolean())
+        || ["listener_owned", "service_active"].iter().any(|key| !value["metrics"][*key].is_boolean())
     {
         return Err(QUIESCENCE_REFUSED.into());
     }
@@ -163,21 +180,15 @@ fn decode_quiescence(reply: &Value, wire: &Value) -> Result<Value, String> {
 pub(super) async fn quiesce(window: &tauri::WebviewWindow, target: &Target, control: &Path,
                            base: &Path, stop_requested: bool) -> Result<Value, String> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-    let verify_receipt = || -> Result<(), String> {
-        if crate::vpn_enrollment::legacy_retirement_receipt_sha256(base)? != RETIREMENT_RECEIPT {
-            return Err("The exact verified obsolete VPN peer receipt is required.".into());
-        }
-        Ok(())
-    };
     target_scope(target, "root")?;
-    verify_receipt()?;
+    checked_retirement_receipt(base)?;
     let (reply, wire) = exchange(target, "root", control, LegacyMode::ReviewStop).await?;
     let review = decode_quiescence(&reply, &wire)?;
     let active = active_units(&review);
     let mut stopped = Vec::new();
     if stop_requested && !active.is_empty() {
         let pin = review["reviewed_sha256"].as_str().ok_or(QUIESCENCE_REFUSED)?;
-        let message = format!("Stop the following obsolete Canary services on {}?\n{}\nNetwork posy-apqe-canary-process-49028\nReview SHA-256 {}\nNodeNetwork will verify the Chain 1266 listener and tunnel after each stop.",
+        let message = format!("Stop the following obsolete Canary services on {}?\n{}\nNetwork posy-apqe-canary-process-49028\nReview SHA-256 {}\nNodeNetwork will recheck the protected Chain 1266 service scope after each stop.",
                               target.label(), active.join("\n"), pin);
         let prompt = window.clone();
         let accepted = tauri::async_runtime::spawn_blocking(move || {
@@ -186,7 +197,7 @@ pub(super) async fn quiesce(window: &tauri::WebviewWindow, target: &Target, cont
                 .blocking_show()
         }).await.map_err(|_| "Obsolete service review interrupted")?;
         if !accepted { return Err("Obsolete service stop cancelled".into()); }
-        verify_receipt()?;
+        checked_retirement_receipt(base)?;
         let (reply, wire) = exchange(target, "root", control, LegacyMode::Stop(pin)).await?;
         let result = decode_quiescence(&reply, &wire)?;
         if quiescence_scope(&result) != quiescence_scope(&review) { return Err(QUIESCENCE_REFUSED.into()); }
@@ -199,6 +210,70 @@ pub(super) async fn quiesce(window: &tauri::WebviewWindow, target: &Target, cont
         "active_units":if stopped.is_empty() { active } else { Vec::new() },
         "stopped_units":stopped,
         "chain1266_verified":true
+    }}))
+}
+
+fn decode_root_retirement(reply: &Value, wire: &Value) -> Result<Value, String> {
+    let value = &reply["result"];
+    let applying = !wire["reviewed_sha256"].is_null();
+    if !exact(reply, &["version", "ok", "result"]) || reply["version"] != 1 || reply["ok"] != true
+        || !exact(value, &["schema", "challenge", "target", "machine_id_sha256", "retirement_receipt_sha256",
+         "preserved", "metrics", "legacy", "reviewed_sha256", "upper_inventory_sha256", "registered_units", "removed"])
+        || value["schema"] != "nodenetwork-legacy-canary-root-retirement-v1"
+        || value["challenge"] != wire["challenge"] || value["target"] != wire["context"]["target"]
+        || value["machine_id_sha256"] != MACHINE || value["retirement_receipt_sha256"] != RETIREMENT_RECEIPT
+        || value["removed"] != applying || !pin(&value["upper_inventory_sha256"])
+        || value["legacy"]["canary_active"] != false || value["legacy"]["vpn_active"] != false
+    {
+        return Err(REMOVAL_REFUSED.into());
+    }
+    validate_old_scope(value).map_err(|_| REMOVAL_REFUSED)?;
+    let units = value["registered_units"].as_object().ok_or(REMOVAL_REFUSED)?;
+    if !UNITS[1..].iter().all(|unit| units.contains_key(*unit)) ||
+        units.iter().any(|(name, digest)| (!UNITS[1..].contains(&name.as_str()) && name != "synergy-node.service") || !pin(digest))
+    {
+        return Err(REMOVAL_REFUSED.into());
+    }
+    let mut scope = quiescence_scope(value);
+    scope["upper_inventory_sha256"] = value["upper_inventory_sha256"].clone();
+    scope["registered_units"] = value["registered_units"].clone();
+    let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&scope).map_err(|_| REMOVAL_REFUSED)?));
+    if value["reviewed_sha256"] != digest || (applying && value["reviewed_sha256"] != wire["reviewed_sha256"]) {
+        return Err(REMOVAL_REFUSED.into());
+    }
+    Ok(value.clone())
+}
+
+pub(super) async fn retire_root(window: &tauri::WebviewWindow, target: &Target, control: &Path, base: &Path)
+    -> Result<Value, String>
+{
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    target_scope(target, "root")?;
+    checked_retirement_receipt(base)?;
+    let (reply, wire) = exchange(target, "root", control, LegacyMode::ReviewRoot).await?;
+    let review = decode_root_retirement(&reply, &wire)?;
+    let pin = review["reviewed_sha256"].as_str().ok_or(REMOVAL_REFUSED)?;
+    let units = review["registered_units"].as_object().ok_or(REMOVAL_REFUSED)?
+        .keys().cloned().collect::<Vec<_>>();
+    let message = format!(
+        "Permanently remove /opt/Synergy on {}?\nObsolete network: posy-apqe-canary-process-49028\nInventory SHA-256: {}\nReview SHA-256: {}\nExact service registrations:\n{}\nThe obsolete local keys, configuration, logs and state will be deleted. Chain 1266 uses a separate installation.",
+        target.label(), review["upper_inventory_sha256"], pin, units.join("\n")
+    );
+    let prompt = window.clone();
+    let accepted = tauri::async_runtime::spawn_blocking(move || {
+        prompt.dialog().message(message).parent(&prompt).title("Retire obsolete Canary gateway")
+            .buttons(MessageDialogButtons::OkCancelCustom("Remove reviewed root permanently".into(), "Cancel".into()))
+            .blocking_show()
+    }).await.map_err(|_| "Obsolete gateway removal review interrupted")?;
+    if !accepted { return Err("Obsolete gateway removal cancelled".into()); }
+    checked_retirement_receipt(base)?;
+    let (reply, wire) = exchange(target, "root", control, LegacyMode::RemoveRoot(pin)).await?;
+    let result = decode_root_retirement(&reply, &wire)?;
+    Ok(json!({"version":1,"ok":true,"result":{
+        "schema":"nodenetwork-legacy-canary-root-removed-v1",
+        "reviewed_sha256":result["reviewed_sha256"],
+        "removed_root":"/opt/Synergy",
+        "removed_units":units
     }}))
 }
 
@@ -251,7 +326,7 @@ pub(super) async fn quiesce(window: &tauri::WebviewWindow, target: &Target, cont
          wrong[key] = value;
          assert!(decode_quiescence(&wrap(wrong), &wire).is_err());
      }
-     for (operation, mutation) in [("legacy_gateway_service_status", false), ("legacy_gateway_service_stop", true)] {
+     for (operation, mutation) in [("legacy_gateway_service_status", false), ("legacy_gateway_service_stop", true), ("legacy_gateway_root_retire", true)] {
          let mut request = node_controller::Request { version: 1, operation: operation.into(), parameters: json!({}) };
          assert_eq!(request.validate(), Ok(mutation));
          request.parameters = json!({"unit":"synergy-chain1266-role@rpc-gateway.service"});
