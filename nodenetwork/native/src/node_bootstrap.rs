@@ -263,6 +263,11 @@ pub(super) fn bootstrap_script(script:&str)->Result<String,String>{
 }
 fn shell_quote_static(value:&str)->String{format!("'{}'",value.replace('\'',"'\\''"))}
 pub(super) fn gateway_handoff_command()->Result<String,String>{Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --legacy-canary-retirement-plan",shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))}
+pub(super) fn legacy_canary_quiesce_command(apply: bool) -> Result<String, String> {
+    let action = if apply { "--legacy-canary-quiesce" } else { "--legacy-canary-quiesce-plan" };
+    Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {action}",
+        shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))
+}
 pub(super) fn legacy_peer_key_proof_command() -> Result<String,String> {
     Ok(format!("/usr/bin/python3 -I -B -c {} --legacy-peer-key-proof", shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))
 }

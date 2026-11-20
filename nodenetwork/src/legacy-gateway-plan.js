@@ -4,6 +4,21 @@ const required=['explicit_retirement_approval_required','legacy_inventory_requir
 const codes=[...required,'foreign_resources','inventory_bound_exceeded','protected_attribution_failed','legacy_attribution_failed','legacy_peer_retirement_required'];
 const exact=(v,keys)=>!!v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
 const pin=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+const obsoleteUnits = ['synergy-canary-rpc-relay.service', 'synergy-vpn.service'];
+
+export function legacyGatewayServiceView(value, stopping) {
+ const units = list => Array.isArray(list) && list.length <= obsoleteUnits.length
+  && list.every((unit, index) => obsoleteUnits.includes(unit) && list.indexOf(unit) === index);
+ if (!exact(value, ['schema', 'reviewed_sha256', 'services_stopped', 'active_units', 'stopped_units', 'chain1266_verified'])
+     || value.schema !== 'nodenetwork-legacy-canary-service-view-v1' || !pin(value.reviewed_sha256)
+     || value.chain1266_verified !== true || !units(value.active_units) || !units(value.stopped_units)
+     || value.services_stopped !== (value.active_units.length === 0)
+     || (stopping ? !value.services_stopped : value.stopped_units.length !== 0)) {
+  throw Error('Obsolete Canary service state could not be verified.');
+ }
+ return value;
+}
+
 export function legacyGatewayPlanTarget(target,operator){return target?.kind==='remote'&&target.host==='167.86.83.83'&&(target.port??22)===22&&target.root==='/opt/synergy'&&!target.guest&&operator==='root';}
 export function legacyGatewayPlanView(v,target){
  const refuse=()=>{throw Error('Unsupported legacy gateway handoff observation. No retirement or route change is authorized.');};

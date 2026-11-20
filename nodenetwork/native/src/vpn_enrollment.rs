@@ -19,6 +19,10 @@ fn read(path:&Path,limit:usize,private:bool)->Result<Zeroizing<Vec<u8>>,String>{
  let mut b=Zeroizing::new(Vec::new());f.take(limit as u64+1).read_to_end(&mut b).map_err(|_|"Cannot read VPN input")?;
  if b.len()!=m.len() as usize{return Err("VPN input changed while reading".into())}Ok(b)
 }
+pub(super) fn legacy_retirement_receipt_sha256(base: &Path) -> Result<String, String> {
+    let path = base.join("nodenetwork-legacy-canary-peer-retirement-v1").join("retired.json");
+    Ok(hash(&read(&path, 8192, true)?))
+}
 struct Config{raw:String,ca:Zeroizing<Vec<u8>>,policy:Value,pin:String}
 fn config(directory:&Path)->Result<Config,String>{
  if !cfg!(all(debug_assertions,unix)){return Err("Native VPN issuer remains unavailable in production".into())}
