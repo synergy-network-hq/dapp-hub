@@ -148,6 +148,17 @@ fn prepare_pinned(path:&Path,target:&Target,expected:&str,now:u64)->Result<Prepa
  Ok(Prepared{wire,document:text.into(),continuation:None,host_key:d.target.host_key,sha256:expected.into(),runtime_profile_sha256:None,summary:json!({"sha256":expected,"sequence":d.sequence,"expires_at":d.expires_at,"release_id":d.release_id,"manifest_sha256":d.manifest_sha256,"network_id":d.network_id,"chain_id":d.chain_id.to_string(),"node_name":d.node_name,"artifact_count":d.artifacts.len(),"requests":d.requests.iter().map(|r|json!({"operation":r.operation,"request_sha256":r.request_sha256})).collect::<Vec<_>>()})})
 }
 pub async fn execute(target:Target,operator:String,prepared:Prepared,control:&Path)->Result<Value,String>{
+ execute_scope(target,operator,prepared,control,"--stage-engineering-authorization").await
+}
+
+pub(super) async fn prepare_existing_gateway_stage(target:Target,operator:String,prepared:Prepared,control:&Path)->Result<Value,String>{
+ if prepared.runtime_profile_sha256.is_none() || prepared.continuation.is_some() || target.kind!="remote" || target.guest.is_some() {
+  return Err("Only the original reviewed remote gateway profile can prepare its existing staging".into());
+ }
+ execute_scope(target,operator,prepared,control,"--prepare-existing-gateway-stage").await
+}
+
+async fn execute_scope(target:Target,operator:String,prepared:Prepared,control:&Path,action:&str)->Result<Value,String>{
  target.validate()?;node_bootstrap::validate_operator(&operator)?;
  let _serial=node_controller::SERIAL.lock().await;
  // Retire only this app-owned prior channel before applying the exact new pin.
@@ -165,9 +176,9 @@ pub async fn execute(target:Target,operator:String,prepared:Prepared,control:&Pa
  let script=node_bootstrap::bootstrap_script(&script)?;
  let mut c=if target.kind=="local"{
   if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local authorization requires Linux x86_64".into());}
-  let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script,"--stage-engineering-authorization"]);c
+  let mut c=tokio::process::Command::new("/usr/bin/sudo");c.args(["-n","/usr/bin/python3","-I","-B","-c",&script,action]);c
  }else{
-  let quote=script.replace('\'',"'\\''");node_controller::remote_command(&target,control,&operator,&format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c '{quote}' --stage-engineering-authorization"),Some(&pin_path))?
+  let quote=script.replace('\'',"'\\''");node_controller::remote_command(&target,control,&operator,&format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c '{quote}' {action}"),Some(&pin_path))?
  };
  c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
  let mut child=c.spawn().map_err(|_|"Cannot start authenticated authorization transport")?;

@@ -852,19 +852,39 @@ pub async fn portal_nodenetwork_stage_authorization(window:tauri::WebviewWindow,
   crate::operator_authorization::prepare(&path,&selected_target,network_profile.as_ref(),&review_directory).map(Some)
  }).await.map_err(|_|"Authorization inspection did not finish")??;
  let Some(prepared)=selected else{return Ok(None)};
- let summary=prepared.summary.clone();
- let message=format!("Target: {}\nAdministrative account: {}\nExact authorization SHA-256: {}\n\nReviewed public scope: {}\n\nThis isolated engineering approval stages only exact fixed-name inputs and expiring one-use requests inside /opt/synergy. It does not grant Genesis membership, stake or consensus authority. Private VPN input, if approved, is not returned to the renderer. Nothing is automatically retried.",target.label(),operator,prepared.sha256,summary);
- let confirmed=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Authorize exact engineering formation inputs").buttons(MessageDialogButtons::OkCancelCustom("Stage approved scope once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Authorization confirmation did not finish")?;
- if !confirmed{return Ok(None)};
  let base=app.path().app_local_data_dir().map_err(|_|"Portal journal unavailable")?;
+ let initial_request=node_controller::Request{version:1,operation:"authorization_stage".into(),parameters:serde_json::json!({"authorization_sha256":prepared.sha256})};
+ let prepare_stage=prepared.runtime_profile_sha256.is_some() && request_journal::with_latest_success(
+  &base,&target.journal_identity(),"authorization_stage",|receipt|Ok(receipt["request_sha256"]==initial_request.approval_id()),
+ ).unwrap_or(false);
+ let summary=prepared.summary.clone();
+ let (title,button,scope)=if prepare_stage {
+  ("Prepare the existing gateway stage","Verify and prepare staged gateway", "The existing installation grant remains unused. Verify the current authorization and package and set owner-only execute bits on its authenticated staged binaries. This does not recreate any grant, change custody or start a service.")
+ }else{
+  ("Authorize exact engineering formation inputs","Stage approved scope once", "Stage the exact fixed-name inputs and expiring one-use requests inside /opt/synergy. Membership, stake and consensus authority require their own approval. Private VPN input stays outside the renderer.")
+ };
+ let message=format!("Target: {}\nAdministrative account: {}\nExact authorization SHA-256: {}\n\nReviewed public scope: {}\n\n{}\nNothing is automatically retried.",target.label(),operator,prepared.sha256,summary,scope);
+ let confirmed=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title(title).buttons(MessageDialogButtons::OkCancelCustom(button.into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Authorization confirmation did not finish")?;
+ if !confirmed{return Ok(None)};
  crate::authorization_lifecycle::remember(&base,&target,&operator,&prepared)?;
- let request=serde_json::json!({"version":1,"operation":"authorization_stage","parameters":{"authorization_sha256":prepared.sha256}});
- let dispatch=request_journal::Dispatch::begin(&base,&target.journal_identity(),"authorization_stage",&request)?;
- let result=crate::operator_authorization::execute(target,operator,prepared,&directory).await.and_then(|reply|{
+ // Verified mode preparation is idempotent and leaves the original grant
+ // unchanged. Inspecting the target can reconcile an interrupted preparation.
+ let dispatch=if prepare_stage {None}else{Some(request_journal::Dispatch::begin(
+  &base,&target.journal_identity(),"authorization_stage",&initial_request.canonical(),
+ )?)};
+ let response=if prepare_stage {
+  crate::operator_authorization::prepare_existing_gateway_stage(target,operator,prepared,&directory).await
+ }else{
+  crate::operator_authorization::execute(target,operator,prepared,&directory).await
+ };
+ let result=response.and_then(|reply|{
+  if prepare_stage&&reply["ok"]==true&&reply["result"]["gateway_stage_prepared"]!=true{return Err("Staged gateway preparation acknowledgement differs; inspect the target before another operation".into())}
   if reply["ok"]==true&&(reply["result"]["schema"]!="nodenetwork-engineering-authorization-v1"||reply["result"]["sha256"]!=summary["sha256"]||reply["result"]["sequence"]!=summary["sequence"]||reply["result"]["applied"]!=true||reply["result"]["grants_recreated"]!=false){return Err("Target authorization receipt differs; inspect before further operations".into())}
   Ok(reply)
  });
- dispatch.finish(&result).map_err(|_|"Authorization outcome could not be journaled; inspect the target and do not resend")?;
+ if let Some(dispatch)=dispatch {
+  dispatch.finish(&result).map_err(|_|"Authorization outcome could not be journaled; inspect the target and do not resend")?;
+ }
  result.map(Some)
 }
 
