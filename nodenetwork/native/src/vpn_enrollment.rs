@@ -120,7 +120,9 @@ try:
         elif wire['operation']=='retire': result=flow.retire_bound_peer(wire['local'])
         elif wire['operation']=='cancel_unused': result=flow.cancel_unused(wire['local'])
         else: raise ValueError('Unknown native provider operation')
-        sys.stdout.buffer.write(encode(result)+b'\n')
+    sys.stdout.buffer.write(encode(result)+b'\n')
+except GatewayAccessRefused:
+    sys.exit(78)
 except Exception:
     sys.exit(1)
 "#;
@@ -131,7 +133,12 @@ except Exception:
  let result=tokio::time::timeout(std::time::Duration::from_secs(90),async{
   input.write_all(&wire).await.map_err(|_|"Private provider exchange interrupted")?;drop(input);
   let mut raw=Zeroizing::new(Vec::new());output.read_to_end(&mut raw).await.map_err(|_|"Provider response unavailable")?;
-  if raw.len()>32768||!child.wait().await.map_err(|_|"Provider outcome unknown")?.success(){return Err("Provider operation refused or uncertain; use reconciliation, never reissue")}
+  if raw.len()>32768{return Err("Provider operation refused or uncertain; use reconciliation, never reissue")}
+  let status=child.wait().await.map_err(|_|"Provider outcome unknown")?;
+  if operation=="prepare"&&config.policy["profile"]==crate::gateway_vpn::PROFILE&&status.code()==Some(78)&&raw.is_empty(){
+   return Err("NetBird did not verify the dedicated empty gateway group and one-way TCP rule to the signed upstream. No setup key was issued.");
+  }
+  if !status.success(){return Err("Provider operation refused or uncertain; use reconciliation, never reissue")}
   let split=raw.iter().position(|c|*c==b'\n').ok_or("Unsupported provider response")?;
   let public=serde_json::from_slice(&raw[..split]).map_err(|_|"Invalid public provider receipt")?;
   let secret=Zeroizing::new(std::str::from_utf8(&raw[split+1..]).map_err(|_|"Invalid private provider response")?.to_string());Ok((public,secret))

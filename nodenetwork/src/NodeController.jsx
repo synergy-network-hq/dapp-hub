@@ -54,6 +54,8 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
  useEffect(()=>{const retained=retainedUpdateStageReceipt(stagedAdoption.current,resetScope.current,scopeKey);stagedAdoption.current=null;resetScope.current=scopeKey;setState(null);setResults({});setLatest(retained);setPending(null);setReview(null);setConfirmation('');setIdentityReview(null);setFormationReview(null);setFormationRecord(null);setBindingReview(null);locked.current=false;},[scopeKey]);
  useEffect(()=>{setNetworkReview(null);},[targetKey]);
  const localResult=latest?localOperatorResult(latest.operation,latest.response):null;
+ const gatewayBoot=state?.installed_role==='rpc_gateway';
+ const bootRuntime=gatewayBoot?'RPC relay':'validator';
  const labelFor=operation=>serviceActionLabel(operation,{installed_role:state?.installed_role??results.target?.response?.installed_role})??LABELS[operation];
  const gateFor=operation=>workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus:results.vpn_status?.response,identityReview,formationReview,formationRecord,bindingReview,networkReview});
 
@@ -305,13 +307,13 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
    </> : <p>Read the installed gateway’s network profile before changing its services.</p>}
   </Card>}
   {tab==='Management'&&<CurrentFleetConsensus disabled={!permitted||!!pending}/>}
-  {tab==='Management'&&state?.operations?.some(row=>row.operation==='boot_policy_status'&&row.kind==='read')&&<Card title="Explicit service boot policy">
-   <p>Change one attributed service at a time. This never starts or stops a service now. Enabling validator boot also starts its existing VPN dependency at boot, even when VPN's own boot link is disabled. Managed guest boot enablement is unavailable.</p>
+  {(tab==='Management'||(gatewaySetup&&gatewayBoot))&&state?.operations?.some(row=>row.operation==='boot_policy_status'&&row.kind==='read')&&<Card title="Service boot policy">
+   <p>Choose which managed services start after a reboot. The {bootRuntime} starts its VPN dependency when enabled at boot.</p>
    {action('boot_policy_status')}
-   {results.boot_policy_status?<Detail data={{nodeBootEnabled:results.boot_policy_status.response.node_enabled,vpnBootEnabled:results.boot_policy_status.response.vpn_enabled,exactAuditedChangeObserved:results.boot_policy_status.response.applied}}/>:<p>Current boot policy has not been observed.</p>}
+   {results.boot_policy_status?<Detail data={{[gatewayBoot?'relayBootEnabled':'validatorBootEnabled']:results.boot_policy_status.response.node_enabled,vpnBootEnabled:results.boot_policy_status.response.vpn_enabled,exactAuditedChangeObserved:results.boot_policy_status.response.applied}}/>:<p>Read the boot policy to verify the current settings.</p>}
    {['node','vpn'].map(service=><div className="button-row" key={service}>
-    {!target.guest&&<button type="button" disabled={!!pending||!gateFor('boot_policy').available} onClick={()=>perform('boot_policy',{service,enabled:true})}>Enable {service==='node'?'validator':'VPN'} at boot</button>}
-    <button type="button" disabled={!!pending||!gateFor('boot_policy').available} onClick={()=>perform('boot_policy',{service,enabled:false})}>Disable {service==='node'?'validator':'VPN'} at boot</button>
+    {!target.guest&&<button type="button" disabled={!!pending||!gateFor('boot_policy').available} onClick={()=>perform('boot_policy',{service,enabled:true})}>Enable {service==='node'?bootRuntime:'VPN'} at boot</button>}
+    <button type="button" disabled={!!pending||!gateFor('boot_policy').available} onClick={()=>perform('boot_policy',{service,enabled:false})}>Disable {service==='node'?bootRuntime:'VPN'} at boot</button>
    </div>)}
    <p>After a lost reply, read boot policy status to reconcile the original exact request before another change.</p>
   </Card>}
