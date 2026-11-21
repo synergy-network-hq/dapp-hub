@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.jsx",
+    "./icons/dark.png": "./assets/wallet.png",
+    "./icons/light.png": "./assets/wallet-light.png",
     "./widget": "./src/Widget.jsx",
     "./address": "./src/wallet-address.js",
     "./sts-activity": "./src/sts-activity.js",
