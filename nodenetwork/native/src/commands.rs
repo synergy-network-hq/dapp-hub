@@ -572,9 +572,10 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
    }
  }
  if let Some(public)=result["result"].as_object_mut(){
-  // Exact artifacts are saved only after a native export review.
+  // Validator artifacts use their native file export workflow. The dedicated
+  // gateway export has already verified its public enrollment bytes and pin.
   public.remove("registration_json");
-  public.remove("enrollment_json");
+  if operation!="gateway_target_export"{public.remove("enrollment_json");}
  }
  Ok(result)
 }
