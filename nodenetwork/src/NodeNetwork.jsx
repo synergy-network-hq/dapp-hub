@@ -223,8 +223,8 @@ export function NodeNetworkApp(){
     <Detail data={{profile:selectedNetwork.profile_id,network:selectedNetwork.network_id,chainId:selectedNetwork.chain_id,
      genesisHash:selectedNetwork.genesis_hash,nodeName:selectedNetwork.node_name,hostname:selectedNetwork.gateway.public_hostname}}/>
     <button type="button" onClick={()=>setSection('settings')}>Change network profile</button>
-    <label>Approved release ID<input value={gatewayDraft.release_id} maxLength={128} onChange={event=>setGatewayDraft({...gatewayDraft,release_id:event.target.value})}/></label>
-    <label>Approved manifest SHA-256<input value={gatewayDraft.manifest_sha256} maxLength={64} onChange={event=>setGatewayDraft({...gatewayDraft,manifest_sha256:event.target.value})}/></label>
+    <label>Approved release ID<input value={gatewayDraft.release_id} maxLength={128} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={event=>setGatewayDraft({...gatewayDraft,release_id:event.target.value})}/></label>
+    <label>Approved manifest SHA-256<input value={gatewayDraft.manifest_sha256} maxLength={64} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={event=>setGatewayDraft({...gatewayDraft,manifest_sha256:event.target.value})}/></label>
    </Card>
    <OperatorPublicKeyReview target={target} permitted={inspectMasterPermitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&(!target||targetScopeCurrent())}/>
    <MasterReview permitted={inspectMasterPermitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
