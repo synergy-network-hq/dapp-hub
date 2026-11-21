@@ -7,7 +7,8 @@ pub(super) fn exact(v:&Value,keys:&[&str])->bool{v.as_object().is_some_and(|m|m.
 pub(super) fn pin(v:&Value)->bool{v.as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))}
 fn text(v:&Value,max:usize)->bool{v.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=max&&!s.contains('\0'))}
 fn address(v:&Value)->bool{v.as_str().is_some_and(|s|s.starts_with("synv5")&&s.len()>5&&s.len()<=128&&s.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()))}
-fn network(v:&Value)->bool{v.as_str().is_some_and(|s|s.starts_with("synergy-posy-canary-")&&s.len()<=128&&s.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'))}
+fn network(v:&Value)->bool{v.as_str().is_some_and(super::node_controller::validator_network_id)}
+fn chain(v:&Value)->bool{v.as_str().is_some_and(super::node_controller::validator_chain_id)}
 pub(super) fn digest(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
 pub(super) fn purpose(request:&Request)->Result<&str,String>{
  let p=&request.parameters;
@@ -48,7 +49,7 @@ pub(super) fn preflight(request:&Request,value:&Value)->Result<Value,String>{
  ||["formation_sha256","transport_review_sha256","purpose_approval_sha256","valid_from_unix","expires_at_unix"].iter().any(|k|value[*k]!=prepare.parameters[*k])
  ||["mutation_performed","services_started","public_listener","production_qualified"].iter().any(|k|value[*k]!=false)
  ||!["request_sha256","formation_sha256","transport_review_sha256","issuer_root_sha256","purpose_approval_sha256","genesis_sha256","authority_sha256","registry_sha256","gateway_enrollment_sha256"].iter().all(|k|pin(&value[*k]))
- ||value["chain_id"]!="99999"||!network(&value["network_id"])||!address(&value["gateway_address"]){return Err(fail())}
+ ||!chain(&value["chain_id"])||!network(&value["network_id"])||!address(&value["gateway_address"]){return Err(fail())}
  let approval:Value=serde_json::from_str(purpose(&prepare)?).map_err(|_|fail())?;
  if ["issuer_root_sha256","genesis_sha256","authority_sha256","registry_sha256","gateway_enrollment_sha256"].iter().any(|k|value[*k]!=approval[*k]){return Err(fail())}
  Ok(value.clone())
@@ -65,7 +66,7 @@ pub(super) fn review(value:&Value,export:bool)->Result<Value,String>{
  }else{
   if value["pending"]!=true||value["available"]!=true||!value["blocker"].is_null()||!value["signed"].is_boolean()
   ||!["request_sha256","review_sha256","purpose_approval_sha256","formation_sha256","genesis_sha256","authority_sha256","registry_sha256","gateway_enrollment_sha256"].iter().all(|k|pin(&value[*k]))
-  ||!address(&value["gateway_address"])||!network(&value["network_id"])||value["chain_id"]!="99999"{return Err(fail())}
+  ||!address(&value["gateway_address"])||!network(&value["network_id"])||!chain(&value["chain_id"]){return Err(fail())}
   let from=value["valid_from_unix"].as_u64().filter(|n|*n>0&&*n<1<<53).ok_or_else(fail)?;let until=value["expires_at_unix"].as_u64().filter(|n|*n<1<<53).ok_or_else(fail)?;
   if until<=from||until-from>604800{return Err(fail())}
   if value["signed"]==true{if !pin(&value["admission_sha256"])||!pin(&value["sign_request_sha256"]){return Err(fail())}}

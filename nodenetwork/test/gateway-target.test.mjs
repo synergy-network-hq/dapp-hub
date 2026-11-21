@@ -11,8 +11,11 @@ function status(state='ready'){
 }
 test('gateway installation keeps existing five fields and cannot silently change the selected network',()=>{
  const form={release_id:'qualified-r1',manifest_sha256:'a'.repeat(64),network_id:'synergy-posy-canary-20261117',chain_id:'99999',node_name:'observer-01'};
- assert.deepEqual(Object.keys(gatewayInstallParameters(form)).sort(),['chain_id','manifest_sha256','network_id','node_name','release_id']);
- for(const changed of [{chain_id:'1266'},{network_id:'different-network'},{manifest_sha256:'not-a-pin'}])assert.throws(()=>gatewayInstallParameters({...form,...changed}));
+ const profile={role:'rpc_gateway',network_id:form.network_id,chain_id:99999,node_name:form.node_name};
+ assert.deepEqual(Object.keys(gatewayInstallParameters(form,profile)).sort(),['chain_id','manifest_sha256','network_id','node_name','release_id']);
+ for(const changed of [{chain_id:'1266'},{network_id:'different-network'},{manifest_sha256:'not-a-pin'}])assert.throws(()=>gatewayInstallParameters({...form,...changed},profile));
+ assert.equal(gatewayInstallParameters({...form,network_id:'private-observer-network',chain_id:'14002'},
+  {...profile,network_id:'private-observer-network',chain_id:14002}).chain_id,14002);
 });
 test('gateway generation is scoped to an affirmative native origin read',()=>{
  assert.deepEqual(gatewayGenerateParameters(status()),{genesis_sha256:'a'.repeat(64)});

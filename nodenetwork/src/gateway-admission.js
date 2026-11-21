@@ -1,3 +1,5 @@
+import {validInstallNetworkId, validNetworkChainId} from './nodeNetwork.js';
+
 const pin=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(k=>Object.hasOwn(value,k));
 const purposeFields=['format','purpose','formation_sha256','transport_review_sha256','issuer_root_sha256','gateway_enrollment_sha256','genesis_sha256','authority_sha256','registry_sha256','valid_from_unix','expires_at_unix'];
@@ -18,14 +20,19 @@ export function gatewaySignParameters(review){
 
 const reviewFields=['schema','pending','signed','request_sha256','review_sha256','purpose_approval_sha256','formation_sha256','network_id','chain_id','genesis_sha256','authority_sha256','registry_sha256','gateway_address','gateway_enrollment_sha256','valid_from_unix','expires_at_unix','admission_sha256','sign_request_sha256','gateway_commissioned','services_started','public_listener','production_qualified','automatic_retry','available','blocker'];
 const address=v=>typeof v==='string'&&/^synv5[a-z0-9]+$/.test(v)&&v.length<=128;
-const network=v=>typeof v==='string'&&/^synergy-posy-canary-[a-z0-9-]+$/.test(v)&&v.length<=128;
 export function gatewayAdmissionView(value,operation='gateway_admission_status',parameters={}){
  const exporting=operation==='gateway_admission_export',fields=exporting?[...reviewFields,'admission_json']:reviewFields;
  const fail=()=>{throw Error('Unsupported gateway admission observation; no service or outcome was inferred.');};
  if(!exact(value,fields)||value.schema!=='nodenetwork-gateway-admission-v1'||!['gateway_commissioned','services_started','public_listener','production_qualified','automatic_retry'].every(k=>value[k]===false))fail();
  if(value.pending===false){if(exporting||value.signed!==false||!(value.available===true&&value.blocker===null||value.available===false&&['gateway_runtime_or_origin_unavailable','gateway_purpose_approval_required'].includes(value.blocker))||reviewFields.slice(3,18).some(k=>value[k]!==null))fail();}
  else{
-  if(value.pending!==true||typeof value.signed!=='boolean'||value.available!==true||value.blocker!==null||!['request_sha256','review_sha256','purpose_approval_sha256','formation_sha256','genesis_sha256','authority_sha256','registry_sha256','gateway_enrollment_sha256'].every(k=>pin(value[k]))||!address(value.gateway_address)||!network(value.network_id)||value.chain_id!=='99999'||!Number.isSafeInteger(value.valid_from_unix)||value.valid_from_unix<=0||!Number.isSafeInteger(value.expires_at_unix)||value.expires_at_unix<=value.valid_from_unix||value.expires_at_unix-value.valid_from_unix>604800)fail();
+  if(value.pending!==true||typeof value.signed!=='boolean'||value.available!==true||value.blocker!==null
+    ||!['request_sha256','review_sha256','purpose_approval_sha256','formation_sha256','genesis_sha256','authority_sha256','registry_sha256','gateway_enrollment_sha256'].every(k=>pin(value[k]))
+    ||!address(value.gateway_address)||!validInstallNetworkId(value.network_id)
+    ||!validNetworkChainId(value.chain_id)
+    ||!Number.isSafeInteger(value.valid_from_unix)||value.valid_from_unix<=0
+    ||!Number.isSafeInteger(value.expires_at_unix)||value.expires_at_unix<=value.valid_from_unix
+    ||value.expires_at_unix-value.valid_from_unix>604800)fail();
   if(value.signed){if(!pin(value.admission_sha256)||!pin(value.sign_request_sha256))fail();}else if(value.admission_sha256!==null||value.sign_request_sha256!==null||exporting)fail();
  }
  if(operation==='gateway_admission_prepare'&&(!value.pending||value.signed||['formation_sha256','purpose_approval_sha256','valid_from_unix','expires_at_unix'].some(k=>value[k]!==parameters[k])))fail();

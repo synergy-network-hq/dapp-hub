@@ -21,6 +21,7 @@ import {atlas,rpc,rpcValidatorRecordObservation} from "@synergy-network/portal-n
 import {nodeNetworkHostStatus,nodeNetworkReviewMaster} from "./native-services.js";
 import {Card,Detail,ErrorMessage,Resource,useResource} from "@synergy-network/portal-native/dapp-sdk";
 import {NodeController} from './NodeController.jsx';
+import {NetworkProvisioning, useNetworkProvisioning} from './NetworkProvisioning.jsx';
 import {nodeRoleCatalog} from './operator-workflow.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {MasterReview} from './MasterReview.jsx';
@@ -64,16 +65,27 @@ export function NodeNetworkApp(){
  const [form,setForm]=useState(savedDraft.form),[draftError,setDraftError]=useState(savedDraft.error),[draftNotice,setDraftNotice]=useState('');
  const [master,setMaster]=useState(null),[masterError,setMasterError]=useState(''),[reviewing,setReviewing]=useState(false);
  const profile=n.endpoint;
- const canarySelected=profile.id===CANARY_PROFILE.id&&profile.chainId===CANARY_PROFILE.chainId&&profile.networkId===CANARY_PROFILE.networkId&&profile.genesisHash===CANARY_PROFILE.genesisHash;
- const [gatewayDraft,setGatewayDraft]=useState(()=>({...emptyProvisioningDraft(),network_id:CANARY_PROFILE.networkId,chain_id:String(CANARY_PROFILE.chainId)}));
- const gatewaySelected=canarySelected&&section==='operations'&&operationsTab==='RPC gateway';
+ const networkProvisioning = useNetworkProvisioning(target);
+ const selectedNetwork = networkProvisioning.selected;
+ const hasGatewayProfile = selectedNetwork?.role === 'rpc_gateway';
+ const [gatewayRelease, setGatewayDraft] = useState(emptyProvisioningDraft);
+ const gatewayDraft = hasGatewayProfile ? {
+  ...gatewayRelease, network_id: selectedNetwork.network_id,
+  chain_id: String(selectedNetwork.chain_id), node_name: selectedNetwork.node_name,
+ } : gatewayRelease;
+ const gatewaySelected = hasGatewayProfile && section === 'operations' && operationsTab === 'RPC gateway';
+ function openGatewaySetup() {
+  if (!hasGatewayProfile) { setSection('settings'); return; }
+  setOperationsTab('RPC gateway');
+  setSection('operations');
+ }
  const [switchingNetwork,setSwitchingNetwork]=useState(false),[networkError,setNetworkError]=useState('');
  async function selectNetwork(id){
   setSwitchingNetwork(true);setNetworkError('');
   try{await n.changeEndpoint(id);}catch(error){setNetworkError(error?.message||'Portal could not select the network.');}
   finally{setSwitchingNetwork(false);}
  }
- const tab=({overview:'Network',operations:!canarySelected&&operationsTab==='RPC gateway'?'Management':operationsTab,setup:'Validator setup',monitoring:'Management',updates:'Updates',security:'Installation isolation',settings:'Settings'})[section];
+ const tab=({overview:'Network',operations:!hasGatewayProfile&&operationsTab==='RPC gateway'?'Management':operationsTab,setup:'Validator setup',monitoring:'Management',updates:'Updates',security:'Installation isolation',settings:'Settings'})[section];
  const navigateSection=id=>{if(id==='operations')setOperationsTab('Management');setSection(id);};
  const permitted=n.permit('node','readNetwork');
  const inspectMasterPermitted=permitted&&!n.recoverySuspended;
@@ -143,9 +155,10 @@ export function NodeNetworkApp(){
  const refreshing=live.loading||(indexAvailable&&validators.loading);
  return <NodeNetworkPanelFrame section={section} onSectionChange={navigateSection} statusLabel={live.loading?'Checking observation network':live.error?'Observation network error':'Public network observed'} statusTone={live.data?'blue':'gray'} onRefresh={refreshPublic} refreshing={refreshing} nodeLabel={!targetSettings.snapshot?'Target settings need review':!target?'Choose a machine':target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} headerActions={<div className="native-actions"><label>Observation network<select className="scenario-select" aria-label="NodeNetwork observation network" value={profile.id} disabled={switchingNetwork} onChange={e=>selectNetwork(e.target.value)}>{n.endpoints.map(p=><option key={p.id} value={p.id}>{p.name} · {p.chainId}</option>)}</select></label><button disabled={refreshing} onClick={refreshPublic}>Refresh NodeNetwork</button></div>} statusItems={[{label:'Target root',value:target?.root||'No target selected'},{label:'Observation network',value:profile.name},{label:'Chain ID',value:profile.chainId},{label:'Enrollment policy',value:'Not verified'}]}>
   {(section==='settings'||gatewaySelected)&&<TargetSettings selection={targetSettings} local={local}/>}
+  {section==='settings'&&<NetworkProvisioning profiles={networkProvisioning} target={target} openGatewaySetup={openGatewaySetup}/>}
 
   <ErrorMessage error={networkError}/>
-  {section==='operations'&&<nav className="native-tabs" aria-label="Validator operations">{['Management',...(canarySelected?['RPC gateway']:[])].map(name=><button type="button" key={name} aria-pressed={tab===name} onClick={()=>setOperationsTab(name)}>{name}</button>)}</nav>}
+  {section==='operations'&&<nav className="native-tabs" aria-label="Node operations">{['Management',...(hasGatewayProfile?['RPC gateway']:[])].map(name=><button type="button" key={name} aria-pressed={tab===name} onClick={()=>setOperationsTab(name)}>{name}</button>)}</nav>}
 
   {section==='operations'&&!gatewaySelected&&<div className="workspace-task-intro"><WorkspaceIcon name="server" size={28}/><div><strong>{target?target.kind==='local'?'This computer':`${target.host}:${target.port||22}`:'No machine selected'}</strong><p>Inspect the exact target below before reviewing service, identity or VPN operations.</p></div><WorkspaceButton onClick={()=>navigateSection('settings')}>Target settings</WorkspaceButton></div>}
   {section==='performance'?<><SavedValidatorPerformance permitted={permitted}/><NodeNetworkPanelCard title="Validator performance telemetry">
@@ -183,7 +196,7 @@ export function NodeNetworkApp(){
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>
   </WorkspaceDisclosure></WorkspaceOverview>:tab==='Validator setup'?<WorkspaceSetup><TargetSettings selection={targetSettings} local={local}/>
    <WorkspaceDisclosure title="Choose a node role" description="Available roles come from the reviewed master; unsupported roles stay unavailable." open>
-   <Card title="Node roles"><ul className="node-role-catalog">{nodeRoleCatalog(master?.roleCatalog).map(role=><li key={role.id}><strong>{role.label}</strong><span>{role.description}</span>{role.id==='validator'?<small>Guided setup below. Requires admission and target authorization.</small>:role.id==='rpc_gateway'?canarySelected?<button type="button" onClick={()=>{setOperationsTab('RPC gateway');setSection('operations');}}>Open gateway setup</button>:<small>Select PoSy Canary to set up its gateway.</small>:<small>Provisioning is unavailable.</small>}</li>)}</ul></Card>
+   <Card title="Node roles"><ul className="node-role-catalog">{nodeRoleCatalog(master?.roleCatalog).map(role=><li key={role.id}><strong>{role.label}</strong><span>{role.description}</span>{role.id==='validator'?<small>Guided setup below. Requires admission and target authorization.</small>:role.id==='rpc_gateway'?<button type="button" onClick={openGatewaySetup}>{hasGatewayProfile?'Open gateway setup':'Select a gateway profile'}</button>:<small>Provisioning is unavailable.</small>}</li>)}</ul></Card>
    </WorkspaceDisclosure>
    <WorkspaceDisclosure title="Prepare a validator" description="Save a draft, review the exact package and confirm the installation prerequisites." open>
    <ValidatorRegistration key={monitorScope} permitted={permitted} testnet={Number(profile.chainId)===1266} readRecord={lookupValidatorRecord}/>
@@ -206,9 +219,10 @@ export function NodeNetworkApp(){
 
    </WorkspaceDisclosure>
   </WorkspaceSetup>:gatewaySelected?<div className="native-grid">
-   <Card title="PoSy Canary RPC gateway">
-    <Detail data={{network:profile.networkId,chainId:profile.chainId,genesisHash:profile.genesisHash}}/>
-    <label>Gateway node name<input value={gatewayDraft.node_name} maxLength={64} onChange={event=>setGatewayDraft({...gatewayDraft,node_name:event.target.value})}/></label>
+   <Card title="RPC gateway">
+    <Detail data={{profile:selectedNetwork.profile_id,network:selectedNetwork.network_id,chainId:selectedNetwork.chain_id,
+     genesisHash:selectedNetwork.genesis_hash,nodeName:selectedNetwork.node_name,hostname:selectedNetwork.gateway.public_hostname}}/>
+    <button type="button" onClick={()=>setSection('settings')}>Change network profile</button>
     <label>Approved release ID<input value={gatewayDraft.release_id} maxLength={128} onChange={event=>setGatewayDraft({...gatewayDraft,release_id:event.target.value})}/></label>
     <label>Approved manifest SHA-256<input value={gatewayDraft.manifest_sha256} maxLength={64} onChange={event=>setGatewayDraft({...gatewayDraft,manifest_sha256:event.target.value})}/></label>
    </Card>
@@ -239,7 +253,7 @@ export function NodeNetworkApp(){
   {tab==='Management'&&!target&&<WorkspaceDisclosure title="Identity and custody observations"><CustodyStatus onOpenHistory={()=>setSection('logs')}/></WorkspaceDisclosure>}
   {(tab==='Management'||section==='logs')&&<WorkspaceDisclosure title="Operation history" description="Original requests and uncertain outcomes remain available for reconciliation."><RequestHistory permitted={permitted} target={target} targetScopeCurrent={targetScopeCurrent}/></WorkspaceDisclosure>}
   {target&&tab&&tab!=='Network'&&!targetSupported&&<Card title="Target management unavailable"><p>{hostControl.message}</p><p>The saved target is retained. No target operation was resumed.</p></Card>}
-  {target&&targetSupported&&tab&&tab!=='Network'&&tab!=='Settings'&&<WorkspaceDisclosure title={gatewaySelected?'Gateway native operations':'Native node operations'} description="Inspect first, then review each operation against the exact target. Uncertain outcomes require reconciliation." open={gatewaySelected||tab==='Management'}><NodeController key={`${JSON.stringify(target)}:${permitted}:${gatewaySelected}`} target={target} form={gatewaySelected?gatewayDraft:form} setForm={gatewaySelected?setGatewayDraft:setForm} permitted={permitted} tab={tab} master={master} localSupported={hostControl.local} operatorCredentialSupported={local.data?.platform==='macos'} onOpenDiagnostics={()=>setSection('logs')}
+  {target&&targetSupported&&tab&&tab!=='Network'&&tab!=='Settings'&&<WorkspaceDisclosure title={gatewaySelected?'Gateway native operations':'Native node operations'} description="Inspect first, then review each operation against the exact target. Uncertain outcomes require reconciliation." open={gatewaySelected||tab==='Management'}><NodeController key={`${JSON.stringify(target)}:${permitted}:${gatewaySelected}`} target={target} networkProfile={gatewaySelected?selectedNetwork:null} form={gatewaySelected?gatewayDraft:form} setForm={gatewaySelected?setGatewayDraft:setForm} permitted={permitted} tab={tab} master={master} localSupported={hostControl.local} operatorCredentialSupported={local.data?.platform==='macos'} onOpenDiagnostics={()=>setSection('logs')}
    onSelectTarget={targetSettings.selectTarget} targetScopeCurrent={targetScopeCurrent}/></WorkspaceDisclosure>}
  </NodeNetworkPanelFrame>;
 }

@@ -3,7 +3,8 @@ use crate::{gateway_admission::{digest,exact,pin},node_controller::Request};
 use serde_json::{json,Value};
 
 const FIELDS:&[&str]=&["schema","available","blocker","state","network_id","chain_id","genesis_sha256","generation_request_sha256","gateway_address","enrollment_sha256","commission_request_sha256","admission_sha256","configuration_sha256","transport_custody_verified","services_started","public_listener","production_qualified","automatic_retry"];
-fn network(v:&Value)->bool{v.as_str().is_some_and(|s|s.strip_prefix("synergy-posy-canary-").is_some_and(|suffix|!suffix.is_empty())&&s.len()<=128&&s.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'))}
+fn network(v:&Value)->bool{v.as_str().is_some_and(super::node_controller::validator_network_id)}
+fn chain(v:&Value)->bool{v.as_str().is_some_and(super::node_controller::validator_chain_id)}
 fn address(v:&Value)->bool{v.as_str().is_some_and(|s|s.starts_with("synv5")&&s.len()>5&&s.len()<=128&&s.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()))}
 fn bounded(v:&Value,max:usize)->Result<&str,String>{v.as_str().filter(|s|!s.is_empty()&&s.len()<=max&&!s.contains('\0')).ok_or_else(||"Select bounded public gateway JSON, never paths or custody".into())}
 fn commission_parameters(p:&Value)->Result<(),String>{
@@ -24,10 +25,9 @@ pub(super) fn validate(request:&Request)->Result<bool,String>{
  let mutation=match request.operation.as_str(){
   "gateway_install"|"gateway_install_preflight"=>{
    let mut legacy=request.clone();legacy.operation="install_preflight".into();legacy.validate()?;
-   if p["chain_id"]!=99999||!network(&p["network_id"]){return Err("Gateway target requires the exact approved engineering Canary".into())}
    request.operation=="gateway_install"
   },
-  "gateway_target_status"|"gateway_target_preflight"|"gateway_target_export" if exact(p,&[])=>false,
+  "gateway_target_status"|"gateway_target_preflight"|"gateway_target_export"|"gateway_target_configuration" if exact(p,&[])=>false,
   "gateway_target_reconcile" if exact(p,&["request_sha256"])&&pin(&p["request_sha256"])=>false,
   "gateway_install_status" if exact(p,&["request_sha256"])&&pin(&p["request_sha256"])=>false,
   "gateway_target_generate" if exact(p,&["genesis_sha256"])&&pin(&p["genesis_sha256"])=>true,
@@ -46,7 +46,7 @@ pub(super) fn review(value:&Value,export:bool)->Result<Value,String>{
   if !value["blocker"].is_null()||!matches!(state,"ready"|"identity_ready"|"commissioned"){return Err(fail())}
  }else if !matches!(state,"absent"|"uncertain")||!["owner_unavailable","origin_required","reconciliation_required"].iter().any(|s|value["blocker"]==*s){return Err(fail())}
  if matches!(state,"ready"|"identity_ready"|"commissioned"){
-  if !network(&value["network_id"])||value["chain_id"]!="99999"||!pin(&value["genesis_sha256"]){return Err(fail())}
+  if !network(&value["network_id"])||!chain(&value["chain_id"])||!pin(&value["genesis_sha256"]){return Err(fail())}
  }else if ["network_id","chain_id","genesis_sha256"].iter().any(|k|!value[*k].is_null()){return Err(fail())}
  if matches!(state,"identity_ready"|"commissioned"){
   if !pin(&value["generation_request_sha256"])||!address(&value["gateway_address"])||!pin(&value["enrollment_sha256"]){return Err(fail())}
@@ -56,11 +56,34 @@ pub(super) fn review(value:&Value,export:bool)->Result<Value,String>{
  }else if ["commission_request_sha256","admission_sha256","configuration_sha256"].iter().any(|k|!value[*k].is_null())||value["transport_custody_verified"]!=false{return Err(fail())}
  if export&&(!matches!(state,"identity_ready"|"commissioned")||digest(bounded(&value["enrollment_json"],128*1024)?.as_bytes())!=value["enrollment_sha256"]){return Err(fail())}Ok(value.clone())
 }
+pub(super) fn profile_configuration(value: &Value) -> Result<Value, String> {
+ let fail = || "Unsupported authenticated gateway profile observation".to_string();
+ if !exact(value, &["schema", "profile", "profile_sha256", "configuration_json", "installed"])
+  || value["schema"] != "nodenetwork-gateway-profile-configuration-v1"
+  || !pin(&value["profile_sha256"]) || !value["installed"].is_boolean()
+  || value["profile"]["schema"] != "synergy-network-provisioning-v1"
+  || value["profile"]["role"] != "rpc_gateway"
+  || !network(&value["profile"]["network_id"])
+  || value["profile"]["chain_id"].as_u64().is_none_or(|id| id == 0)
+  || !pin(&value["profile"]["genesis_hash"]) {
+  return Err(fail());
+ }
+ let configuration = bounded(&value["configuration_json"], 64 * 1024)?;
+ let configuration: Value = serde_json::from_str(configuration).map_err(|_| fail())?;
+ if !exact(&configuration, &["node_configuration", "relay_specification"])
+  || !["network_id", "chain_id", "node_name", "role"].iter()
+    .all(|key| configuration["node_configuration"][*key] == value["profile"][*key])
+  || configuration["relay_specification"]["role"]["kind"] != "gateway"
+  || !address(&configuration["relay_specification"]["role"]["gateway_address"]) {
+  return Err(fail());
+ }
+ Ok(value.clone())
+}
 pub(super) fn commission_preflight(request:&Request,value:&Value)->Result<Value,String>{
  let mut commission=request.clone();commission.operation="gateway_target_commission".into();validate(&commission)?;
  if !exact(value,&["schema","ready","request_sha256","network_id","chain_id","genesis_sha256","gateway_address","enrollment_sha256","admission_sha256","configuration_sha256","transport_custody_verified","mutation_performed","services_started","public_listener","production_qualified"])
   ||value["schema"]!="nodenetwork-gateway-target-commission-preflight-v1"||value["ready"]!=true||value["request_sha256"]!=commission.approval_id()
-  ||!network(&value["network_id"])||value["chain_id"]!="99999"||!address(&value["gateway_address"])||!pin(&value["genesis_sha256"])||!pin(&value["enrollment_sha256"])
+  ||!network(&value["network_id"])||!chain(&value["chain_id"])||!address(&value["gateway_address"])||!pin(&value["genesis_sha256"])||!pin(&value["enrollment_sha256"])
   ||["admission_sha256","configuration_sha256"].iter().any(|k|value[*k]!=commission.parameters[*k])||value["transport_custody_verified"]!=true
   ||["mutation_performed","services_started","public_listener","production_qualified"].iter().any(|k|value[*k]!=false){return Err("Native gateway commission preflight did not verify the exact public inputs and local custody".into())}
  Ok(value.clone())

@@ -298,7 +298,10 @@ pub async fn portal_nodenetwork_review_operator_key(window:tauri::WebviewWindow,
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
  let base=app.path().app_local_data_dir().map_err(|_|"Native authorization unavailable")?;
  // Preserve independent target host trust; selecting a client key cannot grant host trust.
- let _pin=match crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?{Some(pin)=>pin,None=>node_controller::bootstrap_host_pin(&target,&directory)?};
+ let _pin=match crate::chain1266_relocation::destination_pin(&target,&directory)?{
+  Some(pin)=>pin,
+  None=>match crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?{Some(pin)=>pin,None=>node_controller::bootstrap_host_pin(&target,&directory)?},
+ };
  let review=node_bootstrap::review_operator_public_key_bytes(&key)?;
  let message=format!("Target: {}\nOperator public-key SHA-256: {}\n\nBind this public key to this physical target's restricted controller SSH connection. The matching private key must already be available through your SSH agent. No private key is read or stored, no target operation is sent, and existing host-key verification remains mandatory. This does not prove the historical bootstrap key.",target.label(),review["canonicalSha256"]);
  let accepted=tauri::async_runtime::spawn_blocking(move||window.dialog().message(message).parent(&window).title("Select target operator public key").buttons(MessageDialogButtons::OkCancelCustom("Use this public key for this target".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Operator identity confirmation interrupted")?;
@@ -371,6 +374,14 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
   return Err("Use the native signed Genesis folder review.".into());
  }
  let mutation=request.validate()?;
+ if matches!(request.operation.as_str(), "chain1266_relocate" | "chain1266_relocation_status" | "chain1266_relocate_records" | "chain1266_relocation_records_status") {
+  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+  return crate::chain1266_relocation::run(&window, &target, &directory, mutation, request.operation.contains("records")).await;
+ }
+ if matches!(request.operation.as_str(), "chain1266_retire" | "chain1266_retirement_status") {
+  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+  return crate::chain1266_relocation::run_retirement(&window, &target, &directory, mutation).await;
+ }
  if request.operation=="legacy_peer_preflight"{
   let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
   return crate::vpn_enrollment::legacy_read(&window,&app,target,&directory).await;
@@ -486,7 +497,11 @@ pub async fn portal_nodenetwork_controller(window:tauri::WebviewWindow,app:tauri
  if let Some(dispatch)=dispatch {dispatch.finish(&result).map_err(|_|"Controller outcome could not be saved to the local journal. Inspect the target before further changes; no automatic retry occurred.")?;}
  let mut result=result?;
  if operation.starts_with("gateway_target_")&&result["ok"]==true{
-  result["result"]=if operation=="gateway_target_commission_preflight"{crate::gateway_target::commission_preflight(&dispatched_request,&result["result"])?}else{crate::gateway_target::review(&result["result"],operation=="gateway_target_export")?};
+  result["result"]=match operation.as_str(){
+   "gateway_target_commission_preflight"=>crate::gateway_target::commission_preflight(&dispatched_request,&result["result"])?,
+   "gateway_target_configuration"=>crate::gateway_target::profile_configuration(&result["result"])?,
+   _=>crate::gateway_target::review(&result["result"],operation=="gateway_target_export")?,
+  };
   if operation=="gateway_target_reconcile"{
    let original_operation=crate::gateway_target::reconciliation(&dispatched_request,&result["result"])?;
    request_journal::reconcile_verified(&resume_base,&target_identity,original_operation,dispatched_request.parameters["request_sha256"].as_str().ok_or("Exact gateway target request required")?)?;
@@ -675,19 +690,35 @@ where Fut:Future<Output=Result<Value,String>> {
  result
 }
 #[tauri::command]
-pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,operator:String,parameters:Value)->Result<Option<Value>,String>{
+pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,operator:String,parameters:Value,network_profile:Option<Value>)->Result<Option<Value>,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;target.validate()?;node_bootstrap::validate_operator(&operator)?;
  if target.kind=="local"&&!cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local bootstrap requires Linux x86_64; select a remote headless target.".into());}
  node_controller::Request{version:1,operation:"install_preflight".into(),parameters:parameters.clone()}.validate()?;
+ if let Some(profile)=&network_profile {
+  if !cfg!(debug_assertions)||target.kind!="remote"||target.guest.is_some()
+   ||profile["schema"]!="synergy-network-provisioning-v1"||profile["role"]!="rpc_gateway"
+   ||!profile["profile_id"].as_str().is_some_and(node_controller::validator_network_id)
+   ||!["network_id","chain_id","node_name"].iter().all(|key|profile[*key]==parameters[*key]){
+   return Err("Choose an exact gateway profile for the physical target".into());
+  }
+ }
  let view=window.clone();let fields=parameters.clone();
+ let profile_bound=network_profile.is_some();
+ let reviewed_target=target.clone();
  let prepared=tauri::async_runtime::spawn_blocking(move ||{
   let Some(folder)=view.dialog().file().set_parent(&view).set_title("Select the approved Synergy master to stage").blocking_pick_folder() else{return Ok(None)};
   let root=folder.into_path().map_err(|_|"Select a local Synergy master directory.")?;
   let Some(key)=pick_operator_public_key(&view)? else{return Ok(None)};
-  node_bootstrap::prepare(&root,&key,&fields).map(Some)
+  let host=if profile_bound {
+   let Some(path)=view.dialog().file().set_parent(&view).set_title("Select the independently verified SSH host pin")
+    .add_filter("SSH host pin",&["known-hosts","txt"]).blocking_pick_file() else{return Ok(None)};
+   let path=path.into_path().map_err(|_|"Select the existing verified SSH host pin file")?;
+   Some(node_controller::profile_host_identity(&reviewed_target,&path)?)
+  }else{None};
+  node_bootstrap::prepare(&root,&key,&fields).map(|prepared|Some((prepared,host)))
  }).await.map_err(|_|"Master bootstrap inspection did not finish.")??;
- let Some(prepared)=prepared else{return Ok(None)};
+ let Some((prepared,reviewed_host))=prepared else{return Ok(None)};
  let base=app.path().app_local_data_dir().map_err(|_|"Portal local data directory is unavailable; no bootstrap was sent.")?;
  let bootstrap_request=serde_json::json!({"version":1,"operation":"bootstrap","operator":operator,"parameters":parameters,"bootstrapPin":node_bootstrap::script_pin()});
  // Bind this read-only review to the current selected key without rewriting the legacy dispatch request.
@@ -695,24 +726,34 @@ pub async fn portal_nodenetwork_bootstrap(window:tauri::WebviewWindow,app:tauri:
  let reconciliation=request_journal::bootstrap_absence_candidate(&base,&target.journal_identity(),&absence_review)?;
  let reconciliation_notice=if let Some(ticket)=&reconciliation{format!("\n\nOriginal uncertain bootstrap request SHA-256: {}\nThis confirmation authorizes ONLY a pinned, read-only absence check of both Synergy roots, registrations, accounts, mounts and application/bootstrap processes. The original record remains bound to its original request even if the selected release or embedded script has changed. The administrative account and public key shown above are current selections; the legacy journal does not prove their historical equivalence. Only a fully clean proof resolves the original entry as verified absence, never success. No bootstrap is retried in this action; confirm a fresh Bootstrap action separately.",ticket.original_request_sha256())}else{String::new()};
  let message=format!("Target: {}\nAdministrative account: {}\nRoot: /opt/synergy\nRelease: {}\nManifest SHA-256: {}\nEmbedded bootstrap SHA-256: {}\nNetwork incarnation: {}\nChain: {}\nNode name: {}\nOperator public-key SHA-256: {}\n\nThis stages the verified software and installs a restricted host controller account, rooted SSH/sudo definitions and the automatic removal guard. The target must be clean. No community enrollment, custody creation, consensus membership or activation is authorized. No passwords are requested or stored by Portal.",target.label(),operator,prepared.release,prepared.manifest_sha256,node_bootstrap::script_pin(),parameters["network_id"],parameters["chain_id"],parameters["node_name"],prepared.operator_public_key_sha256());
- let message=format!("{message}{reconciliation_notice}");
+ let host_notice=reviewed_host.as_ref().map_or_else(String::new,|(_,fingerprint)|
+  format!("\n\nVerified SSH host fingerprint: {fingerprint}\nCompare it with the host identity in your approved infrastructure record."));
+ let message=format!("{message}{host_notice}{reconciliation_notice}");
  let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(message).parent(&window).title("Authorize NodeNetwork target bootstrap")
   .buttons(MessageDialogButtons::OkCancelCustom("Bootstrap selected target once".into(),"Cancel".into())).blocking_show()).await.map_err(|_|"Bootstrap confirmation did not finish.")?;
  if !confirmed{return Err("Operator canceled; no bootstrap was sent.".into());}
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home is unavailable.")?)?;
+ let prior_pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
+ let profile_pin=if let Some((line,_))=reviewed_host {
+  if let Some(prior)=&prior_pin {
+   if node_controller::profile_host_identity(&target,prior)?.0!=line {
+    return Err("Selected SSH host identity differs from the authorized installation record".into());
+   }
+  }
+  Some(node_controller::retain_profile_host_pin(&target,&directory,&line)?)
+ }else{None};
+ let pin=prior_pin.as_deref().or(profile_pin.as_deref());
  if let Some(ticket)=reconciliation{
-  let pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
-  node_bootstrap::prove_clean_bootstrap(&target,&operator,&prepared,&directory,pin.as_deref(),&ticket.challenge()).await?;
+  node_bootstrap::prove_clean_bootstrap(&target,&operator,&prepared,&directory,pin,&ticket.challenge()).await?;
   request_journal::verify_bootstrap_absence(&base,&target.journal_identity(),&absence_review,ticket)?;
   return Err("The exact prior uncertain bootstrap was reconciled as verified clean absence, not success. No bootstrap was retried. Select Bootstrap and confirm again to authorize one fresh attempt.".into())
  }
  if target.kind=="remote"&&target.guest.is_none(){node_bootstrap::require_selected_operator_identity(&target,&directory,&prepared.public_key)?;}
  let retry=crate::authorization_lifecycle::prepare_reinstallation(&base,&target,&operator,&parameters,&bootstrap_request)?;
- let pin=crate::authorization_lifecycle::reinstallation_host_pin(&base,&target,&directory)?;
  let dispatch=request_journal::Dispatch::begin_bootstrap(&base,&target.journal_identity(),&bootstrap_request,retry)?;
  let expected=parameters.clone();
  let identity_target=target.clone();let identity_key=prepared.public_key.clone();
- let result=node_bootstrap::execute_pinned(target,operator,parameters,prepared,&directory,pin.as_deref()).await.and_then(|reply|{
+ let result=node_bootstrap::execute_pinned(target,operator,parameters,prepared,&directory,pin).await.and_then(|reply|{
   if reply["ok"]==true&&(reply["result"]["root"]!="/opt/synergy"||reply["result"]["stagedRelease"]!=expected["release_id"]||reply["result"]["manifestSha256"]!=expected["manifest_sha256"]||reply["result"]["controllerEnrolled"]!=true||reply["result"]["softwareInstalled"]!=false||reply["result"]["rootDeletionGuardActive"]!=true){return Err("Fresh bootstrap receipt differs; preserve the native journal for reconciliation".into())}Ok(reply)
  });
  if result.as_ref().is_ok_and(|reply|reply["ok"]==true)&&identity_target.kind=="remote"&&identity_target.guest.is_none(){node_bootstrap::retain_operator_identity(&identity_target,&directory,&identity_key)?;}
@@ -799,14 +840,16 @@ pub async fn portal_nodenetwork_stage_signed_genesis(window:tauri::WebviewWindow
 
 /// File selection and exact independent native pin precede any privileged action.
 #[tauri::command]
-pub async fn portal_nodenetwork_stage_authorization(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,operator:String)->Result<Option<Value>,String>{
+pub async fn portal_nodenetwork_stage_authorization(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,operator:String,network_profile:Option<Value>)->Result<Option<Value>,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;target.validate()?;node_bootstrap::validate_operator(&operator)?;
  let view=window.clone();let selected_target=target.clone();
+ let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
+ let review_directory=directory.clone();
  let selected=tauri::async_runtime::spawn_blocking(move||{
   let Some(file)=view.dialog().file().set_parent(&view).set_title("Select the independently approved engineering authorization.json").add_filter("Engineering authorization",&["json"]).blocking_pick_file() else{return Ok(None)};
   let path=file.into_path().map_err(|_|"Select a local authorization document")?;
-  crate::operator_authorization::prepare(&path,&selected_target).map(Some)
+  crate::operator_authorization::prepare(&path,&selected_target,network_profile.as_ref(),&review_directory).map(Some)
  }).await.map_err(|_|"Authorization inspection did not finish")??;
  let Some(prepared)=selected else{return Ok(None)};
  let summary=prepared.summary.clone();
@@ -817,7 +860,6 @@ pub async fn portal_nodenetwork_stage_authorization(window:tauri::WebviewWindow,
  crate::authorization_lifecycle::remember(&base,&target,&operator,&prepared)?;
  let request=serde_json::json!({"version":1,"operation":"authorization_stage","parameters":{"authorization_sha256":prepared.sha256}});
  let dispatch=request_journal::Dispatch::begin(&base,&target.journal_identity(),"authorization_stage",&request)?;
- let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
  let result=crate::operator_authorization::execute(target,operator,prepared,&directory).await.and_then(|reply|{
   if reply["ok"]==true&&(reply["result"]["schema"]!="nodenetwork-engineering-authorization-v1"||reply["result"]["sha256"]!=summary["sha256"]||reply["result"]["sequence"]!=summary["sequence"]||reply["result"]["applied"]!=true||reply["result"]["grants_recreated"]!=false){return Err("Target authorization receipt differs; inspect before further operations".into())}
   Ok(reply)

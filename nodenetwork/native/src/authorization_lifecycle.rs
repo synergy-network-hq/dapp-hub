@@ -5,7 +5,20 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{path::{Path,PathBuf},time::{SystemTime,UNIX_EPOCH}};
 fn hash(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
-#[derive(Serialize,Deserialize)]#[serde(deny_unknown_fields)]struct Initial{document:String,operator:String}
+#[derive(Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeProfileApproval {
+ authorization_sha256: String,
+ profile_sha256: String,
+}
+#[derive(Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Initial {
+ document: String,
+ operator: String,
+ #[serde(default, skip_serializing_if="Option::is_none")]
+ profile_approval: Option<RuntimeProfileApproval>,
+}
 fn folder(base:&Path)->Result<PathBuf,String>{
  let path=base.join("nodenetwork-engineering-v1");
  if !path.exists(){#[cfg(unix)]{use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&path).map_err(|_|"Cannot protect engineering app state")?;}}
@@ -46,7 +59,10 @@ fn initial_path(base:&Path,target:&Target)->Result<PathBuf,String>{
 fn initial(base:&Path,target:&Target)->Result<(Initial,Value),String>{
  let raw=read(&initial_path(base,target)?,100*1024)?;
  let record:Initial=serde_json::from_slice(&raw).map_err(|_|"Invalid initial native authorization receipt")?;
- let document=authorization::verify_initial(&record.document,target)?;crate::node_bootstrap::validate_operator(&record.operator)?;
+ let document=if let Some(approval)=&record.profile_approval {
+  authorization::verify_runtime_initial(&record.document,target,&approval.authorization_sha256,&approval.profile_sha256)?
+ }else{authorization::verify_initial(&record.document,target)?};
+ crate::node_bootstrap::validate_operator(&record.operator)?;
  if incarnation(base,&target.journal_identity())?.is_some_and(|pin|pin!=hash(record.document.as_bytes())){return Err("Installation incarnation document differs".into())}Ok((record,document))
 }
 pub(super) fn reinstallation_host_pin(base:&Path,target:&Target,control:&Path)->Result<Option<PathBuf>,String>{
@@ -84,9 +100,34 @@ fn replacement_allowed(old:&Value,new:&Value,ticket:&Value,boot:&Value,old_sha:&
  if ticket.as_object().is_none_or(|o|o.len()!=4)||ticket["old_initial_sha256"]!=old_sha||ticket["bootstrap_request_sha256"]!=boot["request_sha256"]||!ticket["removal"]["id"].is_string()||["release_id","manifest_sha256","network_id","chain_id","node_name"].iter().any(|k|ticket["selection"][k]!=new[k]){return Err("New approval does not match the successful clean bootstrap".into())}Ok(())
 }
 pub(super) fn remember(base:&Path,target:&Target,operator:&str,p:&authorization::Prepared)->Result<(),String>{
- let new=authorization::verify_initial(&p.document,target)?;crate::node_bootstrap::validate_operator(operator)?;
- let path=initial_path(base,target)?;let value=json!({"document":p.document,"operator":operator});
- if !path.exists()&&!path.is_symlink(){return save(&path,&value)}
+ let profile_approval=p.runtime_profile_sha256.as_ref().map(|profile|RuntimeProfileApproval{
+  authorization_sha256:p.sha256.clone(),profile_sha256:profile.clone(),
+ });
+ let new=if let Some(approval)=&profile_approval {
+  authorization::verify_runtime_initial(&p.document,target,&approval.authorization_sha256,&approval.profile_sha256)?
+ }else{authorization::verify_initial(&p.document,target)?};
+ crate::node_bootstrap::validate_operator(operator)?;
+ let runtime=profile_approval.is_some();
+ let value=serde_json::to_value(Initial{document:p.document.clone(),operator:operator.into(),profile_approval})
+  .map_err(|_|"Cannot record the approved network profile")?;
+ let path=initial_path(base,target)?;
+ if !path.exists()&&!path.is_symlink(){
+  if runtime {
+   // A profile can authorize the same clean bootstrap that the native app
+   // already completed. It cannot create another privileged target scope.
+   let keys=["release_id","manifest_sha256","network_id","chain_id","node_name"];
+   let parameters=keys.into_iter().map(|key|(key.into(),new[key].clone())).collect::<serde_json::Map<String,Value>>();
+   let expected=json!({"version":1,"operation":"bootstrap","operator":operator,
+    "parameters":parameters,"bootstrapPin":crate::node_bootstrap::script_pin()});
+   return crate::request_journal::with_latest_success(base,&target.journal_identity(),"bootstrap",|boot|{
+    if boot["request_sha256"]!=hash(expected.to_string().as_bytes()) {
+     return Err("The network profile differs from the successful clean bootstrap".into());
+    }
+    save(&path,&value)
+   });
+  }
+  return save(&path,&value)
+ }
  let(record,old)=initial(base,target)?;
  if record.document==p.document&&record.operator==operator{
   let prior=reinstallation_ticket(base,target,&hash(record.document.as_bytes()))?;
@@ -108,6 +149,9 @@ pub(super) fn bare_initial(base:&Path,target:&Target)->Result<Option<String>,Str
  let path=initial_path(base,target)?;
  if !path.exists()&&!path.is_symlink(){return Ok(None)}
  initial(base,target).map(|(record,_)|Some(record.document))
+}
+pub(super) fn approved_initial(base:&Path,target:&Target)->Result<(String,Value),String>{
+ initial(base,target).map(|(record,document)|(record.document,document))
 }
 fn host_pin(control:&Path,doc:&Value)->Result<Option<PathBuf>,String>{
  if doc["target"]["kind"]=="local"{return Ok(None)}

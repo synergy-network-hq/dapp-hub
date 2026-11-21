@@ -88,6 +88,8 @@ const checkFields=(fields,form)=>fields.map(([field,label,accept,message])=>({fi
 export const releaseReferenceChecks=form=>checkFields(releaseFields,form);
 export const validInstallNetworkId=value=>typeof value==='string'&&value.length>=2&&value.length<=128
  && /^[a-z0-9]/.test(value)&&!/[^a-z0-9_-]/.test(value);
+export const validNetworkChainId = value => typeof value === 'string'
+ && /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) <= 18446744073709551615n;
 export const validInstallNodeName=value=>typeof value==='string'&&value.length>=1&&value.length<=64
  && !/[^a-zA-Z0-9_-]/.test(value);
 

@@ -263,6 +263,16 @@ pub(super) fn bootstrap_script(script:&str)->Result<String,String>{
 }
 fn shell_quote_static(value:&str)->String{format!("'{}'",value.replace('\'',"'\\''"))}
 pub(super) fn gateway_handoff_command()->Result<String,String>{Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} --legacy-canary-retirement-plan",shell_quote_static(&bootstrap_script(BOOTSTRAP)?)))}
+pub(super) fn chain1266_relocation_command(mode: &str) -> Result<String, String> {
+    if !matches!(mode, "source-plan" | "destination-plan" | "export" | "receive" | "status"
+        | "source-plan-records" | "destination-plan-records" | "export-records" | "receive-records" | "status-records"
+        | "source-retire-plan" | "source-retire") {
+        return Err("Unsupported Chain 1266 relocation operation.".into());
+    }
+    const SOURCE: &str = include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"), "/chain1266_gateway_relocation.py"));
+    Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {mode}",
+        shell_quote_static(&bootstrap_script(SOURCE)?)))
+}
 pub(super) fn legacy_canary_quiesce_command(apply: bool) -> Result<String, String> {
     let action = if apply { "--legacy-canary-quiesce" } else { "--legacy-canary-quiesce-plan" };
     Ok(format!("/usr/bin/sudo -n /usr/bin/python3 -I -B -c {} {action}",

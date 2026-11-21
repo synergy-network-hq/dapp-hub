@@ -1,6 +1,7 @@
 // Target custody stays on its own host. These engineering observations do not
 // authorize issuance, service activation, a public listener or Wallet trust.
-import {installParameters} from './nodeNetwork.js';
+import {installParameters, validInstallNetworkId, validNetworkChainId} from './nodeNetwork.js';
+import {sameNetworkProfile, validateNetworkProfile} from './network-provisioning.js';
 
 const pin=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)
@@ -13,9 +14,8 @@ const identityFields=['generation_request_sha256','gateway_address','enrollment_
 const commissionFields=['commission_request_sha256','admission_sha256','configuration_sha256'];
 const noActivation=['services_started','public_listener','production_qualified','automatic_retry'];
 const fields=['schema','available','blocker','state',...scopeFields,...identityFields,...commissionFields,'transport_custody_verified',...noActivation];
-const reads=new Set(['gateway_install_preflight','gateway_install_status','gateway_target_preflight','gateway_target_status','gateway_target_export','gateway_target_reconcile']);
+const reads=new Set(['gateway_install_preflight','gateway_install_status','gateway_target_preflight','gateway_target_status','gateway_target_export','gateway_target_configuration','gateway_target_reconcile']);
 const mutations=new Set(['gateway_install','gateway_target_generate','gateway_target_commission']);
-const network=value=>typeof value==='string'&&/^synergy-posy-canary-[a-z0-9-]+$/.test(value)&&value.length<=128;
 const address=value=>typeof value==='string'&&/^synv5[a-z0-9]+$/.test(value)&&value.length<=128;
 
 export function gatewayTargetCapability(target,operation){
@@ -27,15 +27,29 @@ export function gatewayTargetCapability(target,operation){
   ||target.engineeringContinuation===true&&rows[0].engineeringContinuation===true);
 }
 
-export function gatewayInstallParameters(form){
- const value=installParameters(form);
- if(value.chain_id!==99999||!network(value.network_id))throw Error('Select the exact approved engineering Canary network for this gateway.');
- return value;
+export function gatewayInstallParameters(form, profile){
+ const parameters = installParameters(form);
+ if (profile && (profile.role !== 'rpc_gateway' || profile.network_id !== parameters.network_id
+   || profile.chain_id !== parameters.chain_id || profile.node_name !== parameters.node_name)) {
+  throw Error('The selected network profile differs from the gateway installation draft.');
+ }
+ return parameters;
 }
 
 export function gatewayGenerateParameters(review){
  if(review?.state!=='ready'||review.available!==true||!pin(review.genesis_sha256))throw Error('Read the native verified gateway origin before generating custody.');
  return {genesis_sha256:review.genesis_sha256};
+}
+
+export function gatewayProfileConfiguration(value, selectedProfile) {
+ if (!exact(value, ['schema','profile','profile_sha256','configuration_json','installed'])
+   || value.schema !== 'nodenetwork-gateway-profile-configuration-v1'
+   || !pin(value.profile_sha256) || !bounded(value.configuration_json, 64 * 1024)
+   || typeof value.installed !== 'boolean'
+   || !sameNetworkProfile(validateNetworkProfile(value.profile), selectedProfile)) {
+  throw Error('Authenticated configuration differs from the selected network profile.');
+ }
+ return value;
 }
 
 export function gatewayInstallView(value,operation,parameters){
@@ -72,7 +86,7 @@ export async function gatewayTargetView(value,operation='gateway_target_status',
  if(value.available){if(value.blocker!==null||!['ready','identity_ready','commissioned'].includes(value.state))fail();}
  else if(!['owner_unavailable','origin_required','reconciliation_required'].includes(value.blocker)||!['absent','uncertain'].includes(value.state))fail();
  if(['ready','identity_ready','commissioned'].includes(value.state)){
-  if(!network(value.network_id)||value.chain_id!=='99999'||!pin(value.genesis_sha256))fail();
+  if(!validInstallNetworkId(value.network_id)||!validNetworkChainId(value.chain_id)||!pin(value.genesis_sha256))fail();
  }else if(!scopeFields.every(key=>value[key]===null))fail();
  if(['identity_ready','commissioned'].includes(value.state)){
   if(!pin(value.generation_request_sha256)||!address(value.gateway_address)||!pin(value.enrollment_sha256))fail();

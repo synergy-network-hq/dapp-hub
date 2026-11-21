@@ -191,8 +191,8 @@ impl Request {
         if self.operation.starts_with("treasury_send_"){return crate::treasury_send::validate(self)}
         let p = self.parameters.as_object().ok_or("Controller parameters must be an object.")?;
         let mutation = match self.operation.as_str() {
-            "legacy_gateway_service_status" => false,
-            "legacy_gateway_service_stop" | "legacy_gateway_root_retire" => true,
+            "legacy_gateway_service_status" | "chain1266_relocation_status" | "chain1266_relocation_records_status" | "chain1266_retirement_status" => false,
+            "legacy_gateway_service_stop" | "legacy_gateway_root_retire" | "chain1266_relocate" | "chain1266_relocate_records" | "chain1266_retire" => true,
             "upgrade_native_preflight"|"operator_auth_status"|"target"|"inventory"|"health"|"install_preflight"|"upgrade_preflight"|"recovery_preflight"|"uninstall_preflight"|"vpn_status"|"vpn_unused_preflight"|"vpn_stop_status"|"vpn_resume_status"|"boot_policy_status"|"vpn_diagnostics"|"diagnostics"|"identity_preflight"|"identity_status"|"formation_preflight"|"formation_status"|"formation_export"|"genesis_binding_preflight"|"genesis_stage_preflight"|"authorization_status"|"network_formation_status"|"network_formation_export"|"network_transport_status"|"network_transport_export"|"guest_status"|"guest_boot_diagnostics"|"guest_preflight"|"guest_resources"|"commissioning_observation"|"treasury_preflight"|"treasury_status"|"treasury_export" => false,
             "legacy_peer_preflight"|"legacy_peer_key_read"|"legacy_peer_retire"|"legacy_peer_retire_status"|"operator_auth_load"|"install"|"commission"|"register"|"start"|"stop"|"restart"|"upgrade"|"uninstall"|"vpn_enroll"|"vpn_bind"|"vpn_retire"|"vpn_cancel_unused"|"vpn_stop"|"vpn_resume"|"boot_policy"|"identity_generate"|"formation_prepare"|"genesis_bind"|"genesis_stage"|"network_formation_prepare"|"network_formation_sign"|"network_transport_prepare"|"network_transport_sign"|"guest_create"|"guest_stop"|"guest_resume"|"guest_remove"|"treasury_prepare" => true,
             _ => return Err("Unsupported NodeNetwork controller operation.".into()),
@@ -345,8 +345,65 @@ fn approved_host_line(target:&Target,set:Option<&str>,single:Option<&str>,debug:
 }
 pub(super) fn bootstrap_host_pin(target:&Target,directory:&Path)->Result<std::path::PathBuf,String>{
     #[cfg(unix)]protect_control_directory(directory)?;
+    if let Some(pin)=profile_host_pin(target,directory)?{return Ok(pin);}
     let line=approved_host_line(target,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"),cfg!(debug_assertions),true)?.ok_or("Missing bootstrap host pin")?;
     qualification_host_pin(directory,&line)
+}
+
+pub(super) fn profile_host_identity(target:&Target,path:&Path)->Result<(String,String),String>{
+    use base64::{engine::general_purpose::{STANDARD,STANDARD_NO_PAD},Engine};
+    use std::io::Read;
+    let metadata=path.symlink_metadata().map_err(|_|"Verified SSH host identity is unavailable")?;
+    if !cfg!(debug_assertions)||target.kind!="remote"||target.guest.is_some()||!metadata.is_file()
+      ||metadata.len()==0||metadata.len()>2048{return Err("Select one verified physical SSH host pin".into());}
+    let mut raw=String::new();
+    std::fs::File::open(path).and_then(|f|f.take(2049).read_to_string(&mut raw))
+        .map_err(|_|"Cannot read verified SSH host identity")?;
+    if raw.len()>2048{return Err("SSH host identity exceeds its bound".into());}
+    let line=approved_host_line(target,Some(raw.trim_end_matches('\n')),None,true,true)?
+        .ok_or("SSH host identity does not match the selected endpoint")?;
+    let key=STANDARD.decode(line.split_whitespace().last().ok_or("SSH host key is missing")?)
+        .map_err(|_|"Invalid SSH host key")?;
+    Ok((line,format!("SHA256:{}",STANDARD_NO_PAD.encode(Sha256::digest(key)))))
+}
+
+fn profile_host_pin_path(target:&Target,directory:&Path)->std::path::PathBuf{
+    let scope=Sha256::digest(target.journal_identity().to_string().as_bytes());
+    directory.join(format!("profile-host-{scope:x}.known-hosts"))
+}
+
+fn profile_host_pin(target:&Target,directory:&Path)->Result<Option<std::path::PathBuf>,String>{
+    let path=profile_host_pin_path(target,directory);
+    if !path.exists()&&!path.is_symlink(){return Ok(None);}
+    let metadata=path.symlink_metadata().map_err(|_|"Cannot inspect approved profile host pin")?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink()!=1||metadata.mode()&0o777!=0o600
+           ||metadata.uid()!=directory.metadata().map_err(|_|"Cannot inspect host pin owner")?.uid(){
+            return Err("Unsafe approved profile host pin".into());
+        }
+    }
+    profile_host_identity(target,&path)?;
+    Ok(Some(path))
+}
+
+pub(super) fn retain_profile_host_pin(target:&Target,directory:&Path,line:&str)->Result<std::path::PathBuf,String>{
+    use std::io::Write;
+    #[cfg(unix)]protect_control_directory(directory)?;
+    let path=profile_host_pin_path(target,directory);
+    let bytes=format!("{line}\n");
+    if let Some(existing)=profile_host_pin(target,directory)?{
+        if std::fs::read(&existing).map_err(|_|"Cannot read approved SSH host pin")?!=bytes.as_bytes(){
+            return Err("The approved SSH host identity changed. Review host identity and reconcile before continuing.".into());
+        }
+        return Ok(existing);
+    }
+    let mut options=std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    options.open(&path).and_then(|mut file|{file.write_all(bytes.as_bytes())?;file.sync_all()})
+        .map_err(|_|"Cannot retain the approved SSH host identity")?;
+    Ok(path)
 }
 pub(super) fn qualification_host_pin(directory:&Path,pin:&str)->Result<std::path::PathBuf,String>{
     let expected=format!("{}\n",pin.trim());
@@ -372,7 +429,10 @@ pub(super) fn remote_command_with_identity(target:&Target,directory:&Path,accoun
     #[cfg(unix)] protect_control_directory(directory)?;
     let socket=control_socket(target,directory,account);
     if socket.as_os_str().len()>95 {return Err("Portal SSH control path is too long on this platform.".into());}
-    let qualification_pin=if known_hosts.is_none(){approved_host_line(target,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"),cfg!(debug_assertions),false)?.map(|line|qualification_host_pin(directory,&line)).transpose()?}else{None};
+    let qualification_pin=if known_hosts.is_none(){
+        if let Some(pin)=profile_host_pin(target,directory)?{Some(pin)}
+        else{approved_host_line(target,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PINS"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_HOST_PIN"),cfg!(debug_assertions),false)?.map(|line|qualification_host_pin(directory,&line)).transpose()?}
+    }else{None};
     let known_hosts=known_hosts.or(qualification_pin.as_deref());
     let mut c=tokio::process::Command::new("/usr/bin/ssh");
     c.args(["-F","/dev/null","-T","-oBatchMode=yes","-oStrictHostKeyChecking=yes","-oUpdateHostKeys=no",

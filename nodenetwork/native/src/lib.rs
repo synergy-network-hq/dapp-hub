@@ -51,3 +51,4 @@ mod operator_credential;
 mod runtime_probe;
 mod legacy_gateway_plan;
 mod legacy_peer_preflight;
+mod chain1266_relocation;

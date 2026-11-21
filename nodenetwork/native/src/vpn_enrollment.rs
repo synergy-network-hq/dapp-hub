@@ -377,8 +377,7 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
  if !matches!(operation,"enroll"|"reconcile"|"revoke"|"retire"|"cancel_unused"){return Err("Unsupported native VPN workflow".into())}
  let config=config(config_directory)?;
 
- let original=lifecycle::bare_initial(base,&target)?.ok_or("VPN target requires its original native authorization receipt")?;
- let doc=crate::operator_authorization::verify_initial(&original,&target)?;
+ let (original,doc)=lifecycle::approved_initial(base,&target)?;
  let status=lifecycle::execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
  if status["ok"]!=true{return Err("VPN target authorization is unavailable".into())}
  let mut context=binding(&target,&status["result"],&doc,&hash(original.as_bytes()))?;

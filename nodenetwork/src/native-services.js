@@ -84,7 +84,16 @@ export async function nodeNetworkReviewOperatorKey(target=null){
   || reply.canonicalSha256.length!==64 || /[^0-9a-f]/.test(reply.canonicalSha256)) throw Error('The native public key inspection returned an unsupported result.');
  return reply.canonicalSha256;
 }
-export async function nodeNetworkBootstrap(target,operator,parameters){if(!isTauri())throw new Error('Target bootstrap requires the native Portal app.');const reply=await withNodeChange(()=>invoke('portal_nodenetwork_bootstrap',{target,operator,parameters}));if(reply===null)return null;if(reply?.version!==1||typeof reply.ok!=='boolean')throw new Error('Invalid bootstrap response.');if(!reply.ok)throw new Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Bootstrap refused the operation.'}`);return reply.result;}
+export async function nodeNetworkBootstrap(target,operator,parameters,networkProfile=null){
+ if(!isTauri())throw Error('Target bootstrap requires the native Portal app.');
+ const args={target,operator,parameters};
+ if(networkProfile)args.networkProfile=networkProfile;
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_bootstrap',args));
+ if(reply===null)return null;
+ if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid bootstrap response.');
+ if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Bootstrap refused the operation.'}`);
+ return reply.result;
+}
 export async function nodeNetworkController(target,operation,parameters={}){
  if(!isTauri())throw new Error('Node management requires the native Portal app.');
  const args={target,request:{version:1,operation,parameters}};
@@ -123,7 +132,7 @@ export async function exportNodeNetworkPublicArtifact(target,kind,expectedAddres
 // Survives controller component remounts; does not replace native grants or locks.
 let changePending=false;
 async function withNodeChange(task){if(changePending)throw Error('A NodeNetwork change is still pending. Wait for its result and inspect the target before repeating an uncertain operation.');changePending=true;try{return await task();}finally{changePending=false;}}
-const readOperations=new Set(['legacy_gateway_service_status','gateway_vpn_preflight','upgrade_native_preflight','operator_auth_status','gateway_admission_status','gateway_admission_export','gateway_admission_reconcile','gateway_admission_preflight','network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','vpn_stop_status','vpn_resume_status','boot_policy_status','vpn_diagnostics','diagnostics','genesis_stage_preflight']);
+const readOperations=new Set(['chain1266_retirement_status','chain1266_relocation_records_status','chain1266_relocation_status','legacy_gateway_service_status','gateway_vpn_preflight','gateway_target_configuration','upgrade_native_preflight','operator_auth_status','gateway_admission_status','gateway_admission_export','gateway_admission_reconcile','gateway_admission_preflight','network_formation_status','authorization_status','target','inventory','health','install_preflight','identity_preflight','identity_status','formation_preflight','formation_status','formation_export','genesis_binding_preflight','upgrade_preflight','recovery_preflight','uninstall_preflight','vpn_status','vpn_stop_status','vpn_resume_status','boot_policy_status','vpn_diagnostics','diagnostics','genesis_stage_preflight']);
 
 
 export async function stageNodeNetworkSignedGenesis(target,expectedAddress){
@@ -135,9 +144,9 @@ export async function stageNodeNetworkSignedGenesis(target,expectedAddress){
  return reply.result;
 }
 
-export async function stageNodeNetworkAuthorization(target,operator){
+export async function stageNodeNetworkAuthorization(target,operator,networkProfile=null){
  if(!isTauri())throw Error('Engineering authorization requires the native Portal app.');
- const reply=await withNodeChange(()=>invoke('portal_nodenetwork_stage_authorization',{target,operator}));
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_stage_authorization',networkProfile?{target,operator,networkProfile}:{target,operator}));
  if(reply===null)return null;
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid authorization response.');
  if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Target refused authorization staging.'}`);

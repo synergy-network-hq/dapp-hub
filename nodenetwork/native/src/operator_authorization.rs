@@ -21,10 +21,12 @@ struct Document {version:u8,profile:String,target:BoundTarget,release_id:String,
  network_id:String,chain_id:u64,node_name:String,sequence:u64,expires_at:u64,
  artifacts:BTreeMap<String,String>,requests:Vec<Grant>,genesis_pins:Option<BTreeMap<String,String>>}
 const GATEWAY_PUBLIC_INPUTS:&[&str]=&["formation-context.json","commissioning/network/genesis.json","commissioning/network/authority.json","commissioning/network/authority-root.pub","commissioning/network/network-manifest.json","commissioning/network/transport-registry.json","commissioning/network/transport-root.pub"];
+const NETWORK_PROFILE: &str = "network-provisioning.json";
 fn initial_gateway_profile(d:&Document)->Result<(),String>{
  if d.requests.iter().any(|r|r.operation=="gateway_install"||r.operation.starts_with("gateway_target_")){
-  if d.requests.len()!=1||d.requests[0].operation!="gateway_install"||d.chain_id!=99999||!d.network_id.starts_with("synergy-posy-canary-")
-   ||d.artifacts.len()!=GATEWAY_PUBLIC_INPUTS.len()||GATEWAY_PUBLIC_INPUTS.iter().any(|name|!d.artifacts.get(*name).is_some_and(|value|pin(value)))
+  if d.requests.len()!=1||d.requests[0].operation!="gateway_install"||d.chain_id==0||!node_controller::validator_network_id(&d.network_id)
+   ||d.artifacts.len()!=GATEWAY_PUBLIC_INPUTS.len()+usize::from(d.artifacts.contains_key(NETWORK_PROFILE))
+   ||GATEWAY_PUBLIC_INPUTS.iter().any(|name|!d.artifacts.get(*name).is_some_and(|value|pin(value)))
    ||!d.genesis_pins.as_ref().is_some_and(|pins|pins.len()==3&&["genesis.json","authority.json","authority-root.pub"].iter().all(|name|pins.get(*name)==d.artifacts.get(&format!("commissioning/network/{name}")))){
    return Err("Initial gateway authorization requires one exact install and only the existing public formation plus six pinned signed-origin files".into())
   }
@@ -35,10 +37,11 @@ pub(super) fn require_gateway_initial(doc:&Value)->Result<(),String>{
  if !d.requests.iter().any(|r|r.operation=="gateway_install"){return Err("Gateway target operations require their own independently approved initial installation".into())}
  initial_gateway_profile(&d)
 }
-pub struct Prepared {wire:Zeroizing<Vec<u8>>,pub summary:Value,pub host_key:Option<String>,pub sha256:String,pub(super) document:String,pub(super) continuation:Option<(String,String,String)>}
+pub struct Prepared {wire:Zeroizing<Vec<u8>>,pub summary:Value,pub host_key:Option<String>,pub sha256:String,pub(super) document:String,pub(super) continuation:Option<(String,String,String)>,pub(super) runtime_profile_sha256:Option<String>}
 fn digest(bytes:&[u8])->String{format!("{:x}",Sha256::digest(bytes))}
 fn pin(s:&str)->bool{s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))}
 fn limit(name:&str)->Option<usize>{match name{
+ NETWORK_PROFILE=>Some(16384),
  "gateway-purpose.json"=>Some(16384),
  "managed-guest.json"=>Some(16384),"commissioning-readiness.json"=>Some(128*1024),"formation-context.json"=>Some(4096),"vpn-ca.pem"=>Some(128*1024),"vpn-provider.json"=>Some(16384),"vpn-server-binding.json"=>Some(16384),"vpn-retirement.json"=>Some(16384),"vpn-unused-cancellation.json"=>Some(16384),"vpn-enrollment.json"=>Some(16384),
  "commissioning/config/node.json"=>Some(1024*1024),"commissioning/config/start-authorized.json"=>Some(65536),
@@ -81,11 +84,50 @@ fn validate(raw:&str,target:&Target,expected:&str,now:u64)->Result<Document,Stri
  if d.genesis_pins.as_ref().is_some_and(|p|p.len()!=3||!["genesis.json","authority.json","authority-root.pub"].iter().all(|n|p.get(*n).is_some_and(|s|pin(s)))){return Err("Exact independently approved Genesis pins required".into());}
  Ok(d)
 }
-pub fn prepare(path:&Path,target:&Target)->Result<Prepared,String>{
+pub fn prepare(path:&Path,target:&Target,selected_profile:Option<&Value>,control:&Path)->Result<Prepared,String>{
  if !cfg!(debug_assertions){return Err("Operator authorization is unavailable in production builds".into());}
  let bytes=read(path,65536)?;let expected=digest(&bytes);
- if !initial_pin_allowed(&expected){return Err("No matching independent engineering authorization is compiled into this build".into())}
- prepare_pinned(path,target,&expected,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())
+ let runtime = !initial_pin_allowed(&expected);
+ if runtime && selected_profile.is_none() {
+  return Err("An independently approved engineering authorization or selected gateway profile is required".into());
+ }
+ let mut prepared = prepare_pinned(path,target,&expected,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ let doc: Value = serde_json::from_str(&prepared.document).map_err(|_|"Invalid exact authorization")?;
+ if let Some(selected) = selected_profile {
+  require_gateway_initial(&doc)?;
+  let expected = doc["artifacts"][NETWORK_PROFILE].as_str().filter(|value| pin(value))
+   .ok_or("The authorization must bind a managed network profile")?;
+  let profile = read(&path.parent().ok_or("The authorization needs a parent folder")?.join(NETWORK_PROFILE), 16384)?;
+  let profile_data: Value = serde_json::from_slice(&profile).map_err(|_|"Invalid managed network profile")?;
+  if digest(&profile) != expected || &profile_data != selected
+   || !["network_id","chain_id","node_name"].iter().all(|key| profile_data[*key] == doc[*key])
+   || profile_data["role"] != "rpc_gateway" {
+   return Err("The selected profile differs from the exact authorized gateway profile".into());
+  }
+  prepared.summary["network_profile_sha256"] = json!(expected);
+  prepared.summary["genesis_hash"] = profile_data["genesis_hash"].clone();
+  prepared.summary["network_authority_sha256"] = profile_data["origin"]["authority-root.pub"].clone();
+  prepared.summary["public_hostname"] = profile_data["gateway"]["public_hostname"].clone();
+  if runtime {
+   let release = doc["release_id"].as_str().ok_or("Missing independently approved gateway release")?;
+   let package = doc["manifest_sha256"].as_str().ok_or("Missing independently approved package digest")?;
+   if target.kind!="remote" || target.guest.is_some() || doc["sequence"]!=1
+    || !node_bootstrap::matches_builtin_release(release,package) {
+    return Err("Profile approval requires a fresh physical target and independently authenticated gateway release".into());
+   }
+   let known_host = node_controller::bootstrap_host_pin(target,control)?;
+   let known_host = read(&known_host,2048)?;
+   if std::str::from_utf8(&known_host).map_err(|_|"Invalid independent SSH host pin")?.trim()
+    != prepared.host_key.as_deref().ok_or("The profile authorization lacks its bound host identity")? {
+    return Err("Gateway profile authorization differs from the independently pinned host".into());
+   }
+   verify_runtime_initial(&prepared.document,target,&prepared.sha256,expected)?;
+   prepared.runtime_profile_sha256 = Some(expected.to_string());
+  }
+ } else if doc["artifacts"].get(NETWORK_PROFILE).is_some() {
+  return Err("Select the managed network profile before reviewing this authorization".into());
+ }
+ Ok(prepared)
 }
 fn prepare_pinned(path:&Path,target:&Target,expected:&str,now:u64)->Result<Prepared,String>{
  let raw=read(path,65536)?;let text=std::str::from_utf8(&raw).map_err(|_|"Authorization must be exact UTF8 JSON")?;
@@ -99,7 +141,7 @@ fn prepare_pinned(path:&Path,target:&Target,expected:&str,now:u64)->Result<Prepa
  #[derive(Serialize)]struct Wire<'a>{authorization:&'a str,artifacts:BTreeMap<&'a String,&'a str>}
  let wire=Zeroizing::new(serde_json::to_vec(&Wire{authorization:text,artifacts:values}).map_err(|_|"Cannot encode authorization")?);
  if wire.len()>12*1024*1024{return Err("Authorization transfer exceeds bound".into());}
- Ok(Prepared{wire,document:text.into(),continuation:None,host_key:d.target.host_key,sha256:expected.into(),summary:json!({"sha256":expected,"sequence":d.sequence,"expires_at":d.expires_at,"release_id":d.release_id,"manifest_sha256":d.manifest_sha256,"network_id":d.network_id,"chain_id":d.chain_id.to_string(),"node_name":d.node_name,"artifact_count":d.artifacts.len(),"requests":d.requests.iter().map(|r|json!({"operation":r.operation,"request_sha256":r.request_sha256})).collect::<Vec<_>>()})})
+ Ok(Prepared{wire,document:text.into(),continuation:None,host_key:d.target.host_key,sha256:expected.into(),runtime_profile_sha256:None,summary:json!({"sha256":expected,"sequence":d.sequence,"expires_at":d.expires_at,"release_id":d.release_id,"manifest_sha256":d.manifest_sha256,"network_id":d.network_id,"chain_id":d.chain_id.to_string(),"node_name":d.node_name,"artifact_count":d.artifacts.len(),"requests":d.requests.iter().map(|r|json!({"operation":r.operation,"request_sha256":r.request_sha256})).collect::<Vec<_>>()})})
 }
 pub async fn execute(target:Target,operator:String,prepared:Prepared,control:&Path)->Result<Value,String>{
  target.validate()?;node_bootstrap::validate_operator(&operator)?;
@@ -160,13 +202,32 @@ pub(super) fn verify_initial(raw:&str,target:&Target)->Result<Value,String>{
  let when=v["expires_at"].as_u64().and_then(|n|n.checked_sub(1)).ok_or("Invalid initial expiry")?;
  initial_gateway_profile(&validate(raw,target,&hash,when)?)?;Ok(v)
 }
+
+pub(super) fn verify_runtime_initial(raw:&str,target:&Target,approved:&str,profile:&str)->Result<Value,String>{
+ if !cfg!(debug_assertions)||target.kind!="remote"||target.guest.is_some()||!pin(profile) {
+  return Err("Unsupported native gateway profile authorization".into());
+ }
+ let value:Value=serde_json::from_str(raw).map_err(|_|"Invalid runtime gateway authorization")?;
+ let when=value["expires_at"].as_u64().and_then(|n|n.checked_sub(1)).ok_or("Invalid initial expiry")?;
+ let doc=validate(raw,target,approved,when)?;
+ initial_gateway_profile(&doc)?;
+ let parameters=json!({"release_id":doc.release_id,"manifest_sha256":doc.manifest_sha256,
+  "network_id":doc.network_id,"chain_id":doc.chain_id,"node_name":doc.node_name});
+ let install=Request{version:1,operation:"gateway_install".into(),parameters};
+ if doc.sequence!=1 || doc.requests.len()!=1 || doc.requests[0].operation!="gateway_install"
+  || doc.requests[0].request_sha256!=install.approval_id()
+  || doc.artifacts.get(NETWORK_PROFILE).map(String::as_str)!=Some(profile) {
+  return Err("Native profile approval must bind exactly one initial gateway installation".into());
+ }
+ Ok(value)
+}
 pub(super) fn continuation(doc:Value,target:&Target,initial:&str,parent:&str,formation:&str)->Result<Prepared,String>{
  if !initial_pin_allowed(initial)||!pin(parent)||!pin(formation){return Err("Unapproved continuation origin".into())}
  let text=doc.to_string();let hash=digest(text.as_bytes());let now=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs();
  let d=validate(&text,target,&hash,now)?;
  if !d.artifacts.is_empty()||d.requests.len()!=1{return Err("Continuation may authorize one exact request, with no arbitrary file input".into())}
  let wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{}})).map_err(|_|"Cannot encode continuation")?);
- Ok(Prepared{wire,document:text,host_key:d.target.host_key,sha256:hash.clone(),continuation:Some((initial.into(),parent.into(),formation.into())),summary:json!({"sha256":hash,"sequence":d.sequence,"expires_at":d.expires_at})})
+ Ok(Prepared{wire,document:text,host_key:d.target.host_key,sha256:hash.clone(),continuation:Some((initial.into(),parent.into(),formation.into())),runtime_profile_sha256:None,summary:json!({"sha256":hash,"sequence":d.sequence,"expires_at":d.expires_at})})
 }
 
 /// One separately reviewed, public additional-purpose approval. This never extracts custody.
@@ -254,6 +315,32 @@ pub(super) fn transport_continuation(mut doc:Value,target:&Target,initial:&str,p
   let mut drift=d.clone();drift["genesis_pins"]["authority-root.pub"]=json!("b".repeat(64));assert!(require_gateway_initial(&drift).is_err());
   let mut mixed=d;mixed["requests"].as_array_mut().unwrap().push(json!({"operation":"install","request_sha256":"c".repeat(64)}));assert!(require_gateway_initial(&mixed).is_err());
   let(_,validator)=fixture();assert!(initial_gateway_profile(&serde_json::from_value(validator.clone()).unwrap()).is_ok());assert!(require_gateway_initial(&validator).is_err());
+ }
+ #[test]
+ fn runtime_gateway_approval_binds_selected_profile_and_exact_install() {
+  let (target,mut doc)=fixture();
+  doc["network_id"]=json!("private-observer-network");
+  doc["chain_id"]=json!(14002);
+  doc["node_name"]=json!("observer-2");
+  let mut artifacts=GATEWAY_PUBLIC_INPUTS.iter()
+   .map(|name|(*name,"a".repeat(64))).collect::<BTreeMap<_,_>>();
+  let profile="b".repeat(64);
+  artifacts.insert(NETWORK_PROFILE,profile.clone());
+  doc["artifacts"]=json!(artifacts);
+  doc["genesis_pins"]=json!(["genesis.json","authority.json","authority-root.pub"]
+   .into_iter().map(|name|(name,"a".repeat(64))).collect::<BTreeMap<_,_>>());
+  let install=Request{version:1,operation:"gateway_install".into(),
+   parameters:json!({"release_id":doc["release_id"],"manifest_sha256":doc["manifest_sha256"],
+    "network_id":doc["network_id"],"chain_id":doc["chain_id"],"node_name":doc["node_name"]})};
+  doc["requests"]=json!([{"operation":"gateway_install","request_sha256":install.approval_id()}]);
+  let raw=doc.to_string();
+  let approval=digest(raw.as_bytes());
+  assert_eq!(verify_runtime_initial(&raw,&target,&approval,&profile).unwrap(),doc);
+  assert!(verify_runtime_initial(&raw,&target,&approval,&"c".repeat(64)).is_err());
+  doc["chain_id"]=json!(14003);
+  let changed=doc.to_string();
+  assert!(verify_runtime_initial(&changed,&target,&approval,&profile).is_err());
+  assert!(verify_runtime_initial(&changed,&target,&digest(changed.as_bytes()),&profile).is_err());
  }
  #[test]fn guest_authorization_cannot_be_reused_for_host_or_another_creation(){
   let(mut t,mut d)=fixture();let bytes=[b"\0\0\0\x0bssh-ed25519\0\0\0\x20".as_slice(),&[7u8;32]].concat();
