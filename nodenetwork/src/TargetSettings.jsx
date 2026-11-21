@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react';
+import {WorkspaceIcon} from './WorkspaceUI.jsx';
 import {Card, Detail, ErrorMessage} from '@synergy-network/portal-native/dapp-sdk';
 import {readTargetSelection, saveTargetSelection, targetSelectionDraft, targetSelectionKey, TargetSelectionChanged} from './target-selection.js';
 import {hostCompatibility,requireTargetMode} from './host-compatibility.js';
@@ -89,13 +90,11 @@ export function TargetSettings({selection, local}) {
  const monitorOnly = draft.kind === 'monitor';
  return <Card title="Validator target">
   <form onSubmit={event => {event.preventDefault(); save(compatibility);}}>
-   <label>Target mode
-    <select aria-label="Validator target type" value={draft.kind} onChange={event => updateDraft('kind', event.target.value)}>
-     <option value="monitor">Monitor public network only</option>
-     <option value="local" disabled={!compatibility.local}>This machine · Linux x86_64 required</option>
-     <option value="remote" disabled={!compatibility.remote}>Remote headless machine</option>
-    </select>
-   </label>
+   <fieldset className="workspace-machine-choices"><legend>Where will your node run?</legend><div className="wf-role-grid">{[
+    {kind:'local',label:'This computer',icon:'server',description:'Run on the same machine as NodeNetwork. Requires a qualified Linux x86_64 native controller.',supported:compatibility.local},
+    {kind:'remote',label:'Remote machine',icon:'cloud',description:'Manage a remote Linux host through its saved, authenticated SSH identity.',supported:compatibility.remote},
+    {kind:'monitor',label:'Monitor public network only',icon:'globe',description:'Observe the selected public endpoint without selecting or contacting a managed host.',supported:true},
+   ].map(mode=><button type="button" className={`wf-role ${draft.kind===mode.kind?'selected':''}`} aria-pressed={draft.kind===mode.kind} disabled={!mode.supported} key={mode.kind} onClick={()=>updateDraft('kind',mode.kind)}><span className="wf-role-top"><span className="wf-role-symbol"><WorkspaceIcon name={mode.icon}/></span><span className="wf-radio">{draft.kind===mode.kind&&<WorkspaceIcon name="check" size={13}/>}</span></span><strong>{mode.label}</strong><p>{mode.description}</p><span className="wf-role-note">{mode.supported?'Review before saving':'Unavailable on this platform'}</span></button>)}</div></fieldset>
    {draft.kind === 'remote' && <>
     <label>Remote host
      <input aria-label="Remote validator host" value={draft.host} onChange={event => updateDraft('host', event.target.value)} placeholder="Hostname or IP address" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={253}/>

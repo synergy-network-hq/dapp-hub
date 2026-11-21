@@ -1,3 +1,4 @@
+import {WorkspaceLineChart} from './WorkspaceChart.jsx';
 import {useState} from 'react';
 import {Card, ErrorMessage, ModalDialog, Table} from '@synergy-network/portal-native/dapp-sdk';
 import {downloadJson} from './download-json.js';
@@ -44,6 +45,8 @@ function CaptureSeries({result}) {
    <label>Last capture UTC <select value={last} onChange={event => selectBound(event, first, samples.length - 1, setLast)}>{options(first,samples.length-1)}</select></label>
   </div>
   <p role="status">Showing {selected.length} of {samples.length} selected file captures.</p>
+  <WorkspaceLineChart title="Saved reported blocks behind target" axisLabel="Blocks behind" series={[{name:'Blocks behind target',data:selected.map(sample=>sample.headLagBlocks),color:'var(--lime)'}]} labels={selected.map(sample=>sample.observedAtUtc)} height={205}/>
+  <p className="native-source">Selected file captures only. Gaps are not zero measurements or continuous monitoring.</p>
   <Table columns={columns} rows={selected}/>
   <button onClick={() => {
    setError('');

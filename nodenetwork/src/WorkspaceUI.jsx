@@ -1,0 +1,8 @@
+import {useId} from 'react';
+import {icons} from './workspace-icons.js';
+export function WorkspaceIcon({name='info',size=20,...props}){return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d={icons[name]||icons.info}/></svg>}
+export function WorkspaceButton({variant='secondary',icon,children,className='',type='button',...props}){return <button type={type} className={`btn btn-${variant} ${className}`} {...props}>{icon&&<WorkspaceIcon name={icon} size={16}/>} {children}</button>}
+export function WorkspaceBadge({tone='neutral',children}){return <span className={`badge badge-${tone}`}>{children}</span>}
+export function WorkspaceCard({title,aside,children,className='',...props}){const id=useId();return <section className={`card ${className}`} aria-labelledby={title?id:undefined} {...props}>{title&&<div className="card-header"><h2 className="card-title" id={id}>{title}</h2>{aside}</div>}<div className="card-body">{children}</div></section>}
+export function WorkspaceMetric({label,value,detail,icon}){return <div className="metric"><div className="metric-label">{label}{icon&&<WorkspaceIcon name={icon} size={17}/>}</div><div className="metric-value">{value??'—'}</div><div className="metric-foot">{detail}</div></div>}
+export function WorkspaceDisclosure({title,description,children,open=false}){return <details className="workspace-disclosure" open={open||undefined}><summary><span><strong>{title}</strong>{description&&<small>{description}</small>}</span><WorkspaceIcon name="chevron" size={18}/></summary><div className="workspace-disclosure-body">{children}</div></details>}

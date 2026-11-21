@@ -43,7 +43,8 @@ const require=createRequire(import.meta.url);
 const dataUrl=code=>`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
 const sdk=dataUrl(`import React from ${JSON.stringify(new URL(`file://${require.resolve('react')}`).href)};export function Card({children}){return React.createElement('section',null,children)};export function Detail(){return null};export function ErrorMessage(){return null}`);
 let {code}=await transformWithOxc(await readFile(new URL('../src/TargetSettings.jsx',import.meta.url),'utf8'),'TargetSettings.jsx',{jsx:{runtime:'automatic'}});
-code=code.replace(/['"]@synergy-network\/portal-native\/dapp-sdk['"]/g,JSON.stringify(sdk))
+const icons=dataUrl(`import React from ${JSON.stringify(new URL(`file://${require.resolve('react')}`).href)};export function WorkspaceIcon(){return React.createElement('svg',{'aria-hidden':true})}`);
+code=code.replace(/['"]\.\/WorkspaceUI\.jsx['"]/g,JSON.stringify(icons)).replace(/['"]@synergy-network\/portal-native\/dapp-sdk['"]/g,JSON.stringify(sdk))
  .replace(/(["'])react(?:\/jsx-runtime)?\1/g,match=>JSON.stringify(new URL(`file://${require.resolve(match.includes('jsx-runtime')?'react/jsx-runtime':'react')}`).href))
  .replace(/(['"])(\.\/[^'"]+)\1/g,(_,quote,path)=>JSON.stringify(new URL(path,new URL('../src/TargetSettings.jsx',import.meta.url)).href));
 const {TargetSettings}=await import(dataUrl(code));
@@ -52,8 +53,8 @@ function settings(local,kind='remote'){
 }
 test('actual target settings disables unsupported saves but preserves monitor-only and saved target',()=>{
  const html=renderToStaticMarkup(settings(observed('windows')));
- assert.match(html,/<option value="local" disabled=""/);
- assert.match(html,/<option value="remote" disabled=""/);
+ assert.match(html,/<button[^>]*disabled=""[^>]*>[\s\S]*?This computer/);
+ assert.match(html,/<button[^>]*disabled=""[^>]*>[\s\S]*?Remote machine/);
  assert.match(html,/<button disabled="">Save validator target/);
  assert.match(html,/value="saved.example"/);
  assert.match(html,/Public network monitoring remains available/);
@@ -61,6 +62,6 @@ test('actual target settings disables unsupported saves but preserves monitor-on
  assert.match(monitor,/<button>Save monitor-only mode/);
  assert.match(monitor,/node keeps running/);
  const mac=renderToStaticMarkup(settings(observed('macos')));
- assert.match(mac,/<option value="remote" selected=""/);
+ assert.match(mac,/<button[^>]*aria-pressed="true"[^>]*>[\s\S]*?Remote machine/);
  assert.match(mac,/<button>Save validator target/);
 });
