@@ -458,8 +458,11 @@
 }
 .nn-workspace .brand {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 11px;
+  min-width: 0;
+  margin-inline: 0;
   padding: 0 9px;
   margin-bottom: 32px;
 }
@@ -530,6 +533,7 @@
 .nn-workspace .nav-item {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 12px;
   min-height: 46px;
   padding: 10px 14px;
@@ -651,6 +655,8 @@
 .nn-workspace .icon-btn {
   width: 38px;
   height: 38px;
+  min-height: 0;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 9px;
   display: grid;
