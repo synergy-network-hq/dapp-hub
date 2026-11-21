@@ -33,8 +33,12 @@ export function validateNetworkProfile(value) {
   return value;
  }
  const gateway = value.gateway;
- if (!exact(gateway, ['public_hostname', 'tls', 'protocol', 'listen_address', 'validator_address',
-   'validator_relay_port', 'allowed_origins', 'vpn_provider_sha256'])
+ const gatewayFields = ['public_hostname', 'tls', 'protocol', 'listen_address', 'validator_address',
+  'validator_relay_port', 'allowed_origins', 'vpn_provider_sha256'];
+ if (Object.hasOwn(gateway ?? {}, 'vpn_credential_locator_sha256')) {
+  gatewayFields.push('vpn_credential_locator_sha256');
+ }
+ if (!exact(gateway, gatewayFields)
    || typeof gateway.public_hostname !== 'string' || gateway.public_hostname.length > 253
    || !gateway.public_hostname.includes('.')
    || !gateway.public_hostname.split('.').every(part => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part))
@@ -42,11 +46,16 @@ export function validateNetworkProfile(value) {
    || typeof gateway.listen_address !== 'string' || !/^(127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}$/.test(gateway.listen_address)
    || Number(gateway.listen_address.split(':').at(-1)) > 65535
    || typeof gateway.validator_address !== 'string' || !/^synv1[a-z0-9]{1,123}$/.test(gateway.validator_address)
-   || gateway.validator_relay_port !== 8551 || !digest(gateway.vpn_provider_sha256)
+   || gateway.validator_relay_port !== 8551
    || !Array.isArray(gateway.allowed_origins) || gateway.allowed_origins.length > 16
    || new Set(gateway.allowed_origins).size !== gateway.allowed_origins.length
    || gateway.allowed_origins.some(origin => typeof origin !== 'string' || !/^https:\/\/[a-zA-Z0-9.:-]{1,253}$/.test(origin))) {
-  throw Error('Enter the approved public hostname, loopback listener, signed upstream address, and VPN profile digest.');
+  throw Error('Enter the approved public hostname, loopback listener and signed upstream address.');
+ }
+ const provider = gateway.vpn_provider_sha256;
+ const locator = gateway.vpn_credential_locator_sha256;
+ if ((provider !== null && !digest(provider)) || (locator != null && (!digest(provider) || !digest(locator)))) {
+  throw Error('Enter the VPN provider and credential locator SHA-256 digests.');
  }
  return value;
 }

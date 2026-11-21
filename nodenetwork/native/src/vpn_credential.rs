@@ -56,8 +56,8 @@ fn decode(raw: &[u8], pin: Option<&str>, provider: &str, debug: bool) -> Result<
     Ok(value)
 }
 
-pub(super) fn public_review(raw:&[u8],provider:&str)->Result<serde_json::Value,String>{
- let locator=decode(raw,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256"),provider,cfg!(all(debug_assertions,unix)))?;
+pub(super) fn public_review(raw:&[u8],provider:&str,runtime_pin:Option<&str>)->Result<serde_json::Value,String>{
+ let locator=decode(raw,runtime_pin.or(option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256")),provider,cfg!(all(debug_assertions,unix)))?;
  Ok(serde_json::json!({"host":locator.host,"port":locator.port,"account":locator.account,"locator_sha256":digest(raw)}))
 }
 
@@ -106,11 +106,11 @@ fn same_session(saved: Option<&(String,u32)>, locator: &str, actual: Option<u32>
     saved.is_some_and(|(pin,pid)|pin==locator && actual==Some(*pid))
 }
 
-pub(super) async fn load(raw: Zeroizing<Vec<u8>>, provider: &str, controlled: bool, control: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
+pub(super) async fn load(raw: Zeroizing<Vec<u8>>, provider: &str, controlled: bool, runtime_pin: Option<&str>, control: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     // Existing private-file provider credentials remain supported for isolated tests.
-    if raw.first() != Some(&b'{') { return Ok(raw); }
-    if !controlled { return Err("Remote credential access is restricted to its controlled Canary provider".into()); }
-    coordinator_read(&raw, provider, control, Read::Credential).await
+    if runtime_pin.is_none() && raw.first() != Some(&b'{') { return Ok(raw); }
+    if !controlled { return Err("Remote credential access requires its controlled VPN provider".into()); }
+    coordinator_read(&raw, provider, runtime_pin, control, Read::Credential).await
 }
 
 enum Read<'a> {
@@ -120,11 +120,11 @@ enum Read<'a> {
 
 pub(super) async fn legacy_peer_proof(raw: &[u8], provider: &str, control: &Path, request: &[u8]) -> Result<Zeroizing<Vec<u8>>,String> {
     if request.is_empty() || request.len() > 4096 { return Err("Invalid bounded peer proof request".into()); }
-    coordinator_read(raw, provider, control, Read::LegacyPeerProof(request)).await
+    coordinator_read(raw, provider, None, control, Read::LegacyPeerProof(request)).await
 }
 
-async fn coordinator_read(raw: &[u8], provider: &str, control: &Path, read: Read<'_>) -> Result<Zeroizing<Vec<u8>>, String> {
-    let locator = decode(raw, option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256"), provider, cfg!(all(debug_assertions, unix)))?;
+async fn coordinator_read(raw: &[u8], provider: &str, runtime_pin: Option<&str>, control: &Path, read: Read<'_>) -> Result<Zeroizing<Vec<u8>>, String> {
+    let locator = decode(raw, runtime_pin.or(option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256")), provider, cfg!(all(debug_assertions, unix)))?;
     let locator_pin = digest(raw);
     let (command, input) = match read {
         Read::Credential => {
@@ -224,8 +224,11 @@ mod tests {
     }
     #[tokio::test] async fn isolated_secret_files_do_not_gain_remote_authority() {
         let raw = Zeroizing::new(b"existing-test-token".to_vec());
-        assert_eq!(load(raw,&"a".repeat(64),false,Path::new("/unused")).await.unwrap().as_slice(),b"existing-test-token");
-        assert!(load(Zeroizing::new(serde_json::to_vec(&fixture()).unwrap()),&"a".repeat(64),false,Path::new("/unused")).await.is_err());
+        let provider = "a".repeat(64);
+        assert_eq!(load(raw.clone(),&provider,false,None,Path::new("/unused")).await.unwrap().as_slice(),b"existing-test-token");
+        let pin = digest(raw.as_slice());
+        assert!(load(raw, &provider, true, Some(&pin), Path::new("/unused")).await.is_err());
+        assert!(load(Zeroizing::new(serde_json::to_vec(&fixture()).unwrap()),&provider,false,None,Path::new("/unused")).await.is_err());
     }
     #[test] fn inherited_changed_or_unattributed_mux_is_never_trusted() {
         let saved=("approved-locator".into(),42);

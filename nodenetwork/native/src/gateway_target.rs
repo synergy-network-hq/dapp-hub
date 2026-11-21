@@ -58,7 +58,10 @@ pub(super) fn review(value:&Value,export:bool)->Result<Value,String>{
 }
 pub(super) fn profile_configuration(value: &Value) -> Result<Value, String> {
  let fail = || "Unsupported authenticated gateway profile observation".to_string();
- if !exact(value, &["schema", "profile", "profile_sha256", "configuration_json", "installed"])
+ let fields = ["schema", "profile", "profile_sha256", "configuration_json", "installed"];
+ let mut with_raw = fields.to_vec();
+ with_raw.push("profile_json");
+ if !(exact(value, &fields) || exact(value, &with_raw))
   || value["schema"] != "nodenetwork-gateway-profile-configuration-v1"
   || !pin(&value["profile_sha256"]) || !value["installed"].is_boolean()
   || value["profile"]["schema"] != "synergy-network-provisioning-v1"
@@ -77,7 +80,15 @@ pub(super) fn profile_configuration(value: &Value) -> Result<Value, String> {
   || !address(&configuration["relay_specification"]["role"]["gateway_address"]) {
   return Err(fail());
  }
- Ok(value.clone())
+ let mut result = value.clone();
+ if let Some(raw) = result.as_object_mut().unwrap().remove("profile_json") {
+  let raw = bounded(&raw, 16384)?;
+  let profile: Value = serde_json::from_str(raw).map_err(|_| fail())?;
+  if digest(raw.as_bytes()) != value["profile_sha256"] || profile != value["profile"] {
+   return Err(fail());
+  }
+ }
+ Ok(result)
 }
 pub(super) fn commission_preflight(request:&Request,value:&Value)->Result<Value,String>{
  let mut commission=request.clone();commission.operation="gateway_target_commission".into();validate(&commission)?;

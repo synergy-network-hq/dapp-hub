@@ -12,12 +12,14 @@ const fields = [
 const routingFields = [
  ['public_hostname', 'Public RPC hostname'], ['listen_address', 'Loopback listener'],
  ['validator_address', 'Approved upstream validator address'], ['vpn_provider_sha256', 'VPN provider SHA-256'],
+ ['vpn_credential_locator_sha256', 'VPN credential locator SHA-256'],
  ['allowed_origins', 'Allowed HTTPS origins, one per line'],
 ];
 
 function gatewayDraft() {
  return {
   public_hostname: '', listen_address: '', validator_address: '', vpn_provider_sha256: '',
+  vpn_credential_locator_sha256: '',
   allowed_origins: '', validator_relay_port: 8551, tls: 'required', protocol: 'synergy-json-rpc-v1',
  };
 }
@@ -108,7 +110,12 @@ export function NetworkProvisioning({profiles, target, openGatewaySetup}) {
 
  function draftProfile() {
   if (!/^[1-9][0-9]{0,15}$/.test(draft.chain_id)) throw Error('Enter a positive decimal chain ID.');
-  const gateway = draft.gateway && {...draft.gateway, allowed_origins: draft.gateway.allowed_origins.split('\n').map(s => s.trim()).filter(Boolean)};
+  const gateway = draft.gateway && {
+   ...draft.gateway,
+   vpn_provider_sha256: draft.gateway.vpn_provider_sha256?.trim() || null,
+   vpn_credential_locator_sha256: draft.gateway.vpn_credential_locator_sha256?.trim() || null,
+   allowed_origins: draft.gateway.allowed_origins.split('\n').map(s => s.trim()).filter(Boolean),
+  };
   return validateNetworkProfile({...draft, chain_id: Number(draft.chain_id), gateway});
  }
 
@@ -167,10 +174,11 @@ export function NetworkProvisioning({profiles, target, openGatewaySetup}) {
    {draft.gateway && <details open>
     <summary>RPC routing and VPN</summary>
     <p className="small muted">Synergy JSON-RPC over HTTPS. The gateway relay listens on loopback and connects to the admitted validator over the VPN.</p>
+    <p className="small muted">You can save the draft before VPN approval. Installation requires the approved provider and credential locator digests.</p>
     {routingFields.map(([key, label]) => <label key={key}>{label}
      {key === 'allowed_origins'
       ? <textarea rows={3} value={draft.gateway[key]} onChange={event => change('gateway', {...draft.gateway, [key]: event.target.value})}/>
-      : <input value={draft.gateway[key]} onChange={event => change('gateway', {...draft.gateway, [key]: event.target.value})} maxLength={253}/>}
+      : <input value={draft.gateway[key] ?? ''} onChange={event => change('gateway', {...draft.gateway, [key]: event.target.value})} maxLength={key.endsWith('_sha256') ? 64 : 253}/>}
     </label>)}
    </details>}
    <div className="native-actions">

@@ -109,6 +109,10 @@ pub fn prepare(path:&Path,target:&Target,selected_profile:Option<&Value>,control
   prepared.summary["network_authority_sha256"] = profile_data["origin"]["authority-root.pub"].clone();
   prepared.summary["public_hostname"] = profile_data["gateway"]["public_hostname"].clone();
   if runtime {
+   crate::gateway_vpn::profile_pins(&profile_data)?;
+   for field in ["vpn_provider_sha256", "vpn_credential_locator_sha256"] {
+    prepared.summary[field] = profile_data["gateway"][field].clone();
+   }
    let release = doc["release_id"].as_str().ok_or("Missing independently approved gateway release")?;
    let package = doc["manifest_sha256"].as_str().ok_or("Missing independently approved package digest")?;
    if target.kind!="remote" || target.guest.is_some() || doc["sequence"]!=1

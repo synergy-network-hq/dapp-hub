@@ -977,19 +977,24 @@ pub async fn portal_nodenetwork_stage_update(window:tauri::WebviewWindow,app:tau
 pub async fn portal_nodenetwork_vpn(window:tauri::WebviewWindow,app:tauri::AppHandle,target:crate::node_controller::Target,operation:String)->Result<Option<Value>,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};main_only(&window)?;target.validate()?;
  if !cfg!(debug_assertions)||!matches!(operation.as_str(),"enroll"|"reconcile"|"revoke"|"retire"|"cancel_unused"){return Err("This native build has no approved VPN workflow".into())}
- let target_label=target.label();let action=operation.clone();let select=window.clone();
+ let select=window.clone();
  let picked=tauri::async_runtime::spawn_blocking(move||{
   let Some(folder)=select.dialog().file().set_parent(&select).set_title("Choose independently approved VPN provider folder").blocking_pick_folder()else{return Ok(None)};
   let folder=folder.into_path().map_err(|_|"Select a local provider folder")?;
-  let Some(credential)=select.dialog().file().set_parent(&select).set_title("Choose private provider credential (never sent to renderer/validator)").blocking_pick_file()else{return Ok(None)};
+  let Some(credential)=select.dialog().file().set_parent(&select).set_title("Choose the approved VPN credential locator or isolated test credential").blocking_pick_file()else{return Ok(None)};
   let credential=credential.into_path().map_err(|_|"Select a private credential file")?;
-  let ok=select.dialog().message(format!("Engineering VPN enrollment/reconciliation: {action}\nTarget: {target_label}\nThis uses only the independently compiled HTTPS provider/account/CA and exact current target/master/network/formation. A provider setup key can be consumed even if the reply is lost. No automatic retry or production approval. Revoke cancels only the exact setup key. Cancel unused verifies zero usage/no peer and quiescent target, revokes only that original key, records cancellation, and NEVER issues or enrolls a new key; a later Enroll requires separate confirmation. Retire deletes the independently attributed provider peer and records verified absence for normal removal; first stop the validator.")).parent(&select).title("Authorize native VPN workflow once").buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show();
-  Ok::<_,String>(if ok{Some((folder,credential))}else{None})
+  Ok::<_,String>(Some((folder,credential)))
  }).await.map_err(|_|"Native VPN selection did not finish")??;
  let Some((folder,credential))=picked else{return Ok(None)};
  let base=app.path().app_local_data_dir().map_err(|_|"Native app state unavailable")?;
  let control=crate::node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
- crate::vpn_enrollment::execute(&base,target,&control,&folder,&credential,&operation).await.map(Some)
+ let prepared=crate::vpn_enrollment::prepare(&base,&target,&control,&folder,&credential).await?;
+ let scope=format!("VPN operation {}\nTarget {}\n{}\n\nThe coordinator credential stays in native memory. Enrollment issues one setup key. Reconcile an uncertain outcome before retrying. Revocation and retirement apply only to the attributed key or peer.",operation,target.label(),prepared.review);
+ let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(scope).parent(&window).title("Authorize native VPN workflow once")
+  .buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show())
+  .await.map_err(|_|"Native VPN confirmation did not finish")?;
+ if !confirmed { return Ok(None); }
+ crate::vpn_enrollment::execute(&base,target,&control,prepared,&credential,&operation).await.map(Some)
 }
 #[cfg(all(test,unix))]
 mod tests {

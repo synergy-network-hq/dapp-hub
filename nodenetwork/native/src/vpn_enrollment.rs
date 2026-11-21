@@ -24,15 +24,61 @@ pub(super) fn legacy_retirement_receipt_sha256(base: &Path) -> Result<String, St
     Ok(hash(&read(&path, 8192, true)?))
 }
 struct Config{raw:String,ca:Zeroizing<Vec<u8>>,policy:Value,pin:String}
-fn config(directory:&Path)->Result<Config,String>{
+fn config(directory:&Path,runtime_provider:Option<&str>)->Result<Config,String>{
  if !cfg!(all(debug_assertions,unix)){return Err("Native VPN issuer remains unavailable in production".into())}
  let raw=read(&directory.join("provider.json"),16384,false)?;
  let raw=String::from_utf8(raw.to_vec()).map_err(|_|"Provider approval must be UTF8")?;
  let policy:Value=serde_json::from_str(&raw).map_err(|_|"Invalid provider approval")?;
- let pin=crate::gateway_vpn::verified_provider_pin(&raw,policy["profile"].as_str().ok_or("Exact VPN provider profile required")?,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_GATEWAY_VPN_PROVIDER_SHA256"),cfg!(debug_assertions))?;
+ let profile=policy["profile"].as_str().ok_or("Exact VPN provider profile required")?;
+ let pin=if let Some(expected)=runtime_provider {
+  if profile!=crate::gateway_vpn::PROFILE||hash(raw.as_bytes())!=expected {
+   return Err("The selected provider differs from the installed gateway-only VPN approval".into());
+  }
+  expected
+ }else{
+  crate::gateway_vpn::verified_provider_pin(&raw,profile,option_env!("SYNERGY_NODENETWORK_QUALIFICATION_VPN_PROVIDER_SHA256"),option_env!("SYNERGY_NODENETWORK_QUALIFICATION_GATEWAY_VPN_PROVIDER_SHA256"),cfg!(debug_assertions))?
+ };
  let ca=read(&directory.join("ca.pem"),128*1024,false)?;
  if policy["ca_sha256"]!=hash(&ca){return Err("VPN CA bytes differ from the independently approved provider".into())}
  Ok(Config{raw,ca,policy,pin:pin.into()})
+}
+
+async fn installed_gateway_pins(base: &Path, target: &Target, control: &Path, initial: &Value) -> Result<(String, String), String> {
+ let request = Request {version: 1, operation: "gateway_target_configuration".into(), parameters: json!({})};
+ let reply = lifecycle::execute(base, target.clone(), request, control).await?;
+ crate::gateway_vpn::installed_pins(initial, &reply)
+}
+
+pub(super) struct PreparedEnrollment {
+ config: Config,
+ initial_sha256: String,
+ locator_pin: Option<String>,
+ pub review: String,
+}
+
+pub(super) async fn prepare(base: &Path, target: &Target, control: &Path, directory: &Path, credential: &Path) -> Result<PreparedEnrollment, String> {
+ let (original, doc, profile_bound) = lifecycle::approved_initial(base, target)?;
+ let initial_sha256 = hash(original.as_bytes());
+ let (provider, locator) = if profile_bound {
+  let (provider, locator) = installed_gateway_pins(base, target, control, &doc).await?;
+  (Some(provider), Some(locator))
+ } else {
+  (None, None)
+ };
+ let config = config(directory, provider.as_deref())?;
+ let selection = json!({"network_id":doc["network_id"],"chain_id":doc["chain_id"],"formation_sha256":doc["artifacts"]["formation-context.json"]});
+ let tcp = crate::gateway_vpn::selection(&config.policy, &doc, &selection)?;
+ let review = if let Some(locator_pin) = locator.as_deref() {
+  let raw = read(credential, 16384, true)?;
+  let coordinator = crate::vpn_credential::public_review(&raw, &config.pin, Some(locator_pin))?;
+  format!("Network {} (chain {})\nFormation SHA-256 {}\nGateway TCP upstream {}\nProvider origin {}\nProvider account {}\nProvider SHA-256 {}\nCredential coordinator {}:{}\nCredential locator SHA-256 {}",
+   doc["network_id"],doc["chain_id"],selection["formation_sha256"],tcp.unwrap_or(Value::Null),
+   config.policy["management_origin"],config.policy["account_id"],config.pin,
+   coordinator["host"],coordinator["port"],locator_pin)
+ } else {
+  format!("Network {} (chain {})\nProvider SHA-256 {}", doc["network_id"], doc["chain_id"], config.pin)
+ };
+ Ok(PreparedEnrollment {config, initial_sha256, locator_pin: locator, review})
 }
 // Provider intent is anchored to the immutable installation origin. A current
 // release adoption authorizes operations but must not rewrite that identity.
@@ -189,8 +235,8 @@ pub(super) async fn legacy_read(window:&tauri::WebviewWindow,_app:&tauri::AppHan
  if !cfg!(all(debug_assertions,unix)){return Err("Legacy peer prerequisites require the isolated engineering native app".into())}
  let reviewed=crate::legacy_gateway_plan::inspect(&target,"root",control).await?;
  let (folder,locator_path)=legacy_provider_inputs(window).await?;
- let approved=config(&folder)?;let locator=read(&locator_path,16384,true)?;
- let coordinator=crate::vpn_credential::public_review(&locator,&approved.pin)?;
+ let approved=config(&folder,None)?;let locator=read(&locator_path,16384,true)?;
+ let coordinator=crate::vpn_credential::public_review(&locator,&approved.pin,None)?;
  let now=||SystemTime::now().duration_since(UNIX_EPOCH).map(|v|v.as_secs()).map_err(|_|"Local clock unavailable");
  let proposed=crate::legacy_peer_preflight::scope(&reviewed,&approved.policy,&approved.pin,coordinator["locator_sha256"].as_str().ok_or("Approved locator commitment unavailable")?,now()?+120)?;
  let prompt=window.clone();let message=format!("Use ONLY the existing approved coordinator credential for one bounded read-only legacy-peer prerequisite check?\nTarget: {}\nObsolete network: posy-apqe-canary-process-49028\nPreserved lower root: /opt/synergy; obsolete upper root: /opt/Synergy\nOld raw Genesis SHA256: d28ab09b6857f670482580a786edd939b090e88aa9378cdd0ad91379a724a9d7\nPlan SHA256: {}\nProvider SHA256: {}\nAccount: {}\nCoordinator: {}:{} / {}\nCredential locator SHA256: {}\nPeer: {} / {}\nOne read-only credential use, at most120seconds; provider requests GET only.\nGET account, exact peer and peer inventory only. No setup key, enrollment, DELETE, host mutation or retirement is authorized. REST does not independently expose the WireGuard key, so this result cannot authorize removal. The expired previous network issuance scope is NOT reused.",target.label(),proposed["plan_sha256"],approved.pin,proposed["account_id"],coordinator["host"],coordinator["port"],coordinator["account"],coordinator["locator_sha256"],proposed["peer_id"],proposed["ip"]);
@@ -199,14 +245,14 @@ pub(super) async fn legacy_read(window:&tauri::WebviewWindow,_app:&tauri::AppHan
  let expires=now()?+120;
  let _serial=SERIAL.lock().await;
  let fresh=crate::legacy_gateway_plan::inspect(&target,"root",control).await?;
- let current=config(&folder)?;
+ let current=config(&folder,None)?;
  let current_locator=read(&locator_path,16384,true)?;
  if fresh["plan_sha256"]!=reviewed["plan_sha256"]||current.pin!=approved.pin||current.raw!=approved.raw||current.ca.as_slice()!=approved.ca.as_slice()||current_locator.as_slice()!=locator.as_slice()||now()? >= expires{return Err("Legacy scope changed or review expired; no credential was loaded".into())}
  let scope=crate::legacy_peer_preflight::scope(&fresh,&current.policy,&current.pin,coordinator["locator_sha256"].as_str().ok_or("Approved locator commitment unavailable")?,expires)?;
- let credential=crate::vpn_credential::load(current_locator,&current.pin,true,control).await?;
+ let credential=crate::vpn_credential::load(current_locator,&current.pin,true,None,control).await?;
  if now()? >= expires{return Err("Legacy credential review expired; no provider request was sent".into())}
  let result=legacy_account_reads(&current,&credential,&scope).await?;
- if now()? >= expires||config(&folder)?.raw!=current.raw||read(&locator_path,16384,true)?.as_slice()!=locator.as_slice(){return Err("Legacy prerequisite observation expired or approval inputs changed; no retirement was attempted".into())}
+ if now()? >= expires||config(&folder,None)?.raw!=current.raw||read(&locator_path,16384,true)?.as_slice()!=locator.as_slice(){return Err("Legacy prerequisite observation expired or approval inputs changed; no retirement was attempted".into())}
  Ok(serde_json::json!({"version":1,"ok":true,"result":result}))
 }
 
@@ -246,9 +292,9 @@ pub(super) async fn legacy_retire(window: &tauri::WebviewWindow, target: Target,
     let now = || SystemTime::now().duration_since(UNIX_EPOCH).map(|v|v.as_secs()).map_err(|_| "Local clock unavailable");
     let plan = crate::legacy_gateway_plan::inspect(&target, "root", control).await?;
     let (folder, locator_path) = legacy_provider_inputs(window).await?;
-    let approved = config(&folder)?;
+    let approved = config(&folder, None)?;
     let locator = read(&locator_path, 16384, true)?;
-    let coordinator = crate::vpn_credential::public_review(&locator, &approved.pin)?;
+    let coordinator = crate::vpn_credential::public_review(&locator, &approved.pin, None)?;
     if coordinator["host"] != "68.183.139.56" || coordinator["port"] != 22 || coordinator["account"] != "root" {
         return Err("Exact legacy coordinator SSH endpoint required".into());
     }
@@ -271,7 +317,7 @@ pub(super) async fn legacy_retire(window: &tauri::WebviewWindow, target: Target,
     let expires = now()? + 120;
     let _serial = SERIAL.lock().await;
     let fresh = crate::legacy_gateway_plan::inspect(&target, "root", control).await?;
-    let current = config(&folder)?;
+    let current = config(&folder, None)?;
     let current_locator = read(&locator_path, 16384, true)?;
     if fresh["plan_sha256"] != plan["plan_sha256"] || current.raw != approved.raw
         || current.ca.as_slice() != approved.ca.as_slice() || current_locator.as_slice() != locator.as_slice() || now()? >= expires
@@ -286,7 +332,7 @@ pub(super) async fn legacy_retire(window: &tauri::WebviewWindow, target: Target,
         crate::legacy_peer_preflight::key_result(&raw, &request, &fresh)?;
     }
     if now()? >= expires { return Err("Legacy retirement review expired before credential access".into()); }
-    let credential = crate::vpn_credential::load(current_locator, &current.pin, true, control).await?;
+    let credential = crate::vpn_credential::load(current_locator, &current.pin, true, None, control).await?;
     let retirement = legacy_provider_exchange(&current, &credential, &scope, Some((&directory, reconcile_only))).await?;
     let receipt = crate::legacy_peer_preflight::retirement_result(retirement, &scope)?;
     Ok(json!({"version":1,"ok":true,"result":receipt}))
@@ -313,7 +359,7 @@ pub(super) async fn legacy_peer_key_read(window: &tauri::WebviewWindow, target: 
         return Err("Select the approved public credential-locator.json".into());
     }
     let locator = read(&locator_path, 16384, true)?;
-    let coordinator = crate::vpn_credential::public_review(&locator, provider)?;
+    let coordinator = crate::vpn_credential::public_review(&locator, provider, None)?;
     if coordinator["host"] != "68.183.139.56" || coordinator["port"] != 22 || coordinator["account"] != "root" {
         return Err("Exact legacy coordinator SSH endpoint required".into());
     }
@@ -372,12 +418,20 @@ async fn legacy_provider_exchange(config:&Config,credential:&[u8],scope:&Value,r
  response
 }
 
-pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Path,credential_path:&Path,operation:&str)->Result<Value,String>{
+pub(super) async fn execute(base:&Path,target:Target,control:&Path,prepared:PreparedEnrollment,credential_path:&Path,operation:&str)->Result<Value,String>{
  let _serial=SERIAL.lock().await;
  if !matches!(operation,"enroll"|"reconcile"|"revoke"|"retire"|"cancel_unused"){return Err("Unsupported native VPN workflow".into())}
- let config=config(config_directory)?;
-
- let (original,doc)=lifecycle::approved_initial(base,&target)?;
+ let PreparedEnrollment {config, initial_sha256, locator_pin, ..} = prepared;
+ let (original,doc,profile_bound)=lifecycle::approved_initial(base,&target)?;
+ if hash(original.as_bytes()) != initial_sha256 || profile_bound != locator_pin.is_some() {
+  return Err("The approved VPN target changed during review; no credential was read".into());
+ }
+ if let Some(locator) = locator_pin.as_deref() {
+  let (provider, installed_locator) = installed_gateway_pins(base, &target, control, &doc).await?;
+  if provider != config.pin || locator != installed_locator {
+   return Err("The installed gateway VPN approval changed during review; no credential was read".into());
+  }
+ }
  let status=lifecycle::execute(base,target.clone(),Request{version:1,operation:"authorization_status".into(),parameters:json!({})},control).await?;
  if status["ok"]!=true{return Err("VPN target authorization is unavailable".into())}
  let mut context=binding(&target,&status["result"],&doc,&hash(original.as_bytes()))?;
@@ -389,7 +443,7 @@ pub async fn execute(base:&Path,target:Target,control:&Path,config_directory:&Pa
   let preflight=lifecycle::execute(base,target.clone(),Request{version:1,operation:"gateway_vpn_preflight".into(),parameters:json!({"required_gateway_tcp":tcp})},control).await?;
   crate::gateway_vpn::preflight(&preflight,&selected,tcp,&doc["genesis_pins"]["genesis.json"])?;
  }
- let credential=crate::vpn_credential::load(read(credential_path,16384,true)?,&config.pin,matches!(config.policy["profile"].as_str(),Some("nodenetwork-controlled-canary-v1"|crate::gateway_vpn::PROFILE)),control).await?;
+ let credential=crate::vpn_credential::load(read(credential_path,16384,true)?,&config.pin,matches!(config.policy["profile"].as_str(),Some("nodenetwork-controlled-canary-v1"|crate::gateway_vpn::PROFILE)),locator_pin.as_deref(),control).await?;
  let app=base.join("nodenetwork-vpn-v1");if !app.exists(){#[cfg(unix)]{use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().mode(0o700).create(&app).map_err(|_|"Cannot protect native VPN state")?;}}
  let mut directory=state_directory(base,&target)?;
  let mut result=lifecycle::execute(base,target.clone(),Request{version:1,operation:"vpn_status".into(),parameters:json!({})},control).await?;

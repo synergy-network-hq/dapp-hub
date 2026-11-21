@@ -150,8 +150,8 @@ pub(super) fn bare_initial(base:&Path,target:&Target)->Result<Option<String>,Str
  if !path.exists()&&!path.is_symlink(){return Ok(None)}
  initial(base,target).map(|(record,_)|Some(record.document))
 }
-pub(super) fn approved_initial(base:&Path,target:&Target)->Result<(String,Value),String>{
- initial(base,target).map(|(record,document)|(record.document,document))
+pub(super) fn approved_initial(base: &Path, target: &Target) -> Result<(String, Value, bool), String> {
+ initial(base, target).map(|(record, document)| (record.document, document, record.profile_approval.is_some()))
 }
 fn host_pin(control:&Path,doc:&Value)->Result<Option<PathBuf>,String>{
  if doc["target"]["kind"]=="local"{return Ok(None)}
