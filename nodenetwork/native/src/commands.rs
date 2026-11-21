@@ -976,6 +976,7 @@ pub async fn portal_nodenetwork_stage_update(window:tauri::WebviewWindow,app:tau
 #[tauri::command]
 pub async fn portal_nodenetwork_vpn(window:tauri::WebviewWindow,app:tauri::AppHandle,target:crate::node_controller::Target,operation:String)->Result<Option<Value>,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};main_only(&window)?;target.validate()?;
+ if operation=="gateway_access" { return crate::gateway_access::configure(window,app,target).await; }
  if !cfg!(debug_assertions)||!matches!(operation.as_str(),"enroll"|"reconcile"|"revoke"|"retire"|"cancel_unused"){return Err("This native build has no approved VPN workflow".into())}
  let select=window.clone();
  let picked=tauri::async_runtime::spawn_blocking(move||{

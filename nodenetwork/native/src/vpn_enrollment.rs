@@ -6,10 +6,10 @@ use sha2::{Digest,Sha256};
 use std::{path::Path,process::Stdio};
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 use zeroize::Zeroizing;
-const PROVIDER:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/vpn_authorization.py"));
-static SERIAL:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
-fn hash(b:&[u8])->String{format!("{:x}",Sha256::digest(b))}
-fn read(path:&Path,limit:usize,private:bool)->Result<Zeroizing<Vec<u8>>,String>{
+pub(super) const PROVIDER:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/vpn_authorization.py"));
+pub(super) static SERIAL:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
+pub(super) fn hash(b:&[u8])->String{format!("{:x}",Sha256::digest(b))}
+pub(super) fn read(path:&Path,limit:usize,private:bool)->Result<Zeroizing<Vec<u8>>,String>{
  use std::io::Read;
  let mut o=std::fs::OpenOptions::new();o.read(true);
  #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;o.custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK);}

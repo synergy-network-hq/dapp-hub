@@ -133,12 +133,21 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
   if(!permitted||locked.current)return;
   locked.current=true;setPending(`vpn_${operation}`);setError('');
   try{const value=await nodeNetworkVpn(target,operation);if(!isCurrent(scope)||value===null)return;
+   if(operation==='gateway_access'){
+    const fields=['profile_sha256','provider_sha256','credential_locator_sha256'];
+    const identifiers=['gateway_group_id','upstream_group_id','policy_id'];
+    if(value.schema!=='nodenetwork-gateway-vpn-export-v1'||!fields.every(key=>/^[a-f0-9]{64}$/.test(value[key]))
+       ||!identifiers.every(key=>/^[A-Za-z0-9_-]{1,100}$/.test(value[key])))throw Error('Invalid verified gateway policy export.');
+    const response=Object.fromEntries([...fields,...identifiers].map(key=>[key,value[key]]));
+    setLatest({operation:'vpn_gateway_access',parameters:{},response,receivedAt:Date.now()});
+    return;
+   }
    if(operation==='retire'){if(value.retired!==true||value.absence_verified!==true)throw Error('Provider retirement was not verified.');setLatest({operation:'vpn_retire',parameters:{},response:value,receivedAt:Date.now()});}
    else if(operation==='revoke'){if(value.setup_key_absent!==true)throw Error('Provider did not verify setup-key absence.');setLatest({operation:'vpn_revoke',parameters:{},response:{setup_key_absent:true},receivedAt:Date.now()});}
    else if(operation==='cancel_unused'){const response=unusedVpnCancellationView(value);setResults(old=>{const next={...old};delete next.vpn_status;return next;});setLatest({operation:'vpn_cancel_unused',parameters:{},response,receivedAt:Date.now()});}
    else{const response=vpnView(value),evidence=vpnStatusObservation(value);setResults(old=>({...old,vpn_status:{operation:'vpn_status',response,evidence,receivedAt:Date.now()}}));setLatest({operation:`vpn_${operation}`,parameters:{},response,receivedAt:Date.now()});}
    setState(null);
-  }catch(failure){if(isCurrent(scope))setError(`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
+  }catch(failure){if(isCurrent(scope))setError(operation==='gateway_access'?String(failure?.message||failure):`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
   finally{if(isCurrent(scope)){locked.current=false;setPending(null);}}
  }
  async function reconcileContinuation(){
@@ -295,6 +304,14 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
    <button type="button" disabled={!permitted||!!pending||!state} onClick={reconcileContinuation}>Verify pending continuation not applied</button>
    {['authorization_status','health','vpn_stop','vpn_resume','vpn_stop_status','vpn_resume_status','vpn_diagnostics','diagnostics','inventory','start','stop','restart','recovery_preflight'].map(action)}
    <p>Use health to verify the result after a start or restart. Recovery remains a separately qualified operation. This workspace does not offer arbitrary shell or checkpoint access.</p>
+  </Card>}
+  {gatewaySetup&&networkProfile?.role==='rpc_gateway'&&!state?.installed_role&&<Card title="Gateway VPN access">
+   <p>Review the selected gateway’s dedicated VPN group and its one-way connection to the pinned upstream before staging installation.</p>
+   <button type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn('gateway_access')}>Configure gateway-only VPN policy</button>
+   {latest?.operation==='vpn_gateway_access'&&<>
+    <p role="status">Gateway policy verified. Import the exported network-provisioning.json in Network Provisioning and select it for this host.</p>
+    <Detail data={latest.response}/>
+   </>}
   </Card>}
   {gatewaySetup&&<GatewayTarget key={scopeKey} state={state} form={form} networkProfile={networkProfile} disabled={!permitted||!!pending} pending={pending} results={results} perform={perform}/>}
   {gatewaySetup&&<GatewayAdmission key={scopeKey} state={state} disabled={!permitted||!!pending} pending={pending} results={results} perform={perform}/>}

@@ -177,7 +177,7 @@ export async function stageNodeNetworkUpdate(target){
 
 export async function nodeNetworkVpn(target,operation){
  if(!isTauri())throw Error('VPN provider authorization requires the native Portal app.');
- if(!['enroll','reconcile','revoke','retire','cancel_unused'].includes(operation))throw Error('Unsupported VPN action.');
+ if(!['enroll','reconcile','revoke','retire','cancel_unused','gateway_access'].includes(operation))throw Error('Unsupported VPN action.');
  const reply=await withNodeChange(()=>invoke('portal_nodenetwork_vpn',{target,operation}));
  if(reply===null)return null;
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid native VPN response.');

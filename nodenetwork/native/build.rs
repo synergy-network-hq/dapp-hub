@@ -28,6 +28,23 @@ fn main() {
         assert!(pin.len()==64&&pin.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),"Invalid exact remote credential locator pin");
         println!("cargo:rustc-env=SYNERGY_NODENETWORK_QUALIFICATION_VPN_CREDENTIAL_SHA256={pin}");
     }
+    let coordinator_vars = ["SYNERGY_NODENETWORK_GATEWAY_VPN_COORDINATOR_SHA256",
+                            "SYNERGY_NODENETWORK_GATEWAY_VPN_COORDINATOR_LOCATOR_SHA256"];
+    let configured = coordinator_vars.map(|name| {
+        println!("cargo:rerun-if-env-changed={name}");
+        std::env::var(name).ok()
+    });
+    assert_eq!(configured[0].is_some(), configured[1].is_some(),
+               "Gateway policy coordinator and locator must be pinned together");
+    for (name, pin) in coordinator_vars.into_iter().zip(configured) {
+        if let Some(pin) = pin {
+            assert_eq!(std::env::var("PROFILE").as_deref(), Ok("debug"),
+                       "Gateway coordinator administration is forbidden in production");
+            assert!(pin.len() == 64 && pin.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                    "Invalid gateway coordinator administration SHA-256");
+            println!("cargo:rustc-env={name}={pin}");
+        }
+    }
     println!("cargo:rerun-if-env-changed=SYNERGY_NODENETWORK_QUALIFICATION_BARE_ROLLBACK_MANIFEST_SHA256");
     if let Ok(pin)=std::env::var("SYNERGY_NODENETWORK_QUALIFICATION_BARE_ROLLBACK_MANIFEST_SHA256"){
         assert_eq!(std::env::var("PROFILE").as_deref(),Ok("debug"),"Bare rollback qualification is forbidden in production");
