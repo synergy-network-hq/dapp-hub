@@ -1,14 +1,15 @@
 import './NodeNetworkPanel.css';
-import nodeNetworkLogo from '../assets/nodenetwork.png';
+import './workspace.css';
+import nodeNetworkLogo from '../assets/workspace-logo.png';
 
-// Presentation adapted from the original ControlPanelV18 AppShell/Card/MetricCard.
+// Presentation adapted from the owner-supplied NodeNetwork React reference.
 // It owns no node operations, routing, credentials, or telemetry sources.
 export const NODE_NETWORK_SECTIONS = [
-  {id:'overview',label:'Overview',icon:'home',title:'Operations Overview'},
-  {id:'operations',label:'Operations',icon:'terminal',title:'Validator Setup & Lifecycle'},
+  {id:'overview',label:'Overview',icon:'home',title:'A clear view of your node.'},
+  {id:'operations',label:'My node',icon:'terminal',title:'Validator Setup & Lifecycle'},
   {id:'performance',label:'Performance',icon:'chart',title:'Performance'},
   {id:'monitoring',label:'Monitoring',icon:'activity',title:'Monitoring'},
-  {id:'logs',label:'Logs',icon:'file',title:'Logs & Diagnostics'},
+  {id:'logs',label:'Activity & logs',icon:'file',title:'Logs & Diagnostics'},
   {id:'settings',label:'Settings',icon:'settings',title:'Node Settings'},
 ];
 
@@ -58,14 +59,15 @@ export function NodeNetworkPanelFrame({section='overview',onSectionChange,title,
  return <div className="nodenetwork-panel" aria-label="NodeNetwork operator workspace">
   <aside className="v18-sidebar">
    <div className="v18-sidebar-brand"><img className="v18-brand-banner" src={logoSrc} alt=""/><strong className="nn-panel-brand-name">NodeNetwork</strong>{nodeLabel&&<small className="nn-panel-node-label">{nodeLabel}</small>}</div>
-   <nav className="v18-nav" aria-label="NodeNetwork sections">
+   <button type="button" className="nn-selected-target" onClick={()=>onSectionChange?.('settings')}><PanelIcon name="terminal" size={22}/><span><strong>{nodeLabel||'No target selected'}</strong><small>Target settings</small></span><span aria-hidden="true">›</span></button><span className="nn-nav-caption">Workspace</span><nav className="v18-nav" aria-label="NodeNetwork sections">
     {NODE_NETWORK_SECTIONS.map(item=><button key={item.id} type="button" className={`v18-nav-link${active.id===item.id?' is-active':''}`} aria-current={active.id===item.id?'page':undefined} onClick={()=>onSectionChange?.(item.id)}><PanelIcon name={item.icon}/><span>{item.label}</span></button>)}
-   </nav>
+   </nav><button type="button" className="nn-setup-button" onClick={()=>onSectionChange?.('operations')}>＋ Set up a node</button><div className="nn-sidebar-note"><span className="nn-workspace-avatar">N</span><div><strong>My workspace</strong><small>Native operator controls</small></div></div>
   </aside>
   <div className="v18-main">
-   <div className="v18-top-controls"><button type="button" className={`v18-health-select is-${tone}`} disabled={!onRefresh||refreshing} onClick={onRefresh}><span className="v18-dot"/>{statusLabel}</button>{headerActions}</div>
+   <div className="v18-top-controls"><span className="nn-breadcrumb">{active.label}</span><span className="nn-header-target">{nodeLabel||'No target selected'}</span><div className="nn-header-actions">{headerActions}<button type="button" className={`v18-health-select is-${tone}`} disabled={!onRefresh||refreshing} onClick={onRefresh}><span className="v18-dot"/>{statusLabel}</button></div></div>
    <div className="v18-content">
-    <header className="v18-page-header"><div><h1>{title||active.title}</h1>{subtitle&&<p>{subtitle}</p>}</div></header>
+    <header className="v18-page-header"><div><span className="nn-eyebrow">Your workspace</span><h1>{title||active.title}</h1>{subtitle&&<p>{subtitle}</p>}</div></header>
+    {section==='overview'&&<section className="nn-workspace-hero" aria-label="Selected workspace"><div><span className="nn-hero-badge">Operator workspace</span><h2>Your network. Your node.</h2><p>Review your selected network, inspect a target and manage its lifecycle through native controls.</p><div className="nn-hero-actions"><button type="button" onClick={()=>onSectionChange?.('operations')}>View my node</button><button type="button" onClick={()=>onSectionChange?.('monitoring')}>Open monitoring</button></div></div><img src={logoSrc} alt=""/></section>}
     <NodeNetworkPanelStatusStrip items={statusItems}/>
     {!!metrics.length&&<div className="v18-overview-metric-grid">{metrics.map(metric=><NodeNetworkPanelMetric key={metric.label} {...metric}/>)}</div>}
     <div className="nn-panel-body">{children}</div>
