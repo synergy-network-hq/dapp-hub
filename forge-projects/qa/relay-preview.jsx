@@ -1,0 +1,1 @@
+import {createRoot} from 'react-dom/client';import {RelayReader} from '../../relay/src/index.jsx';import '@synergy-network/portal-native/styles.css';createRoot(document.getElementById('root')).render(<><p>Isolated public reader. No Portal grant, wallet, signing or swap authority. Uses the actual fixed Relay API only.</p><RelayReader/></>);

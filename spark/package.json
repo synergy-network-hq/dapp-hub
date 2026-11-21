@@ -1,0 +1,25 @@
+{
+  "name": "@synergy-network/dapp-spark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.jsx"
+  },
+  "scripts": {
+    "build": "vite build --config ../build.vite.mjs"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18",
+    "@synergy-network/portal-native": "0.1.x"
+  },
+  "peerDependenciesMeta": {
+    "@synergy-network/portal-native": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@synergy-network/dapp-forge-projects": "link:../forge-projects"
+  }
+}

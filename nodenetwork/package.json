@@ -25,5 +25,8 @@
     "@tauri-apps/api": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@synergy-network/dapp-data-view": "link:../shared/data-view"
   }
 }

@@ -1,0 +1,22 @@
+[package]
+name = "forge-synq-compiler-wasm"
+version = "3.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+compiler = { path = "../../../../synq-language/compiler" }
+hex = "0.4"
+pest = "2.7"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+serde_json = "1.0"
+wasm-bindgen = "0.2"
+
+[profile.release]
+lto = true
+opt-level = "s"
+strip = true

@@ -1,0 +1,99 @@
+/* Horizon's workbench glass panels and violet accents, scoped to its Portal surface. */
+.horizon-inspector {
+  --horizon-text: #f5f5f7;
+  --horizon-muted: #b0b0c3;
+  --horizon-purple: #9f58e6;
+  --horizon-purple-hot: #c44dff;
+  display: grid;
+  gap: 22px;
+  max-width: 1200px;
+  padding: clamp(16px, 3vw, 32px);
+  margin: 0 auto;
+  color: var(--horizon-text);
+  color-scheme: dark;
+  font-family: Inter, Sora, ui-sans-serif, system-ui, sans-serif;
+}
+
+.horizon-inspector .page-header h1 {
+  margin: 0;
+  color: var(--horizon-text);
+  font-family: Sora, Inter, sans-serif;
+  font-size: 2.35rem;
+  line-height: 1.08;
+  font-weight: 800;
+}
+
+.horizon-inspector .page-header p { margin-top: 14px; }
+.horizon-inspector p { margin: 0; color: var(--horizon-muted); line-height: 1.65; }
+.horizon-inspector h2, .horizon-inspector h3 { margin: 0; color: var(--horizon-text); }
+.horizon-inspector .workbench-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  align-items: start;
+}
+
+.horizon-inspector .glass {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+  padding: clamp(16px, 3vw, 24px);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .1), rgba(255, 255, 255, .035)), rgba(255, 255, 255, .06);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 16px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, .48), 0 0 16px rgba(159, 88, 230, .28);
+}
+
+.horizon-inspector .floating-field {
+  display: grid;
+  gap: 8px;
+  color: var(--horizon-muted);
+  font-weight: 800;
+  font-size: .76rem;
+  text-transform: uppercase;
+}
+
+.horizon-inspector .floating-field input, .horizon-inspector .horizon-clear {
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  color: var(--horizon-text);
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 14px;
+}
+
+.horizon-inspector .horizon-clear { justify-self: start; }
+.horizon-inspector :is(input, button):focus-visible { outline: 2px solid var(--horizon-purple-hot); outline-offset: 2px; }
+.horizon-inspector .status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(0, 206, 209, .4);
+  border-radius: 999px;
+  background: rgba(0, 206, 209, .1);
+  color: #9fffff;
+  box-shadow: 0 0 16px rgba(159, 88, 230, .2);
+  font-size: .7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.horizon-inspector .integrity-details { margin: 0; }
+.horizon-inspector .integrity-details div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .16);
+}
+.horizon-inspector .integrity-details dt { color: var(--horizon-muted); }
+.horizon-inspector .integrity-details dd { margin: 0; overflow-wrap: anywhere; }
+.horizon-inspector .inspection-error { color: #ffb7c7; }
+
+@media (max-width: 760px) {
+  .horizon-inspector .workbench-grid { grid-template-columns: 1fr; }
+}

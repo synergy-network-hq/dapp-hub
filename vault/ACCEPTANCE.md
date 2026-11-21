@@ -1,0 +1,5 @@
+# Vault migration review
+
+Saved source remains preserved at Portal backup commit0cc2ccd6b973157ec02420520ef8128f1914fe25: packages/portal-integrations/src/vault.jsx and apps/desktop/src-tauri/src/vault.rs. Existing design supports encrypted records, authenticated revision history, restoration and auto-lock. Native source uses Argon2id and authenticated encryption, bound to the separately authorized Vault window.
+
+The split SDK has no equivalent Vault custody/window contract. Do not expose decrypted records through the main-window public service request or replace native encryption with browser storage. Next establish host-owned key custody, native application/session authorization, recovery suspension and lock/expiry cleanup, then migrate the existing UI and revalidate isolated encrypted storage and native runtime. Historical pre-split smoke is not acceptance of this layout. No new credentials, storage migration, decrypted access or host selection was performed. Catalog remains planned and release null.

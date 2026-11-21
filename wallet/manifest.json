@@ -35,7 +35,7 @@
     "runtime": "portal-bundled",
     "capabilities": [
       "readWallet",
-      "requestTransactions"
+      "externalLinks"
     ],
     "widgets": [
       {

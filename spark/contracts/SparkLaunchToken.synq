@@ -1,0 +1,88 @@
+// Portal adaptation of the upstream PQCToken example, not an audited release.
+// Fixed initial supply; no mint, batch transfer or caller-supplied signing message.
+// Governance requires the reviewed AIVM action-bound authorization host function.
+pragma synq ^1.0.0;
+contract SparkLaunchToken {
+    String public name;
+    String public symbol;
+    UInt8 public decimals;
+    UInt256 public totalSupply;
+    Address public owner;
+    Bool public paused;
+    MLDSAPublicKey public governanceKey;
+    mapping(Address => UInt256) public balanceOf;
+    mapping(Address => mapping(Address => UInt256)) public allowance;
+    event Transfer(Address indexed from, Address indexed to, UInt256 value);
+    event Approval(Address indexed owner, Address indexed spender, UInt256 value);
+    event PauseChanged(Bool paused);
+    constructor(String _name, String _symbol, UInt8 _decimals, UInt256 _initialSupply, MLDSAPublicKey _governanceKey) {
+        require(msg.value == 0, "Token does not accept funds");
+        require(_name.length >= 3, "Token name too short");
+        require(_name.length <= 80, "Token name too long");
+        require(_symbol.length >= 2, "Token symbol too short");
+        require(_symbol.length <= 8, "Token symbol too long");
+        require(_governanceKey.length == 2592, "Expected ML-DSA-87 public key bytes");
+        require(_initialSupply > 0, "Supply must be positive");
+        require(_decimals <= 18, "Decimals exceed supported range");
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+        owner = msg.sender;
+        governanceKey = _governanceKey;
+        totalSupply = _initialSupply;
+        balanceOf[msg.sender] = _initialSupply;
+        paused = false;
+        emit Transfer(Address(0), msg.sender, _initialSupply);
+    }
+    function balanceOf(Address account) public -> UInt256 { return balanceOf[account]; }
+    function totalSupply() public -> UInt256 { return totalSupply; }
+    function isPaused() public -> Bool { return paused; }
+    function allowance(Address holder, Address spender) public -> UInt256 { return allowance[holder][spender]; }
+    function transfer(Address to, UInt256 amount) public -> Bool {
+        require(msg.value == 0, "Token does not accept funds");
+        require(!paused, "Token movements are paused");
+        require(to != Address(0), "Transfer to zero address");
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        balanceOf[msg.sender] = balanceOf[msg.sender] - amount;
+        balanceOf[to] = balanceOf[to] + amount;
+        emit Transfer(msg.sender, to, amount);
+        return true;
+    }
+    function approve(Address spender, UInt256 amount) public -> Bool {
+        require(msg.value == 0, "Token does not accept funds");
+        require(!paused || amount == 0, "Only allowance revocation while paused");
+        require(spender != Address(0), "Approve to zero address");
+        require(amount == 0 || allowance[msg.sender][spender] == 0, "Revoke existing allowance before replacing");
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+    function transferFrom(Address from, Address to, UInt256 amount) public -> Bool {
+        require(msg.value == 0, "Token does not accept funds");
+        require(!paused, "Token movements are paused");
+        require(to != Address(0), "Transfer to zero address");
+        require(balanceOf[from] >= amount, "Insufficient balance");
+        require(allowance[from][msg.sender] >= amount, "Insufficient allowance");
+        balanceOf[from] = balanceOf[from] - amount;
+        balanceOf[to] = balanceOf[to] + amount;
+        allowance[from][msg.sender] = allowance[from][msg.sender] - amount;
+        emit Transfer(from, to, amount);
+        return true;
+    }
+    function burn(UInt256 amount) public {
+        require(msg.value == 0, "Token does not accept funds");
+        require(!paused, "Token movements are paused");
+        require(amount > 0, "Burn must be positive");
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        balanceOf[msg.sender] = balanceOf[msg.sender] - amount;
+        totalSupply = totalSupply - amount;
+        emit Transfer(msg.sender, Address(0), amount);
+    }
+    function setPaused(Bool newPaused, UInt256 governanceNonce, UInt256 validUntilBlock, MLDSASignature signature) public {
+        require(msg.value == 0, "Token does not accept funds");
+        require(validUntilBlock > 0, "Governance authorization must expire");
+        require(verifyGovernanceAuthorization(governanceKey, governanceNonce, validUntilBlock, signature), "Invalid governance authorization");
+        paused = newPaused;
+        emit PauseChanged(newPaused);
+    }
+}

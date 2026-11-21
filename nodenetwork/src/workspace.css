@@ -1,0 +1,101 @@
+/* Reference-native integration. Reference tokens, proportions and components
+   above own the visual system; these rules adapt real host controls and scope. */
+.nn-workspace{height:100%;min-height:0;position:relative;isolation:isolate;overflow:hidden;font-size:14px;line-height:1.5;background:var(--bg);color:var(--text);font-family:Inter,'Segoe UI',Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.nn-workspace,.nn-workspace *{box-sizing:border-box}
+.nn-workspace .app-shell{height:100%;min-height:0;position:relative}
+.nn-workspace .sidebar{position:absolute;height:100%;z-index:30}
+.nn-workspace .main-shell{min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.nn-workspace .topbar{flex-shrink:0;position:relative;gap:12px}
+.nn-workspace .main-content{flex:1;min-height:0;overflow:auto;scrollbar-gutter:auto}
+.nn-workspace .route-content{max-width:1600px;margin-inline:auto;min-width:0}
+.nn-workspace .workspace-page-body{min-width:0}
+.nn-workspace .workspace-pick strong{overflow-wrap:anywhere;white-space:normal}
+.nn-workspace .topbar .native-actions{display:flex;align-items:center;gap:10px;margin:0}
+.nn-workspace .topbar .native-actions label{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
+.nn-workspace .topbar .native-actions label select{max-width:210px;font-size:12px;padding:8px 30px 8px 10px}
+.nn-workspace .topbar .native-actions>button{display:none} /* same refresh action is the labelled icon */
+.nn-workspace .workspace-summary-value{font-size:28px;font-weight:650;letter-spacing:-.6px;margin:8px 0 12px;overflow-wrap:anywhere}
+.nn-workspace .workspace-summary-value .unit{font-size:12px;font-weight:400;color:var(--muted);letter-spacing:0}
+.nn-workspace .priority-cards .card-body{display:flex;flex-direction:column;gap:0;min-height:250px}
+.nn-workspace .priority-cards .btn{align-self:flex-start;margin-top:20px}
+.nn-workspace .workspace-chart-empty{min-height:205px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:12px;border-top:1px dashed var(--border);padding:20px;color:var(--muted)}
+.nn-workspace .workspace-chart-empty p{font-size:12px;max-width:420px}
+.nn-workspace .workspace-text-link{padding:8px 0;background:none;border:0;color:var(--lime);font-size:12px}
+.nn-workspace .workspace-disclosure{border:1px solid var(--border);border-radius:12px;background:var(--card);margin:0;min-width:0}
+.nn-workspace .workspace-disclosure>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 24px}
+.nn-workspace .workspace-disclosure>summary::-webkit-details-marker{display:none}
+.nn-workspace .workspace-disclosure>summary strong{font-size:14px;font-weight:600}
+.nn-workspace .workspace-disclosure>summary small{display:block;font-size:12px;color:var(--muted);margin-top:4px}
+.nn-workspace .workspace-disclosure[open]>summary{border-bottom:1px solid var(--border)}
+.nn-workspace .workspace-disclosure[open]>summary>svg{transform:rotate(90deg)}
+.nn-workspace .workspace-disclosure-body{padding:24px;display:grid;gap:20px;min-width:0}
+.nn-workspace .workspace-flow{display:grid;gap:24px}
+.nn-workspace .workspace-task-intro{display:flex;align-items:center;gap:16px;padding:20px 24px;border:1px solid var(--border);border-radius:12px;background:var(--card)}
+.nn-workspace .workspace-task-intro p{font-size:12px;color:var(--muted);margin-top:4px}
+.nn-workspace .workspace-step-list{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--border);border-radius:12px;background:var(--card);overflow:hidden}
+.nn-workspace .workspace-step{padding:20px;display:flex;align-items:flex-start;gap:12px;border-right:1px solid var(--border)}
+.nn-workspace .workspace-step:last-child{border-right:0}
+.nn-workspace .workspace-step>span{width:26px;height:26px;flex-shrink:0;border:1px solid var(--border);border-radius:50%;display:grid;place-items:center;font-size:12px;color:var(--lime)}
+.nn-workspace .workspace-step strong{font-size:13px}.nn-workspace .workspace-step p{font-size:12px;color:var(--muted);margin-top:4px}
+/* SDK cards remain real components. Match their anatomy to reference cards. */
+.nn-workspace .native-card{min-width:0;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:inset 0 0 0 3px rgba(255,255,255,.01);padding:24px;margin:0}
+.nn-workspace .native-card-title{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
+.nn-workspace .native-card-title h2,.nn-workspace .native-card>h2{font-size:16px;font-weight:600;letter-spacing:-.25px;line-height:1.4}
+.nn-workspace .native-card p{color:var(--muted);font-size:13px;line-height:1.7;margin:0 0 14px}
+.nn-workspace .native-card .native-card{background:transparent;box-shadow:none;border-radius:10px}
+.nn-workspace .native-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;min-width:0}
+.nn-workspace .native-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:12px 0}
+.nn-workspace .native-tabs{display:flex;flex-wrap:wrap;gap:5px;padding:5px;border:1px solid var(--border);border-radius:10px;background:var(--card);margin-bottom:24px}
+.nn-workspace .native-tabs button{background:transparent;border:1px solid transparent;color:var(--muted);padding:10px 14px}
+.nn-workspace .native-tabs :is([aria-pressed=true],[aria-selected=true]){background:rgba(0,255,102,.08);border-color:rgba(0,255,102,.25);color:var(--lime)}
+.nn-workspace button{font:inherit;cursor:pointer}
+.nn-workspace .workspace-page-body button:not(.btn):not(.workspace-text-link):not(.nav-item):not(.icon-btn):not(.wf-step):not(.wf-role){display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 15px;border:1px solid var(--border);border-radius:8px;background:var(--raised);color:var(--text);font-size:12px;line-height:1.4;font-weight:600;max-width:100%;white-space:normal}
+.nn-workspace button:disabled{cursor:not-allowed;opacity:.42}
+.nn-workspace :is(input,select,textarea){font:inherit;min-width:0;max-width:100%;background:var(--raised);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:11px 12px;min-height:40px;box-shadow:none}
+.nn-workspace :is(input,select,textarea):focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+.nn-workspace input[type=checkbox]{min-height:0;accent-color:var(--lime)}
+.nn-workspace label{font-size:12px;color:var(--muted);display:grid;gap:8px;margin-bottom:10px}
+.nn-workspace form{display:grid;gap:14px}
+.nn-workspace .native-details{display:grid;gap:12px;margin:12px 0 20px;min-width:0}
+.nn-workspace .native-details>div{min-width:0;padding-block:4px}
+.nn-workspace .native-details dt{font-size:11px;color:var(--muted)}
+.nn-workspace .native-details dd{font-size:13px;color:var(--text);margin:4px 0 0;overflow-wrap:anywhere}
+.nn-workspace pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:340px;overflow:auto;background:var(--raised);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:11px}
+.nn-workspace code{overflow-wrap:anywhere;font-size:12px}
+.nn-workspace .native-error{color:#ff9b9b;font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.nn-workspace .native-source{font-size:11px;color:var(--muted);line-height:1.7}
+.nn-workspace :is(ul,ol){font-size:12px;line-height:1.8;color:var(--muted);padding-left:20px}
+.nn-workspace table{border-collapse:collapse;width:100%;font-size:12px}.nn-workspace th,.nn-workspace td{text-align:left;padding:12px;border-bottom:1px solid var(--border);overflow-wrap:anywhere}
+.nn-workspace .native-table-wrap{max-width:100%;overflow:auto}
+.nn-workspace .node-role-catalog{list-style:none;padding:0;display:grid;gap:16px}
+.nn-workspace .node-role-catalog li{display:grid;gap:5px;border-bottom:1px solid var(--border);padding-bottom:14px}
+.nn-workspace .node-role-catalog strong{color:var(--text)}
+.nn-workspace .workspace-page-body>.native-card,.nn-workspace .workspace-page-body>.native-grid{margin-bottom:24px}
+.nn-workspace .sidebar-overlay{position:absolute;inset:0;z-index:29;border:0;background:rgba(0,0,0,.6)}
+@media(max-width:1100px){.nn-workspace .topbar{padding-inline:20px}.nn-workspace .topbar .native-actions label{font-size:0}.nn-workspace .native-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:680px){.nn-workspace .main-content{padding:24px 16px}.nn-workspace .sidebar{height:100%;position:absolute}.nn-workspace .main-shell{margin-left:0}.nn-workspace .topbar{position:relative;min-height:68px}.nn-workspace .topbar .native-actions select{max-width:140px;font-size:11px}.nn-workspace .workspace-disclosure-body{padding:16px}.nn-workspace .native-card{padding:20px}.nn-workspace .workspace-step-list{grid-template-columns:1fr}.nn-workspace .workspace-step{border-right:0;border-bottom:1px solid var(--border)}.nn-workspace .workspace-step:last-child{border-bottom:0}.nn-workspace .workspace-disclosure>summary{padding:18px}.nn-workspace .priority-cards .card-body{min-height:0}}
+@media(prefers-reduced-motion:reduce){.nn-workspace *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+@media(max-width:680px){.nn-workspace .topbar{height:64px;min-height:64px;padding:12px 16px;flex-wrap:nowrap}.nn-workspace .topbar .native-actions{margin:0}.nn-workspace .topbar .native-actions label{margin:0}.nn-workspace .topbar .native-actions select{min-height:36px;height:36px;padding-block:6px}.nn-workspace .topbar-right{min-width:0;gap:6px}}
+.nn-workspace [hidden]{display:none!important}
+.nn-workspace .wf-main-body>.workspace-disclosure,.nn-workspace .wf-main-body>div>.workspace-disclosure{border:0;background:transparent;margin:0}
+.nn-workspace .wf-main-body>div>.workspace-disclosure>summary{display:none}
+.nn-workspace .wf-main-body>div>.workspace-disclosure>.workspace-disclosure-body{display:block;padding:0}
+.nn-workspace .wf-main-body{min-width:0}
+.nn-workspace .wf-footer{gap:16px}
+.nn-workspace .workspace-monitoring{display:grid;gap:24px;margin-bottom:24px}
+.nn-workspace .workspace-monitoring .notice p{margin:5px 0 0;color:var(--snrg-text-secondary)}
+.nn-workspace .workspace-monitor-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:24px}
+.nn-workspace .workspace-next-action{display:flex;gap:14px;margin-bottom:20px}
+.nn-workspace .workspace-next-action p{font-size:14px;color:var(--snrg-text-secondary);line-height:1.6}
+@media(max-width:900px){.nn-workspace .workspace-monitor-grid{grid-template-columns:1fr}}
+@media(max-width:680px){.nn-workspace .wf-footer{flex-wrap:wrap}.nn-workspace .wf-footer .small{order:3;width:100%}}
+
+.nn-workspace .wf-step{display:flex;justify-content:flex-start;text-align:left}
+
+.nn-workspace .workspace-machine-choices{padding:0;border:0;margin:0 0 24px;min-width:0}
+.nn-workspace .workspace-machine-choices legend{font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin-bottom:16px}
+.nn-workspace .workspace-machine-choices .wf-role:last-child{grid-column:1/-1}
+.nn-workspace .workspace-machine-choices .wf-role{display:block;white-space:normal}
+.nn-workspace .workspace-machine-choices .wf-role p{font-size:14px}
+.nn-workspace .workspace-machine-choices .wf-role-note{display:block;font-size:12px}

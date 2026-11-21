@@ -1,0 +1,14 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {readFile} from 'node:fs/promises';import {vpnResumeView,vpnResumeStatusView} from '../src/operator-workflow.js';
+test('VPN-only resume accepts no enrollment change, validator start or ambiguous lost reply',()=>{
+ const ack={schema:'nodenetwork-vpn-resume-v1',resumed:true,validator_started:false,enrollment_preserved:true};assert.deepEqual(vpnResumeView(ack),ack);
+ for(const field of ['resumed','validator_started','enrollment_preserved'])assert.throws(()=>vpnResumeView({...ack,[field]:!ack[field]}));assert.throws(()=>vpnResumeView({...ack,setup_key:'forbidden'}));
+ const status={schema:'nodenetwork-vpn-resume-status-v1',resumed:false,request_sha256:null,validator_started:false,enrollment_preserved:true};assert.deepEqual(vpnResumeStatusView(status),status);assert.throws(()=>vpnResumeStatusView({...status,resumed:true}));assert.deepEqual(vpnResumeStatusView({...status,resumed:true,request_sha256:'a'.repeat(64)}).resumed,true);
+});
+test('existing native generic route preserves read vs mutation and never automatically retries resume',async()=>{
+ let result={version:1,ok:true,result:{schema:'nodenetwork-vpn-resume-v1',resumed:true,validator_started:false,enrollment_preserved:true}};const calls=[];globalThis.__vpnResume={invoke:async(...args)=>{calls.push(args);if(result instanceof Error)throw result;return result;}};
+ try{let source=await readFile(new URL('../src/native-services.js',import.meta.url),'utf8');source=source.replace('import {isTauri,invoke} from "@tauri-apps/api/core";','const isTauri=()=>true;const invoke=(...args)=>globalThis.__vpnResume.invoke(...args);');source=source.replace(/from (['"])(\.\/[^'"]+)\1/g,(_,q,p)=>`from ${q}${new URL(`../src/${p.slice(2)}`,import.meta.url).href}${q}`);const {nodeNetworkController}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);const target={kind:'remote',host:'approved.example',root:'/opt/synergy'};
+ assert.equal((await nodeNetworkController(target,'vpn_resume')).validator_started,false);assert.deepEqual(calls[0],['portal_nodenetwork_controller',{target,request:{version:1,operation:'vpn_resume',parameters:{}}}]);result=Error('uncertain');const before=calls.length;await assert.rejects(nodeNetworkController(target,'vpn_resume'));assert.equal(calls.length,before+1);
+ result={version:1,ok:true,result:{schema:'nodenetwork-vpn-resume-status-v1',resumed:false,request_sha256:null,validator_started:false,enrollment_preserved:true}};assert.equal((await nodeNetworkController(target,'vpn_resume_status')).resumed,false);
+ const ui=await readFile(new URL('../src/NodeController.jsx',import.meta.url),'utf8');assert.match(ui,/Resume existing VPN only/);assert.match(ui,/Read or reconcile VPN resume/);
+ }finally{delete globalThis.__vpnResume;}
+});

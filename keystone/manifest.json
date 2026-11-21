@@ -30,7 +30,7 @@
     "runtime": "portal-bundled",
     "capabilities": [
       "readNetwork",
-      "requestTransactions",
+      "readWallet",
       "externalLinks"
     ],
     "widgets": [
@@ -40,7 +40,7 @@
       },
       {
         "key": "votes",
-        "name": "Proposals requiring your vote"
+        "name": "Indexed voting observations"
       }
     ]
   },

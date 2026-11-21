@@ -1,0 +1,1 @@
+import {createRoot} from 'react-dom/client';import {LearnReader} from '../../learn/src/index.jsx';import '@synergy-network/portal-native/styles.css';createRoot(document.getElementById('root')).render(<main><p>Isolated public reader. No Portal grant, account, progress, assessment, reward or native authority. Reads the actual fixed public Learn API only.</p><LearnReader/></main>);

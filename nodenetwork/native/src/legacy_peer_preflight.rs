@@ -1,0 +1,270 @@
+//! Exact legacy peer attribution and isolated native retirement scope.
+use crate::gateway_admission::{exact,pin};
+use base64::Engine as _;
+use serde::Deserialize;
+use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
+const REFUSED:&str="Legacy peer account read refused; no retirement or enrollment was attempted";
+const KEY_REFUSED: &str = "Exact legacy peer key observation unavailable";
+const ACCOUNT: &str = "da99e12f611ghl16dvjg";
+const PEER: &str = "dboqb9if611ohpqo0e1g";
+const KEY: &str = "5e781088b3b0a7cd2862ee1010b5f84ce4f91ebc1abbbce92a10a0dc8563159f";
+const BINARY: &str = "e01941ced937e0a5dff7b02b8ae2be38b6efa6b3be03ec9b89d0b7f52a16c292";
+const REVISION: &str = "79a06720b684768b421f0a54f3bb14f22704994f";
+pub(super) fn scope(plan:&Value,policy:&Value,provider:&str,locator:&str,expires:u64)->Result<Value,String>{
+ let b=&plan["legacy"]["vpn_binding"];
+ if plan["schema"]!="nodenetwork-legacy-canary-retirement-plan-v1"||!pin(&plan["plan_sha256"])||plan["removal_authorized"]!=false||plan["mutation_performed"]!=false
+  ||plan["legacy"]["old_network"]["network_id"]!="posy-apqe-canary-process-49028"
+  ||plan["machine_id_sha256"]!="8683ea9f4da9e9c05c26b6d8070cc13c0f5f75b0cd4a4de863492164f4c1e26d"
+  ||plan["legacy"]["old_network"]["genesis_sha256"]!="d28ab09b6857f670482580a786edd939b090e88aa9378cdd0ad91379a724a9d7"
+  ||b["enrollment_sha256"]!="f27a0e0031ba00f2a234e77e55449ca5f4b9a15dec7e2c8da3da5bde6ea37573"||b["binding_sha256"]!="1629d857606c040ecbd7ed9d5dc692ac697dda3b129cc1f8b2bb9834e594d5f2"
+  ||b["peer_name"]!="synergy-canary-rpc-99999"||b["hostname"]!="vmi3381382"
+  ||b["peer_id"]!="dboqb9if611ohpqo0e1g"||b["ip"]!="10.69.51.205"||b["wireguard_public_key"]!="EhHDd/L7fXX+c8x2nyJx8wWUwGRij3AmioVZKiH4/2M="||b["retirement_verified"]!=false
+  ||policy["api_origin"]!="https://vpn-coordinator.synergy-network.io"||policy["management_origin"]!="https://vpn-coordinator.synergy-network.io"
+  ||policy["account_id"]!="da99e12f611ghl16dvjg"
+  ||!pin(&json!(provider))||!pin(&json!(locator))||!pin(&policy["ca_sha256"]){return Err(REFUSED.into())}
+ Ok(json!({"purpose":"nodenetwork-legacy-peer-account-read-v1","plan_sha256":plan["plan_sha256"],"provider_sha256":provider,
+  "credential_locator_sha256":locator,"ca_sha256":policy["ca_sha256"],"account_id":policy["account_id"],"peer_id":b["peer_id"],"peer_name":b["peer_name"],"hostname":b["hostname"],"ip":b["ip"],"wireguard_public_key":b["wireguard_public_key"],"expires_at":expires}))
+}
+pub(super) fn result(value:&Value,scope:&Value)->Result<Value,String>{
+ if !exact(value,&["schema","plan_sha256","provider_sha256","account_id","peer_id","ready","account_verified","peer_verified","public_key_verified","blocker","mutation_performed","retirement_authorized"])
+  ||value["schema"]!="nodenetwork-legacy-peer-retirement-preflight-v1"||["plan_sha256","provider_sha256","account_id","peer_id"].iter().any(|k|value[*k]!=scope[*k])
+  ||["ready","public_key_verified","mutation_performed","retirement_authorized"].iter().any(|k|value[*k]!=false)
+  ||value["account_verified"]!=true||value["peer_verified"]!=true||value["blocker"]!="independent_peer_key_binding_unavailable"{return Err(REFUSED.into())}Ok(value.clone())
+}
+
+pub(super) fn key_request(plan: &Value, expires_at: u64) -> Result<Value,String> {
+    let binding = &plan["legacy"]["vpn_binding"];
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(binding["wireguard_public_key"].as_str().ok_or(KEY_REFUSED)?)
+        .map_err(|_| KEY_REFUSED)?;
+    if plan["schema"] != "nodenetwork-legacy-canary-retirement-plan-v1"
+        || !pin(&plan["plan_sha256"]) || !pin(&plan["challenge"])
+        || plan["removal_authorized"] != false || plan["mutation_performed"] != false
+        || binding["peer_id"] != PEER || binding["retirement_verified"] != false
+        || key.len() != 32 || format!("{:x}", Sha256::digest(&key)) != KEY
+    {
+        return Err(KEY_REFUSED.into());
+    }
+    Ok(json!({"context":{"account_id":ACCOUNT,"peer_id":PEER,
+        "wireguard_public_key_sha256":KEY,"expires_at":expires_at},"challenge":plan["challenge"]}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyReply {
+    version: u8,
+    ok: bool,
+    result: KeyObservation,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyObservation {
+    schema: String,
+    challenge: String,
+    account_id: String,
+    peer_id: String,
+    wireguard_public_key_sha256: String,
+    ip: String,
+    peer_name: String,
+    provider_binary_sha256: String,
+    provider_revision: String,
+    verified: bool,
+    mutation_performed: bool,
+}
+
+pub(super) fn key_result(raw: &[u8], request: &Value, plan: &Value) -> Result<Value,String> {
+    let KeyReply { version, ok, result } = serde_json::from_slice(raw).map_err(|_| KEY_REFUSED)?;
+    let binding = &plan["legacy"]["vpn_binding"];
+    if version != 1 || !ok || result.schema != "nodenetwork-legacy-peer-key-proof-v1"
+        || request["challenge"] != result.challenge || plan["challenge"] != result.challenge
+        || result.account_id != ACCOUNT || result.peer_id != PEER
+        || result.wireguard_public_key_sha256 != KEY
+        || binding["ip"] != result.ip || binding["peer_name"] != result.peer_name
+        || result.provider_binary_sha256 != BINARY || result.provider_revision != REVISION
+        || !result.verified || result.mutation_performed
+    {
+        return Err(KEY_REFUSED.into());
+    }
+    Ok(json!({"schema":result.schema,"plan_sha256":plan["plan_sha256"],"account_id":result.account_id,
+        "peer_id":result.peer_id,"wireguard_public_key_sha256":result.wireguard_public_key_sha256,
+        "ip":result.ip,"peer_name":result.peer_name,"provider_binary_sha256":result.provider_binary_sha256,
+        "provider_revision":result.provider_revision,"verified":true,"mutation_performed":false,
+        "retirement_authorized":false}))
+}
+
+pub(super) fn retirement_scope(plan: &Value, policy: &Value, provider: &str, locator: &str, expires: u64) -> Result<Value,String> {
+    let mut scope = scope(plan, policy, provider, locator, expires)?;
+    key_request(plan, expires)?;
+    let fields = scope.as_object_mut().ok_or(KEY_REFUSED)?;
+    fields.remove("wireguard_public_key");
+    fields.insert("purpose".into(), json!("nodenetwork-legacy-vpn-peer-retirement-v1"));
+    fields.insert("wireguard_public_key_sha256".into(), json!(KEY));
+    fields.insert("management_origin".into(), policy["management_origin"].clone());
+    for name in ["enrollment_sha256", "binding_sha256"] {
+        fields.insert(name.into(), plan["legacy"]["vpn_binding"][name].clone());
+    }
+    Ok(scope)
+}
+
+pub(super) fn retirement_result(value: Value, scope: &Value) -> Result<Value,String> {
+    let fields = ["account_id", "peer_id", "peer_name", "hostname", "ip", "management_origin", "enrollment_sha256", "binding_sha256"];
+    if !exact(&value, &["format", "account_id", "peer_id", "peer_name", "hostname", "ip", "management_origin",
+        "enrollment_sha256", "binding_sha256", "retired", "absence_verified"])
+        || value["format"] != "synergy-vpn-retirement-v1"
+        || fields.iter().any(|key| value[*key] != scope[*key])
+        || value["retired"] != true || value["absence_verified"] != true
+    {
+        return Err("Exact provider retirement receipt unavailable".into());
+    }
+    Ok(value)
+}
+
+pub(super) const RETIREMENT_RUNNER: &str = r#"
+import base64,sys
+try:
+ wire=decode(sys.stdin.buffer.read(256*1024+1))
+ scope=wire['scope']
+ require(scope['provider_sha256']==wire['pin'],'Native provider pin differs')
+ ca=base64.b64decode(wire['ca'],validate=True)
+ policy=provider_policy(wire['policy'].encode(),wire['pin'],ca,int(time.time()),cleanup_action='retire')
+ client=HttpsProvider(policy,ca,wire['token'])
+ receipt=retire_verified_legacy_peer(wire['directory'],policy,client.request,scope,reconcile_only=wire['reconcile_only'])
+ sys.stdout.buffer.write(encode(receipt))
+except Exception:
+ sys.exit(1)
+"#;
+// Appended to the already authenticated provider library. Only GETs; no
+// Authorization/issuance state is instantiated and no private data is exported.
+pub(super) const RUNNER:&str=r#"
+import base64,sys
+try:
+ wire=decode(sys.stdin.buffer.read(256*1024+1))
+ scope=wire['scope']
+ require(scope['purpose']=='nodenetwork-legacy-peer-account-read-v1','Exact native purpose required')
+ ca=base64.b64decode(wire['ca'],validate=True)
+ policy=provider_policy(wire['policy'].encode(),wire['pin'],ca,int(time.time()),cleanup_action='retire')
+ require(policy['account_id']==scope['account_id'] and policy['api_origin']==policy['management_origin']=='https://vpn-coordinator.synergy-network.io','Coordinator transport differs')
+ client=HttpsProvider(policy,ca,wire['token'])
+ def get(path):
+  require(type(scope['expires_at']) is int and int(time.time())<scope['expires_at']<=int(time.time())+120,'Native purpose expired')
+  code,value=client.request('GET',path)
+  require(code==200,'Authenticated read refused')
+  return value
+ accounts=get('/api/accounts')
+ require(isinstance(accounts,list) and len(accounts)==1 and isinstance(accounts[0],dict) and accounts[0].get('id')==scope['account_id'],'Account differs')
+ def matches(peer):
+  return isinstance(peer,dict) and all(peer.get(remote)==scope[local] for remote,local in [('id','peer_id'),('name','peer_name'),('hostname','hostname'),('ip','ip')])
+ peer=get('/api/peers/'+scope['peer_id']);require(matches(peer),'Peer differs')
+ peers=get('/api/peers')
+ require(isinstance(peers,list) and len(peers)<=8192 and all(isinstance(p,dict) and identifier(p.get('id')) for p in peers) and len({p['id'] for p in peers})==len(peers),'Peer inventory invalid')
+ selected=[p for p in peers if p.get('id')==scope['peer_id'] or p.get('name')==scope['peer_name'] or p.get('ip')==scope['ip']]
+ require(len(selected)==1 and matches(selected[0]),'Peer inventory ambiguous')
+ result={'schema':'nodenetwork-legacy-peer-retirement-preflight-v1',**{k:scope[k] for k in ['plan_sha256','provider_sha256','account_id','peer_id']},'ready':False,'account_verified':True,'peer_verified':True,'public_key_verified':False,'blocker':'independent_peer_key_binding_unavailable','mutation_performed':False,'retirement_authorized':False}
+ sys.stdout.buffer.write(encode(result))
+except Exception:
+ sys.exit(1)
+"#;
+#[cfg(test)]mod tests{
+ use super::*;
+ #[test]
+ fn legacy_peer_key_read_uses_only_the_reviewed_challenge_and_public_binding() {
+     let mut plan = json!({"schema":"nodenetwork-legacy-canary-retirement-plan-v1",
+         "plan_sha256":"a".repeat(64),"challenge":"b".repeat(64),
+         "mutation_performed":false,"removal_authorized":false,
+         "legacy":{"vpn_binding":{"peer_id":PEER,"retirement_verified":false,"ip":"10.69.51.205",
+         "peer_name":"synergy-canary-rpc-99999","wireguard_public_key":"EhHDd/L7fXX+c8x2nyJx8wWUwGRij3AmioVZKiH4/2M="}}});
+     let request = key_request(&plan, 123).unwrap();
+     assert_eq!(request, json!({"context":{"account_id":ACCOUNT,"peer_id":PEER,
+         "wireguard_public_key_sha256":KEY,"expires_at":123},"challenge":"b".repeat(64)}));
+     let reply = json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-legacy-peer-key-proof-v1",
+         "challenge":"b".repeat(64),"account_id":ACCOUNT,"peer_id":PEER,"wireguard_public_key_sha256":KEY,
+         "ip":"10.69.51.205","peer_name":"synergy-canary-rpc-99999","provider_binary_sha256":BINARY,
+         "provider_revision":REVISION,"verified":true,"mutation_performed":false}});
+     let check = |value: &Value| key_result(&serde_json::to_vec(value).unwrap(), &request, &plan);
+     let view = check(&reply).unwrap();
+     assert!(view.get("challenge").is_none());
+     assert_eq!(view["plan_sha256"], plan["plan_sha256"]);
+     assert_eq!(view["retirement_authorized"], false);
+     for (key, value) in [
+         ("challenge",json!("stale")),("account_id",json!("foreign")),("peer_id",json!("foreign")),
+         ("wireguard_public_key_sha256",json!("foreign")),("ip",json!("10.0.0.1")),
+         ("peer_name",json!("foreign")),("provider_binary_sha256",json!("foreign")),
+         ("provider_revision",json!("foreign")),("verified",json!(false)),
+         ("mutation_performed",json!(true)),("retirement_authorized",json!(true)),
+     ] {
+         let mut changed = reply.clone();
+         changed["result"][key] = value;
+         assert!(check(&changed).is_err(), "{key}");
+     }
+     let duplicate = reply.to_string().replace("\"verified\":true", "\"verified\":false,\"verified\":true");
+     assert!(key_result(duplicate.as_bytes(), &request, &plan).is_err());
+     plan["legacy"]["vpn_binding"]["wireguard_public_key"] = json!("bad");
+     assert!(key_request(&plan, 123).is_err());
+ }
+
+ #[test]
+ fn legacy_peer_key_read_rejects_renderer_parameters() {
+     use crate::node_controller::Request;
+     for operation in ["legacy_peer_key_read","legacy_peer_retire","legacy_peer_retire_status"] {
+         let mut request = Request { version: 1, operation: operation.into(), parameters: json!({}) };
+         assert_eq!(request.validate(), Ok(true));
+         request.parameters = json!({"host":"foreign","challenge":"forged"});
+         assert!(request.validate().is_err());
+     }
+ }
+
+ #[test]
+ fn legacy_peer_retirement_requires_exact_absence_receipt() {
+     let mut receipt = json!({
+         "format":"synergy-vpn-retirement-v1","account_id":ACCOUNT,"peer_id":PEER,
+         "peer_name":"synergy-canary-rpc-99999","hostname":"vmi3381382","ip":"10.69.51.205",
+         "management_origin":"https://vpn-coordinator.synergy-network.io",
+         "enrollment_sha256":"a".repeat(64),"binding_sha256":"b".repeat(64),"retired":true,"absence_verified":true,
+     });
+     let expected = receipt.clone();
+     assert_eq!(retirement_result(receipt.clone(),&expected).unwrap(), expected);
+     receipt["absence_verified"] = json!(false);
+     assert!(retirement_result(receipt,&expected).is_err());
+     let mut other = expected.clone();
+     other["peer_id"] = json!("neighbor");
+     assert!(retirement_result(other,&expected).is_err());
+ }
+ fn fixture()->Value{json!({"schema":"nodenetwork-legacy-peer-retirement-preflight-v1","plan_sha256":"a".repeat(64),"provider_sha256":"b".repeat(64),"account_id":"account","peer_id":"dboqb9if611ohpqo0e1g","ready":false,"account_verified":true,"peer_verified":true,"public_key_verified":false,"blocker":"independent_peer_key_binding_unavailable","mutation_performed":false,"retirement_authorized":false})}
+ #[test]fn legacy_peer_preflight_never_authorizes_or_infers_key_proof(){let v=fixture();assert!(result(&v,&v).is_ok());for k in ["ready","public_key_verified","mutation_performed","retirement_authorized"]{let mut b=v.clone();b[k]=json!(true);assert!(result(&b,&v).is_err())}for k in ["plan_sha256","provider_sha256","account_id","peer_id"]{let mut b=v.clone();b[k]=json!("foreign");assert!(result(&b,&v).is_err())}let mut b=v.clone();b["extra"]=json!("private");assert!(result(&b,&v).is_err());}
+ #[test]fn legacy_peer_preflight_runner_cannot_issue_or_delete(){assert!(!RUNNER.contains("DELETE"));assert!(!RUNNER.contains("POST"));assert!(!RUNNER.contains("Authorization("));assert!(RUNNER.contains("client.request('GET',path)"));assert!(RUNNER.contains("public_key_verified':False"));}
+ #[test]fn legacy_peer_preflight_fixed_request_requires_native_review_not_unreviewed_read(){use crate::node_controller::Request;let request=Request{version:1,operation:"legacy_peer_preflight".into(),parameters:json!({})};assert_eq!(request.validate(),Ok(true));let mut bad=request;bad.parameters=json!({"account":"foreign"});assert!(bad.validate().is_err());}
+
+ #[test]fn legacy_peer_preflight_scope_binds_exact_public_legacy_inputs(){
+  let b=json!({"peer_id":"dboqb9if611ohpqo0e1g","peer_name":"synergy-canary-rpc-99999","hostname":"vmi3381382","ip":"10.69.51.205","wireguard_public_key":"EhHDd/L7fXX+c8x2nyJx8wWUwGRij3AmioVZKiH4/2M=","retirement_verified":false,"enrollment_sha256":"f27a0e0031ba00f2a234e77e55449ca5f4b9a15dec7e2c8da3da5bde6ea37573","binding_sha256":"1629d857606c040ecbd7ed9d5dc692ac697dda3b129cc1f8b2bb9834e594d5f2"});
+  let plan=json!({"schema":"nodenetwork-legacy-canary-retirement-plan-v1","plan_sha256":"a".repeat(64),"removal_authorized":false,"mutation_performed":false,"machine_id_sha256":"8683ea9f4da9e9c05c26b6d8070cc13c0f5f75b0cd4a4de863492164f4c1e26d","legacy":{"old_network":{"network_id":"posy-apqe-canary-process-49028","genesis_sha256":"d28ab09b6857f670482580a786edd939b090e88aa9378cdd0ad91379a724a9d7"},"vpn_binding":b}});
+  let policy=json!({"api_origin":"https://vpn-coordinator.synergy-network.io","management_origin":"https://vpn-coordinator.synergy-network.io","account_id":"da99e12f611ghl16dvjg","ca_sha256":"c".repeat(64)});
+  assert!(scope(&plan,&policy,&"b".repeat(64),&"d".repeat(64),1000).is_ok());
+  for key in ["peer_id","wireguard_public_key","enrollment_sha256"]{let mut wrong=plan.clone();wrong["legacy"]["vpn_binding"][key]=json!("foreign");assert!(scope(&wrong,&policy,&"b".repeat(64),&"d".repeat(64),1000).is_err())}
+ }
+ #[cfg(unix)]#[test]fn legacy_peer_preflight_actual_runner_reads_only_fixed_public_prerequisites(){
+  use base64::Engine as _;use sha2::{Digest,Sha256};use std::{io::Write,process::{Command,Stdio},time::{SystemTime,UNIX_EPOCH}};
+  let ca=b"public fixture CA";let raw=serde_json::to_string(&json!({"version":1,"profile":"nodenetwork-controlled-canary-v1","network_binding":{"network_id":"synergy-posy-canary-20261117","chain_id":99999,"formation_sha256":"a".repeat(64)},"api_origin":"https://vpn-coordinator.synergy-network.io","management_origin":"https://vpn-coordinator.synergy-network.io","account_id":"da99e12f611ghl16dvjg","ca_sha256":format!("{:x}",Sha256::digest(ca)),"auto_groups":[],"required_peer_ips":["10.69.51.205"],"expires_at":1})).unwrap();
+  let pin=format!("{:x}",Sha256::digest(raw.as_bytes()));let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+  let expected=json!({"purpose":"nodenetwork-legacy-peer-account-read-v1","plan_sha256":"a".repeat(64),"provider_sha256":pin,"account_id":"da99e12f611ghl16dvjg","peer_id":"dboqb9if611ohpqo0e1g","peer_name":"synergy-canary-rpc-99999","hostname":"vmi3381382","ip":"10.69.51.205","expires_at":now+100});
+  for mode in ["good","foreign_account","foreign_peer","duplicate"]{
+   let fake=format!(r#"class HttpsProvider:
+ def __init__(self,*args):pass
+ def request(self,method,path):
+  assert method=='GET'
+  peer={{'id':'dboqb9if611ohpqo0e1g','name':'synergy-canary-rpc-99999','hostname':'vmi3381382','ip':'10.69.51.205','public_key':'untrusted extension'}}
+  mode='{mode}'
+  if path=='/api/accounts':return 200,[{{'id':'foreign' if mode=='foreign_account' else 'da99e12f611ghl16dvjg'}}]
+  if path=='/api/peers/dboqb9if611ohpqo0e1g':return 200,{{**peer,'id':'foreign'}} if mode=='foreign_peer' else peer
+  assert path=='/api/peers'
+  return 200,[peer,peer] if mode=='duplicate' else [peer]
+"#);
+   let script=crate::vpn_enrollment::legacy_preflight_test_script(&fake);let wire=json!({"scope":expected,"policy":raw,"pin":pin,"ca":base64::engine::general_purpose::STANDARD.encode(ca),"token":"SYNTHETIC-NOT-A-CREDENTIAL"});
+   let mut child=Command::new("/usr/bin/python3").args(["-I","-B","-c",&script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+   child.stdin.take().unwrap().write_all(&serde_json::to_vec(&wire).unwrap()).unwrap();let output=child.wait_with_output().unwrap();
+   if mode=="good"{assert!(output.status.success());let value=serde_json::from_slice(&output.stdout).unwrap();assert!(result(&value,&expected).is_ok());}else{assert!(!output.status.success());assert!(output.stdout.is_empty());}
+  }
+ }
+
+}

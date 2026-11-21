@@ -1,0 +1,14 @@
+{
+  "name": "@synergy-network/dapp-data-view",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/model.js",
+    "./source-age": "./src/SourceAge.jsx",
+    "./protocol-observations": "./src/protocol-observations.js"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
