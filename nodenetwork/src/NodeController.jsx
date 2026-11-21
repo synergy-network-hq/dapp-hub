@@ -61,6 +61,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
 
  async function perform(operation,parameterOverride){
   const scope=scopeContext.current;
+  const repairGatewayController=operation==='authorization_stage'&&parameterOverride?.recoverGatewayController===true&&canRepairGatewayController;
   if(!permitted||locked.current)return;
   if(!targetScopeCurrent()){setError('The selected target scope changed. Inspect the original target before another operation.');return;}
   let parameters={};
@@ -71,7 +72,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
     if(target.kind!=='remote'||target.guest)throw Error('Select a physical remote target for local operator readiness.');
     if(operation==='operator_auth_load'&&!operatorCredentialSupported)throw Error('Existing Keychain credential activation requires the native macOS app.');
    }else if(operation==='authorization_stage'){
-    if(!state||!operator||!(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operator)))throw Error('Inspect the target and enter its existing administrative account.');
+    if((!state&&!repairGatewayController)||!operator||!(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operator)))throw Error('Inspect the target and enter its existing administrative account.');
    }else if(operation==='bootstrap'){
     if(state||!operator||!(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(operator))||(target.kind==='local'&&!localSupported))throw Error('Select a supported clean host and enter its existing administrative account.');
     parameters=networkProfile?gatewayInstallParameters(form,networkProfile):installParameters(form);
@@ -95,7 +96,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
   if(operation==='genesis_stage'||operation==='genesis_binding_preflight'||operation==='genesis_bind')setBindingReview(null);
   if(operation==='target'||MUTATIONS.has(operation))setState(null);
   try{
-   const raw=operation==='legacy_gateway_plan'?await nodeNetworkLegacyGatewayPlan(target,operator):operation==='network_formation_prepare'?await prepareNodeNetworkGenesis(target,formationRecord.formation_sha256):operation==='authorization_stage'?await stageNodeNetworkAuthorization(target,operator,networkProfile):operation==='bootstrap'?await nodeNetworkBootstrap(target,operator,parameters,networkProfile):operation==='genesis_stage_existing'?await stageNodeNetworkSignedGenesis(target,`network:${form.chain_id}:${form.network_id}`):operation==='genesis_stage'?await stageNodeNetworkSignedGenesis(target,formationRecord.address):await nodeNetworkController(target,operation,parameters);
+   const raw=operation==='legacy_gateway_plan'?await nodeNetworkLegacyGatewayPlan(target,operator):operation==='network_formation_prepare'?await prepareNodeNetworkGenesis(target,formationRecord.formation_sha256):operation==='authorization_stage'?await stageNodeNetworkAuthorization(target,operator,networkProfile,repairGatewayController):operation==='bootstrap'?await nodeNetworkBootstrap(target,operator,parameters,networkProfile):operation==='genesis_stage_existing'?await stageNodeNetworkSignedGenesis(target,`network:${form.chain_id}:${form.network_id}`):operation==='genesis_stage'?await stageNodeNetworkSignedGenesis(target,formationRecord.address):await nodeNetworkController(target,operation,parameters);
    if(!isCurrent(scope))return;
    if((operation==='bootstrap'||operation==='authorization_stage'||operation==='network_formation_prepare')&&raw===null){setError('Native review cancelled. No completed operation was reported.');return;}
    if((operation==='genesis_stage'||operation==='genesis_stage_existing')&&raw===null)return;
@@ -203,6 +204,8 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
  const sample=results.diagnostics?.response;
  const setup=['install_preflight','install'];
  const gatewaySetup=tab==='RPC gateway';
+ const canRepairGatewayController=gatewaySetup&&!state&&target.kind==='remote'&&!target.guest
+  &&networkProfile?.role==='rpc_gateway'&&error.startsWith('Controller connection failed.');
  const vpn=results.vpn_status?.response;
  const exportRegistration=gateFor('formation_export');
  const newest=operations=>operations.map(op=>results[op]).filter(Boolean).sort((a,b)=>b.receivedAt-a.receivedAt)[0];
@@ -241,6 +244,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
    <Card title="Review exact engineering authorization">
     <p>The isolated native build independently pins up to five exact initial host authorization documents. Select the matching document and fixed-name inputs through native review. Later native-confirmed operations can use short-lived one-request continuations bound to that same target, master and formation. This does not approve production, membership or stake.</p>
     <button type="button" disabled={!permitted||!!pending||!state||!operator} onClick={()=>perform('authorization_stage')}>{LABELS.authorization_stage}</button>
+    {canRepairGatewayController&&<button type="button" disabled={!permitted||!!pending||!operator} onClick={()=>perform('authorization_stage',{recoverGatewayController:true})}>Recover installed gateway controller</button>}
     {action('authorization_status')}
     <button type="button" disabled={!permitted||!!pending||!state} onClick={reconcileContinuation}>Verify pending continuation not applied</button>
     <p>This read-only native review releases only an exact unapplied local continuation. It never reports operation success or retries a mutation. Inspect again before a separate next action.</p>

@@ -183,6 +183,9 @@ pub(super) fn reconciliation(request:&Request,value:&Value)->Result<&'static str
   let original=Request{version:1,operation:"gateway_install".into(),parameters:json!({"release_id":"candidate-1","manifest_sha256":"a".repeat(64),"network_id":"synergy-posy-canary-test","chain_id":99999,"node_name":"gateway-01"})};
   let read=Request{version:1,operation:"gateway_install_status".into(),parameters:json!({"request_sha256":original.approval_id()})};
   let receipt=json!({"format":"synergy-universal-linux-v1","root":"/opt/synergy","role":"rpc_gateway","network_id":"synergy-posy-canary-test","chain_id":99999,"node_name":"gateway-01","package_sha256":"a".repeat(64),"package_files":{"bin/synergy-node":"b".repeat(64)},"consensus_started":false,"host_integrations":[]});
+  let acknowledged=crate::node_controller::mutation_acknowledgement(&original,json!({"version":1,"ok":true,"result":receipt.clone()})).unwrap();
+  assert_eq!(acknowledged["result"]["schema"],"nodenetwork-installed-gateway-v1");
+  assert!(acknowledged["result"].get("package_files").is_none());
   let v=json!({"schema":"nodenetwork-gateway-install-status-v1","request_sha256":original.approval_id(),"request":original.canonical(),"installation":receipt,"origin_verified":true,"install_audit_verified":true,"grant_absent":true,"services_started":false});
   assert_eq!(installation_status(&read,&v).unwrap()["installation"]["schema"],"nodenetwork-installed-gateway-v1");
   for(k,changed)in [("grant_absent",json!(false)),("install_audit_verified",json!(false)),("request_sha256",json!("9".repeat(64))),("extra",json!(true))]{let mut bad=v.clone();bad[k]=changed;assert!(installation_status(&read,&bad).is_err())}

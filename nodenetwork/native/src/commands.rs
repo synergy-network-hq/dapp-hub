@@ -840,26 +840,36 @@ pub async fn portal_nodenetwork_stage_signed_genesis(window:tauri::WebviewWindow
 
 /// File selection and exact independent native pin precede any privileged action.
 #[tauri::command]
-pub async fn portal_nodenetwork_stage_authorization(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,operator:String,network_profile:Option<Value>)->Result<Option<Value>,String>{
+pub async fn portal_nodenetwork_stage_authorization(window:tauri::WebviewWindow,app:tauri::AppHandle,target:node_controller::Target,operator:String,network_profile:Option<Value>,recover_gateway_controller:Option<bool>)->Result<Option<Value>,String>{
  use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
  main_only(&window)?;target.validate()?;node_bootstrap::validate_operator(&operator)?;
  let view=window.clone();let selected_target=target.clone();
  let directory=node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
  let review_directory=directory.clone();
+ let repair_controller=recover_gateway_controller.unwrap_or(false);
  let selected=tauri::async_runtime::spawn_blocking(move||{
   let Some(file)=view.dialog().file().set_parent(&view).set_title("Select the independently approved engineering authorization.json").add_filter("Engineering authorization",&["json"]).blocking_pick_file() else{return Ok(None)};
   let path=file.into_path().map_err(|_|"Select a local authorization document")?;
-  crate::operator_authorization::prepare(&path,&selected_target,network_profile.as_ref(),&review_directory).map(Some)
+  crate::operator_authorization::prepare(&path,&selected_target,network_profile.as_ref(),&review_directory,repair_controller).map(Some)
  }).await.map_err(|_|"Authorization inspection did not finish")??;
  let Some(prepared)=selected else{return Ok(None)};
  let base=app.path().app_local_data_dir().map_err(|_|"Portal journal unavailable")?;
  let initial_request=node_controller::Request{version:1,operation:"authorization_stage".into(),parameters:serde_json::json!({"authorization_sha256":prepared.sha256})};
- let prepare_stage=prepared.runtime_profile_sha256.is_some() && request_journal::with_latest_success(
+ if repair_controller {
+  let install=prepared.summary["requests"][0]["request_sha256"].as_str().ok_or("The original gateway installation request is missing")?;
+  if prepared.runtime_profile_sha256.is_none(){return Err("Choose the original approved managed gateway profile".into())}
+  request_journal::with_latest_success(&base,&target.journal_identity(),"gateway_install",|receipt|{
+   if receipt["request_sha256"]!=install{return Err("The selected approval differs from the original successful gateway installation".into())}Ok(())
+  })?;
+ }
+ let prepare_stage=!repair_controller && prepared.runtime_profile_sha256.is_some() && request_journal::with_latest_success(
   &base,&target.journal_identity(),"authorization_stage",|receipt|Ok(receipt["request_sha256"]==initial_request.approval_id()),
  ).unwrap_or(false);
  let summary=prepared.summary.clone();
- let (title,button,scope)=if prepare_stage {
-  ("Prepare the existing gateway stage","Verify and prepare staged gateway", "The existing installation grant remains unused. Verify the current authorization and package and set owner-only execute bits on its authenticated staged binaries. This does not recreate any grant, change custody or start a service.")
+ let (title,button,scope)=if repair_controller {
+  ("Repair the installed gateway controller","Verify and repair managed controller", "Verify the installed gateway and its consumed installation grant. Restore the managed controller from the authenticated master.")
+ }else if prepare_stage {
+  ("Prepare the existing gateway stage","Verify and prepare staged gateway", "Verify the current authorization, unused installation grant, and package. Set owner-only execute permission on the authenticated staged binaries.")
  }else{
   ("Authorize exact engineering formation inputs","Stage approved scope once", "Stage the exact fixed-name inputs and expiring one-use requests inside /opt/synergy. Membership, stake and consensus authority require their own approval. Private VPN input stays outside the renderer.")
  };
@@ -869,16 +879,19 @@ pub async fn portal_nodenetwork_stage_authorization(window:tauri::WebviewWindow,
  crate::authorization_lifecycle::remember(&base,&target,&operator,&prepared)?;
  // Verified mode preparation is idempotent and leaves the original grant
  // unchanged. Inspecting the target can reconcile an interrupted preparation.
- let dispatch=if prepare_stage {None}else{Some(request_journal::Dispatch::begin(
+ let dispatch=if prepare_stage||repair_controller {None}else{Some(request_journal::Dispatch::begin(
   &base,&target.journal_identity(),"authorization_stage",&initial_request.canonical(),
  )?)};
- let response=if prepare_stage {
+ let response=if repair_controller {
+  crate::operator_authorization::repair_installed_gateway_controller(target,operator,prepared,&directory).await
+ }else if prepare_stage {
   crate::operator_authorization::prepare_existing_gateway_stage(target,operator,prepared,&directory).await
  }else{
   crate::operator_authorization::execute(target,operator,prepared,&directory).await
  };
  let result=response.and_then(|reply|{
   if prepare_stage&&reply["ok"]==true&&reply["result"]["gateway_stage_prepared"]!=true{return Err("Staged gateway preparation acknowledgement differs; inspect the target before another operation".into())}
+  if repair_controller&&reply["ok"]==true&&reply["result"]["gateway_controller_repaired"]!=true{return Err("The controller repair acknowledgement differs; inspect the installed gateway before another operation".into())}
   if reply["ok"]==true&&(reply["result"]["schema"]!="nodenetwork-engineering-authorization-v1"||reply["result"]["sha256"]!=summary["sha256"]||reply["result"]["sequence"]!=summary["sequence"]||reply["result"]["applied"]!=true||reply["result"]["grants_recreated"]!=false){return Err("Target authorization receipt differs; inspect before further operations".into())}
   Ok(reply)
  });

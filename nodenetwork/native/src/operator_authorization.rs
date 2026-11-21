@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt,AsyncWriteExt};
 use zeroize::Zeroizing;
 const PROFILE:&str="nodenetwork-isolated-formation-authorization-v1";
 const BOOTSTRAP:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/bootstrap.py"));
+const GATEWAY_CONTROLLER:&str=include_str!(concat!(env!("SYNERGY_NODE_ENGINE_ROOT"),"/controller.py"));
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BoundTarget {kind:String,host:Option<String>,port:Option<u16>,root:String,host_key:Option<String>,machine_id_sha256:Option<String>,#[serde(default)]guest:Option<crate::managed_guest::GuestBinding>}
@@ -84,14 +85,22 @@ fn validate(raw:&str,target:&Target,expected:&str,now:u64)->Result<Document,Stri
  if d.genesis_pins.as_ref().is_some_and(|p|p.len()!=3||!["genesis.json","authority.json","authority-root.pub"].iter().all(|n|p.get(*n).is_some_and(|s|pin(s)))){return Err("Exact independently approved Genesis pins required".into());}
  Ok(d)
 }
-pub fn prepare(path:&Path,target:&Target,selected_profile:Option<&Value>,control:&Path)->Result<Prepared,String>{
+pub fn prepare(path:&Path,target:&Target,selected_profile:Option<&Value>,control:&Path,repair_installed_gateway:bool)->Result<Prepared,String>{
  if !cfg!(debug_assertions){return Err("Operator authorization is unavailable in production builds".into());}
  let bytes=read(path,65536)?;let expected=digest(&bytes);
  let runtime = !initial_pin_allowed(&expected);
  if runtime && selected_profile.is_none() {
   return Err("An independently approved engineering authorization or selected gateway profile is required".into());
  }
- let mut prepared = prepare_pinned(path,target,&expected,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
+ let when=if repair_installed_gateway {
+  if !runtime||selected_profile.is_none(){return Err("Repair requires the original managed gateway profile".into())}
+  let original:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid original gateway authorization")?;
+  // Repair verifies the already consumed scope. It cannot stage or renew a grant.
+  original["expires_at"].as_u64().and_then(|v|v.checked_sub(1)).ok_or("Invalid original gateway expiry")?
+ }else{
+  SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs()
+ };
+ let mut prepared = prepare_pinned(path,target,&expected,when)?;
  let doc: Value = serde_json::from_str(&prepared.document).map_err(|_|"Invalid exact authorization")?;
  if let Some(selected) = selected_profile {
   require_gateway_initial(&doc)?;
@@ -158,7 +167,14 @@ pub(super) async fn prepare_existing_gateway_stage(target:Target,operator:String
  execute_scope(target,operator,prepared,control,"--prepare-existing-gateway-stage").await
 }
 
-async fn execute_scope(target:Target,operator:String,prepared:Prepared,control:&Path,action:&str)->Result<Value,String>{
+pub(super) async fn repair_installed_gateway_controller(target:Target,operator:String,prepared:Prepared,control:&Path)->Result<Value,String>{
+ if prepared.runtime_profile_sha256.is_none() || prepared.continuation.is_some() || target.kind!="remote" || target.guest.is_some() {
+  return Err("The installed gateway controller requires its original reviewed remote profile".into());
+ }
+ execute_scope(target,operator,prepared,control,"--repair-installed-gateway-controller").await
+}
+
+async fn execute_scope(target:Target,operator:String,mut prepared:Prepared,control:&Path,action:&str)->Result<Value,String>{
  target.validate()?;node_bootstrap::validate_operator(&operator)?;
  let _serial=node_controller::SERIAL.lock().await;
  // Retire only this app-owned prior channel before applying the exact new pin.
@@ -172,7 +188,14 @@ async fn execute_scope(target:Target,operator:String,prepared:Prepared,control:&
   else{use std::io::Write;let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);#[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}options.open(&pin_path).and_then(|mut f|{f.write_all(expected.as_bytes())?;f.sync_all()}).map_err(|_|"Cannot protect authorization host pin")?;}
  }
  let continuation=prepared.continuation.as_ref().map(|(initial,parent,formation)|format!("NATIVE_AUTHENTICATED_AUTHORIZATION_INITIAL_SHA256=\"{initial}\"\nNATIVE_AUTHENTICATED_AUTHORIZATION_PARENT_SHA256=\"{parent}\"\nNATIVE_AUTHENTICATED_AUTHORIZATION_FORMATION_SHA256=\"{formation}\"\n")).unwrap_or_default();
- let script=format!("NATIVE_AUTHENTICATED_AUTHORIZATION_SHA256=\"{}\"\n{}{}",prepared.sha256,continuation,BOOTSTRAP);
+ let replacement=if action=="--repair-installed-gateway-controller" {
+  let mut wire:Value=serde_json::from_slice(&prepared.wire).map_err(|_|"Invalid reviewed gateway scope")?;
+  wire.as_object_mut().ok_or("Invalid reviewed gateway scope")?.insert("gateway_controller_source".into(),json!(GATEWAY_CONTROLLER));
+  prepared.wire=Zeroizing::new(serde_json::to_vec(&wire).map_err(|_|"Cannot encode the verified controller recovery scope")?);
+  if prepared.wire.len()>12*1024*1024{return Err("Gateway controller recovery exceeds its transfer bound".into())}
+  format!("NATIVE_AUTHENTICATED_GATEWAY_CONTROLLER_SHA256=\"{}\"\n",digest(GATEWAY_CONTROLLER.as_bytes()))
+ }else{String::new()};
+ let script=format!("NATIVE_AUTHENTICATED_AUTHORIZATION_SHA256=\"{}\"\n{continuation}{replacement}{BOOTSTRAP}",prepared.sha256);
  let script=node_bootstrap::bootstrap_script(&script)?;
  let mut c=if target.kind=="local"{
   if !cfg!(all(target_os="linux",target_arch="x86_64")){return Err("Local authorization requires Linux x86_64".into());}

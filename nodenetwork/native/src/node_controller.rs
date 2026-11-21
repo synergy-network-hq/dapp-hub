@@ -1364,6 +1364,7 @@ pub(super) fn mutation_acknowledgement(request:&Request,reply:Value)->Result<Val
   _=>Ok(reply.clone()),
  }.map_err(String::from)?;
  if checked["ok"]==false{return Ok(checked)}
+ if request.operation=="gateway_install"{return Ok(checked)}
  if request.operation=="genesis_bind" && reply["ok"]==true {
   let evidence=crate::formation::reconcile_evidence("genesis_binding_preflight",&reply["result"])?;
   if evidence.is_none_or(|(op,pin)|op!="genesis_bind"||pin!=request.approval_id()){

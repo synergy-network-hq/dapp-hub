@@ -4,6 +4,7 @@ fn main() {
     assert!(source.is_file(),"Build requires canonical NodeNetwork bootstrap.py; set SYNERGY_NODE_ENGINE_ROOT to the qualified shared engine.");
     println!("cargo:rerun-if-env-changed=SYNERGY_NODE_ENGINE_ROOT");
     println!("cargo:rerun-if-changed={}",source.display());
+    println!("cargo:rerun-if-changed={}",std::path::Path::new(&engine).join("controller.py").display());
     println!("cargo:rustc-env=SYNERGY_NODE_ENGINE_ROOT={}",engine);
     println!("cargo:rerun-if-changed={}",std::path::Path::new(&engine).join("vpn_authorization.py").display());
     println!("cargo:rerun-if-changed={}",std::path::Path::new(&engine).join("conformance.py").display());

@@ -144,9 +144,11 @@ export async function stageNodeNetworkSignedGenesis(target,expectedAddress){
  return reply.result;
 }
 
-export async function stageNodeNetworkAuthorization(target,operator,networkProfile=null){
+export async function stageNodeNetworkAuthorization(target,operator,networkProfile=null,recoverGatewayController=false){
  if(!isTauri())throw Error('Engineering authorization requires the native Portal app.');
- const reply=await withNodeChange(()=>invoke('portal_nodenetwork_stage_authorization',networkProfile?{target,operator,networkProfile}:{target,operator}));
+ const args=networkProfile?{target,operator,networkProfile}:{target,operator};
+ if(recoverGatewayController)args.recoverGatewayController=true;
+ const reply=await withNodeChange(()=>invoke('portal_nodenetwork_stage_authorization',args));
  if(reply===null)return null;
  if(reply?.version!==1||typeof reply.ok!=='boolean')throw Error('Invalid authorization response.');
  if(!reply.ok)throw Error(`${reply.error?.code||'operation_refused'}: ${reply.error?.message||'Target refused authorization staging.'}`);
