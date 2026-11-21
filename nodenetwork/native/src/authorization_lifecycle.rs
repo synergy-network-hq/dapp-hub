@@ -19,6 +19,18 @@ struct Initial {
  #[serde(default, skip_serializing_if="Option::is_none")]
  profile_approval: Option<RuntimeProfileApproval>,
 }
+impl Initial {
+    fn continuation_origin<'a>(&'a self, initial_sha256: &'a str) -> authorization::ContinuationOrigin<'a> {
+        match &self.profile_approval {
+            Some(profile) => authorization::ContinuationOrigin::GatewayProfile {
+                document: &self.document,
+                authorization_sha256: &profile.authorization_sha256,
+                profile_sha256: &profile.profile_sha256,
+            },
+            None => authorization::ContinuationOrigin::Compiled(initial_sha256),
+        }
+    }
+}
 fn folder(base:&Path)->Result<PathBuf,String>{
  let path=base.join("nodenetwork-engineering-v1");
  if !path.exists(){#[cfg(unix)]{use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&path).map_err(|_|"Cannot protect engineering app state")?;}}
@@ -232,7 +244,12 @@ async fn grant_with_gateway_purpose(base:&Path,target:&Target,request:&Request,c
  let now=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs();
  let next=continuation_document(&doc,status,request,pins,now)?;
  let parent=status["authorization"]["sha256"].as_str().ok_or("No authorization parent")?;let formation=status["formation_sha256"].as_str().ok_or("No approved formation")?;
- let prepared=if gateway_purpose{authorization::gateway_continuation(next,target,&hash(record.document.as_bytes()),parent,formation,request)?}else{authorization::continuation(next,target,&hash(record.document.as_bytes()),parent,formation)?};
+ let initial_sha256 = hash(record.document.as_bytes());
+ let prepared = if gateway_purpose {
+     authorization::gateway_continuation(next, target, &initial_sha256, parent, formation, request)?
+ } else {
+     authorization::continuation(next, target, record.continuation_origin(&initial_sha256), parent, formation)?
+ };
  let saved:Value=serde_json::from_str(&prepared.document).map_err(|_|"Invalid exact continuation document")?;
  save(&intent,&saved)?;
  let expected=prepared.sha256.clone();
@@ -248,7 +265,10 @@ pub(super) async fn vpn_grant(base:&Path,target:&Target,request:&Request,control
  if status["ok"]!=true||status["result"]["initial_sha256"]!=hash(record.document.as_bytes()){return Err("VPN target lacks the exact initial native authorization".into())}
  let status=&status["result"];let now=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs();
  let next=continuation_document(&doc,status,request,None,now)?;
- let prepared=authorization::vpn_continuation(next,target,&hash(record.document.as_bytes()),status["authorization"]["sha256"].as_str().ok_or("No authorization parent")?,status["formation_sha256"].as_str().ok_or("No approved formation")?,artifact)?;
+ let initial_sha256 = hash(record.document.as_bytes());
+ let prepared = authorization::vpn_continuation(next, target, record.continuation_origin(&initial_sha256),
+     status["authorization"]["sha256"].as_str().ok_or("No authorization parent")?,
+     status["formation_sha256"].as_str().ok_or("No approved formation")?, artifact)?;
  let expected=prepared.sha256.clone();let intent=folder(base)?.join(format!("vpn-continuation-{}.json",hash(target.journal_identity().to_string().as_bytes())));
  if intent.exists()||intent.is_symlink(){
   let previous:Value=serde_json::from_slice(&read(&intent,4096)?).map_err(|_|"Malformed prior VPN authorization intent")?;

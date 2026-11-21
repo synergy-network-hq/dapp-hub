@@ -225,20 +225,71 @@ pub(super) fn verify_runtime_initial(raw:&str,target:&Target,approved:&str,profi
  }
  Ok(value)
 }
-pub(super) fn continuation(doc:Value,target:&Target,initial:&str,parent:&str,formation:&str)->Result<Prepared,String>{
- if !initial_pin_allowed(initial)||!pin(parent)||!pin(formation){return Err("Unapproved continuation origin".into())}
- let text=doc.to_string();let hash=digest(text.as_bytes());let now=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs();
- let d=validate(&text,target,&hash,now)?;
- if !d.artifacts.is_empty()||d.requests.len()!=1{return Err("Continuation may authorize one exact request, with no arbitrary file input".into())}
- let wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{}})).map_err(|_|"Cannot encode continuation")?);
- Ok(Prepared{wire,document:text,host_key:d.target.host_key,sha256:hash.clone(),continuation:Some((initial.into(),parent.into(),formation.into())),runtime_profile_sha256:None,summary:json!({"sha256":hash,"sequence":d.sequence,"expires_at":d.expires_at})})
+pub(super) enum ContinuationOrigin<'a> {
+    Compiled(&'a str),
+    GatewayProfile {
+        document: &'a str,
+        authorization_sha256: &'a str,
+        profile_sha256: &'a str,
+    },
+}
+
+impl ContinuationOrigin<'_> {
+    fn authorized_pin(&self, target: &Target, next: &Value, formation: &str) -> Result<String, String> {
+        match *self {
+            Self::Compiled(pin) if initial_pin_allowed(pin) => Ok(pin.into()),
+            Self::Compiled(_) => Err("Unapproved continuation origin".into()),
+            Self::GatewayProfile { document, authorization_sha256, profile_sha256 } => {
+                let initial = verify_runtime_initial(document, target, authorization_sha256, profile_sha256)?;
+                let operation = next["requests"][0]["operation"].as_str().unwrap_or("");
+                if initial["target"] != next["target"]
+                    || ["network_id", "chain_id", "node_name", "genesis_pins"].iter()
+                        .any(|key| initial[*key] != next[*key])
+                    || initial["artifacts"]["formation-context.json"] != formation
+                    || next["sequence"].as_u64().is_none_or(|sequence| sequence <= 1)
+                    || !matches!(operation,
+                        "gateway_target_generate" | "gateway_target_commission"
+                        | "vpn_enroll" | "vpn_bind" | "vpn_retire" | "vpn_cancel_unused"
+                        | "vpn_stop" | "vpn_resume" | "register" | "start" | "stop"
+                        | "restart" | "boot_policy" | "upgrade" | "uninstall")
+                {
+                    return Err("Continuation differs from the approved gateway target, origin, or lifecycle".into());
+                }
+                Ok(authorization_sha256.into())
+            }
+        }
+    }
+}
+
+pub(super) fn continuation(
+    doc: Value, target: &Target, origin: ContinuationOrigin<'_>, parent: &str, formation: &str,
+) -> Result<Prepared, String> {
+    if !pin(parent) || !pin(formation) {
+        return Err("Unapproved continuation parent or formation".into());
+    }
+    let text = doc.to_string();
+    let hash = digest(text.as_bytes());
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map_err(|_| "Clock unavailable")?.as_secs();
+    let d = validate(&text, target, &hash, now)?;
+    if !d.artifacts.is_empty() || d.requests.len() != 1 {
+        return Err("Continuation may authorize one exact request, with no arbitrary file input".into());
+    }
+    let initial = origin.authorized_pin(target, &doc, formation)?;
+    let wire = Zeroizing::new(serde_json::to_vec(&json!({"authorization":text, "artifacts":{}}))
+        .map_err(|_| "Cannot encode continuation")?);
+    Ok(Prepared {
+        wire, document: text, host_key: d.target.host_key, sha256: hash.clone(),
+        continuation: Some((initial, parent.into(), formation.into())), runtime_profile_sha256: None,
+        summary: json!({"sha256":hash, "sequence":d.sequence, "expires_at":d.expires_at}),
+    })
 }
 
 /// One separately reviewed, public additional-purpose approval. This never extracts custody.
 pub(super) fn gateway_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,request:&Request)->Result<Prepared,String>{
  if request.operation!="gateway_admission_prepare"||request.validate()!=Ok(true)||doc["requests"]!=json!([{"operation":request.operation,"request_sha256":request.approval_id()}]){return Err("Gateway purpose may accompany only its exact admission preparation".into())}
  let raw=crate::gateway_admission::purpose(request)?;
- let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ let mut prepared=continuation(doc.clone(),target,ContinuationOrigin::Compiled(initial),parent,formation)?;
  doc["artifacts"]=json!({"gateway-purpose.json":digest(raw.as_bytes())});
  let text=doc.to_string();let hash=digest(text.as_bytes());
  validate(&text,target,&hash,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
@@ -249,12 +300,12 @@ pub(super) fn gateway_continuation(mut doc:Value,target:&Target,initial:&str,par
 /// Only the native provider workflow may attach an exact private enrollment or
 /// independently verified public binding. Generic continuations stay input-free.
 pub(super) struct NativeVpnArtifact<'a>{pub name:&'a str,pub bytes:&'a [u8],pub ca:Option<&'a [u8]>,pub provider:Option<&'a [u8]>}
-pub(super) fn vpn_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,artifact:NativeVpnArtifact<'_>)->Result<Prepared,String>{
+pub(super) fn vpn_continuation(mut doc:Value,target:&Target,origin:ContinuationOrigin<'_>,parent:&str,formation:&str,artifact:NativeVpnArtifact<'_>)->Result<Prepared,String>{
  let NativeVpnArtifact{name,bytes,ca,provider}=artifact;
  if !matches!(name,"vpn-enrollment.json"|"vpn-server-binding.json"|"vpn-retirement.json"|"vpn-unused-cancellation.json")||bytes.is_empty()||bytes.len()>16384{return Err("Invalid native VPN continuation input".into())}
  let operation=if name=="vpn-enrollment.json"{"vpn_enroll"}else if name=="vpn-server-binding.json"{"vpn_bind"}else if name=="vpn-unused-cancellation.json"{"vpn_cancel_unused"}else{"vpn_retire"};
  if doc["requests"][0]["operation"]!=operation{return Err("VPN artifact and exact request differ".into())}
- let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ let mut prepared=continuation(doc.clone(),target,origin,parent,formation)?;
  doc["artifacts"]=json!({name:digest(bytes)});
  if ca.is_some()!=provider.is_some(){return Err("Exact provider approval must accompany its CA".into())}
  if let Some(provider)=provider{if provider.is_empty()||provider.len()>16384{return Err("Invalid provider approval bound".into())}doc["artifacts"]["vpn-provider.json"]=json!(digest(provider));}
@@ -275,7 +326,7 @@ pub(super) fn guest_continuation(mut doc:Value,target:&Target,initial:&str,paren
  if target.guest.is_some()||artifact.bytes.is_empty()||artifact.bytes.len()>16384||artifact.request.operation!="guest_create"||artifact.request.validate()!=Ok(true)||doc["requests"][0]["request_sha256"]!=artifact.request.approval_id()||doc["requests"][0]["operation"]!="guest_create"{return Err("Managed guest artifact must authorize only its exact creation request on the physical host".into())}
  let value:Value=serde_json::from_slice(artifact.bytes).map_err(|_|"Malformed public managed guest policy")?;
  for key in ["guest_id","image_sha256","cpu_count","memory_mib","disk_gib"]{if value[key]!=artifact.request.parameters[key]{return Err("Guest policy and exact request differ".into())}}
- let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ let mut prepared=continuation(doc.clone(),target,ContinuationOrigin::Compiled(initial),parent,formation)?;
  doc["artifacts"]=json!({"managed-guest.json":digest(artifact.bytes)});let text=doc.to_string();let hash=digest(text.as_bytes());
  validate(&text,target,&hash,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
  prepared.wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{"managed-guest.json":STANDARD.encode(artifact.bytes)}})).map_err(|_|"Cannot encode exact guest policy")?);
@@ -285,7 +336,7 @@ pub(super) fn guest_continuation(mut doc:Value,target:&Target,initial:&str,paren
 pub(super) fn readiness_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,bytes:&[u8])->Result<Prepared,String>{
  let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
  if bytes.is_empty()||bytes.len()>128*1024||doc["requests"].as_array().is_none_or(|v|v.len()!=1)||doc["requests"][0]["operation"]!="commission"||doc["requests"][0]["request_sha256"]!=request.approval_id(){return Err("Readiness may accompany only one exact commissioning request".into())}
- let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ let mut prepared=continuation(doc.clone(),target,ContinuationOrigin::Compiled(initial),parent,formation)?;
  doc["artifacts"]=json!({"commissioning-readiness.json":digest(bytes)});let text=doc.to_string();let hash=digest(text.as_bytes());validate(&text,target,&hash,SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs())?;
  prepared.wire=Zeroizing::new(serde_json::to_vec(&json!({"authorization":text,"artifacts":{"commissioning-readiness.json":STANDARD.encode(bytes)}})).map_err(|_|"Cannot encode exact readiness approval")?);
  prepared.document=text;prepared.sha256=hash.clone();prepared.summary=json!({"sha256":hash,"sequence":doc["sequence"],"expires_at":doc["expires_at"]});Ok(prepared)
@@ -294,7 +345,7 @@ pub(super) fn readiness_continuation(mut doc:Value,target:&Target,initial:&str,p
 pub(super) fn transport_continuation(mut doc:Value,target:&Target,initial:&str,parent:&str,formation:&str,candidate:&crate::transport_staging::Candidate)->Result<Prepared,String>{
  let request=Request{version:1,operation:"commission".into(),parameters:json!({})};
  if candidate.files.len()!=crate::transport_formation::ARTIFACTS.len()||doc["requests"]!=json!([{"operation":"commission","request_sha256":request.approval_id()}]){return Err("Public transport inputs require one exact commissioning grant".into())}
- let mut prepared=continuation(doc.clone(),target,initial,parent,formation)?;
+ let mut prepared=continuation(doc.clone(),target,ContinuationOrigin::Compiled(initial),parent,formation)?;
  let mut pins=serde_json::Map::new();let mut artifacts=serde_json::Map::new();let mut total=0usize;
  for name in crate::transport_formation::ARTIFACTS{
   let bytes=candidate.files.get(name).ok_or("Incomplete fixed transport input inventory")?;
@@ -341,6 +392,43 @@ pub(super) fn transport_continuation(mut doc:Value,target:&Target,initial:&str,p
   let approval=digest(raw.as_bytes());
   assert_eq!(verify_runtime_initial(&raw,&target,&approval,&profile).unwrap(),doc);
   assert!(verify_runtime_initial(&raw,&target,&approval,&"c".repeat(64)).is_err());
+  let origin = || ContinuationOrigin::GatewayProfile {
+      document: &raw, authorization_sha256: &approval, profile_sha256: &profile,
+  };
+  let parent = "d".repeat(64);
+  let formation = "a".repeat(64);
+  let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+  let next = |operation: &str, parameters: Value| {
+      let request = Request {version: 1, operation: operation.into(), parameters};
+      let mut next = doc.clone();
+      next["sequence"] = json!(2);
+      next["expires_at"] = json!(now + 300);
+      next["artifacts"] = json!({});
+      next["requests"] = json!([{"operation": operation, "request_sha256": request.approval_id()}]);
+      next
+  };
+  let generated = next("gateway_target_generate", json!({"genesis_sha256": &formation}));
+  let prepared = continuation(generated.clone(), &target, origin(), &parent, &formation).unwrap();
+  assert_eq!(prepared.continuation, Some((approval.clone(), parent.clone(), formation.clone())));
+  assert!(continuation(generated.clone(), &target, origin(), &parent, &"e".repeat(64)).is_err());
+  let mut drifted = generated.clone();
+  drifted["genesis_pins"]["authority-root.pub"] = json!("e".repeat(64));
+  assert!(continuation(drifted, &target, origin(), &parent, &formation).is_err());
+  let other = Target {port: Some(22284), ..target.clone()};
+  assert!(continuation(generated, &other, origin(), &parent, &formation).is_err());
+
+  let enrollment = vpn_continuation(next("vpn_enroll", json!({})), &target, origin(), &parent, &formation,
+      NativeVpnArtifact {name: "vpn-enrollment.json", bytes: b"test-enrollment",
+                         ca: Some(b"test-ca"), provider: Some(b"test-provider")}).unwrap();
+  let vpn: Value = serde_json::from_str(&enrollment.document).unwrap();
+  assert_eq!(vpn["artifacts"]["vpn-enrollment.json"], digest(b"test-enrollment"));
+  assert_eq!(vpn["artifacts"]["vpn-provider.json"], digest(b"test-provider"));
+  assert_eq!(enrollment.continuation.unwrap().0, approval);
+
+  for operation in ["gateway_install", "install", "commission", "formation_prepare",
+                    "network_transport_sign", "gateway_admission_sign", "treasury_send_submit", "guest_create"] {
+      assert!(continuation(next(operation, json!({})), &target, origin(), &parent, &formation).is_err(), "{operation}");
+  }
   doc["chain_id"]=json!(14003);
   let changed=doc.to_string();
   assert!(verify_runtime_initial(&changed,&target,&approval,&profile).is_err());

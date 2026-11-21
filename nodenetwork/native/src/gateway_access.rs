@@ -63,7 +63,6 @@ fn read_origin(folder: &Path, profile: &Value, scope: &Value) -> Result<(), Stri
         .is_none_or(|pins| pins.len() != ORIGIN.len())
         || profile["role"] != "rpc_gateway"
         || profile["schema"] != "synergy-network-provisioning-v1"
-        || profile["gateway"]["validator_relay_port"] != 8551
         || !profile["gateway"]["vpn_provider_sha256"].is_null()
         || !profile["gateway"]["vpn_credential_locator_sha256"].is_null()
     {
@@ -72,6 +71,8 @@ fn read_origin(folder: &Path, profile: &Value, scope: &Value) -> Result<(), Stri
                 .into(),
         );
     }
+    let port = crate::gateway_vpn::relay_port(&profile["gateway"]["validator_relay_port"])
+        .ok_or("Select a valid configured upstream RPC relay port")?;
     let formation = read(&folder.join("formation-context.json"), 4096, false)?;
     let formation_doc = json_bytes(&formation)?;
     let chain = profile["chain_id"]
@@ -126,10 +127,10 @@ fn read_origin(folder: &Path, profile: &Value, scope: &Value) -> Result<(), Stri
                 .ok_or("Gateway upstream has no literal dial address")?
                 .parse()
                 .map_err(|_| "Gateway upstream has an invalid literal dial address")?;
-            if overlay.port() == 0 {
-                return Err("Gateway upstream dial port is zero".into());
+            if overlay.port() == 0 || overlay.port() == port {
+                return Err("The upstream RPC relay port must differ from validator P2P".into());
             }
-            tcp = Some(json!({"ip": overlay.ip().to_string(), "port": 8551}));
+            tcp = Some(json!({"ip": overlay.ip().to_string(), "port": port}));
         }
     }
     if tcp.as_ref() != Some(&scope["required_gateway_tcp"]) {

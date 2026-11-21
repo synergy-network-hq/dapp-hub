@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {networkProfileSchema, signedOriginFiles, validateNetworkProfile} from '../src/network-provisioning.js';
 import {gatewayTargetCapability,gatewayInstallParameters,gatewayGenerateParameters,gatewayCommissionParameters,gatewayTargetView,gatewayInstallView,gatewayInstallStatusView} from '../src/gateway-target.js';
 const sha=value=>createHash('sha256').update(value).digest('hex');
 function status(state='ready'){
@@ -61,4 +62,19 @@ test('gateway installation evidence cannot be borrowed from a validator or anoth
  const read={request_sha256:'b'.repeat(64)},status={schema:'nodenetwork-gateway-install-status-v1',request_sha256:read.request_sha256,request:{version:1,operation:'gateway_install',parameters:p},installation:v,origin_verified:true,install_audit_verified:true,grant_absent:true,services_started:false};
  assert.deepEqual(gatewayInstallStatusView(status,read),status);
  for(const [k,value]of [['grant_absent',false],['origin_verified',false],['install_audit_verified',false],['request_sha256','c'.repeat(64)],['extra',true]])assert.throws(()=>gatewayInstallStatusView({...status,[k]:value},read));
+});
+
+test('gateway profiles retain the exact configured upstream relay port', () => {
+ const profile = {
+  schema:networkProfileSchema, profile_id:'custom-gateway', network_id:'independent-network',
+  network_name:'Independent network', node_name:'gateway-1', chain_id:14002, role:'rpc_gateway',
+  genesis_hash:'a'.repeat(64), origin:Object.fromEntries(signedOriginFiles.map(name=>[name,'b'.repeat(64)])),
+  gateway:{public_hostname:'rpc.example',tls:'required',protocol:'synergy-json-rpc-v1',
+   listen_address:'127.0.0.1:8545',validator_address:'synv1fixture',validator_relay_port:9451,
+   allowed_origins:[],vpn_provider_sha256:null},
+ };
+ assert.equal(validateNetworkProfile(profile).gateway.validator_relay_port, 9451);
+ for (const port of [0, 65536, '9451', 1.5, null]) {
+  assert.throws(() => validateNetworkProfile({...profile,gateway:{...profile.gateway,validator_relay_port:port}}));
+ }
 });

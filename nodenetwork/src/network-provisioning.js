@@ -46,11 +46,11 @@ export function validateNetworkProfile(value) {
    || typeof gateway.listen_address !== 'string' || !/^(127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}$/.test(gateway.listen_address)
    || Number(gateway.listen_address.split(':').at(-1)) > 65535
    || typeof gateway.validator_address !== 'string' || !/^synv1[a-z0-9]{1,123}$/.test(gateway.validator_address)
-   || gateway.validator_relay_port !== 8551
+   || !Number.isInteger(gateway.validator_relay_port) || gateway.validator_relay_port < 1 || gateway.validator_relay_port > 65535
    || !Array.isArray(gateway.allowed_origins) || gateway.allowed_origins.length > 16
    || new Set(gateway.allowed_origins).size !== gateway.allowed_origins.length
    || gateway.allowed_origins.some(origin => typeof origin !== 'string' || !/^https:\/\/[a-zA-Z0-9.:-]{1,253}$/.test(origin))) {
-  throw Error('Enter the approved public hostname, loopback listener and signed upstream address.');
+  throw Error('Enter the approved public hostname, loopback listener, and signed upstream address and relay port.');
  }
  const provider = gateway.vpn_provider_sha256;
  const locator = gateway.vpn_credential_locator_sha256;
