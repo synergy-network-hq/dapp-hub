@@ -320,11 +320,12 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
   {gatewaySetup&&<GatewayTarget key={`gateway-target:${scopeKey}`} state={state} form={form} networkProfile={networkProfile} disabled={!permitted||!!pending} pending={pending} results={results} perform={perform}/>}
   {(gatewaySetup||(tab==='Management'&&state?.installed_role==='validator'))&&<GatewayAdmission key={`gateway-admission:${scopeKey}`} state={state} disabled={!permitted||!!pending} pending={pending} results={results} perform={perform}/>}
   {gatewaySetup&&state?.installed_role==='rpc_gateway'&&<Card title="Gateway services">
-   {['vpn_status','health'].map(action)}
+   {action('health')}
    {results.gateway_target_configuration?.response?.installed===true ? <>
     {['register','start','stop','restart'].map(action)}
     <button type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn('enroll')}>Review gateway VPN enrollment</button>
     <button type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn('reconcile')}>Reconcile gateway VPN enrollment</button>
+    <button type="button" disabled={!permitted||!!pending} onClick={()=>nativeVpn('cancel_unused')}>Verify and cancel unused gateway setup key</button>
    </> : <p>Read the installed gateway’s network profile before changing its services.</p>}
   </Card>}
   {tab==='Management'&&<CurrentFleetConsensus disabled={!permitted||!!pending}/>}
@@ -346,7 +347,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
   {tab==='Management'&&results.recovery_preflight?.evidence&&<Card title="Recovery readiness"><section aria-label="Recovery preflight evidence">
    <ControllerReceipt receivedAt={results.recovery_preflight.receivedAt}/><p>Checkpoint import is not qualified. The controller reported no change to certified state.</p>
   </section></Card>}
-  {['Validator setup','Management'].includes(tab)&&<VpnStatus action={action('vpn_status')}
+  {['Validator setup','Management','RPC gateway'].includes(tab)&&<VpnStatus action={action('vpn_status')}
    observation={results.vpn_status?.evidence}
    receipt={results.vpn_status&&<ControllerReceipt receivedAt={results.vpn_status.receivedAt}/>}
    onOpenDiagnostics={onOpenDiagnostics}/>}
@@ -391,6 +392,10 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
   </Card>}
   {pending&&<p role="status">{labelFor(pending)}: waiting for native review or the target controller. Do not repeat the operation.</p>}
   <ErrorMessage error={error}/>
+  {latest?.operation==='vpn_cancel_unused'&&<Card title="Unused VPN key cancelled">
+   <p role="status">The provider verified the original key was unused and is now absent. Any new enrollment requires a separate review.</p>
+   <Detail data={{cancellationSha256:latest.response.cancellation_sha256}}/>
+  </Card>}
   {latest?.operation==='legacy_peer_preflight'&&<Card title="Read-only legacy peer prerequisites"><p>Authenticated coordinator API observation received {new Date(latest.receivedAt).toISOString()}. The approved coordinator account and exact peer tuple were observed. Independent provider-side WireGuard key binding remains unavailable. This result authorizes no retirement, enrollment or host change.</p><Detail data={latest.response}/></Card>}
   {latest?.operation==='legacy_peer_key_read'&&<Card title="Verified legacy VPN peer key"><p>The approved VPN coordinator confirmed the WireGuard key for this exact peer. The observation authorizes no retirement, enrollment or host change.</p><Detail data={latest.response}/></Card>}
   {(latest?.operation==='legacy_peer_retire'||latest?.operation==='legacy_peer_retire_status')&&<Card title="Obsolete VPN peer retirement verified"><p>The VPN coordinator confirmed this peer is absent from the authorized account.</p><Detail data={latest.response}/></Card>}

@@ -1024,7 +1024,13 @@ pub async fn portal_nodenetwork_vpn(window:tauri::WebviewWindow,app:tauri::AppHa
  let base=app.path().app_local_data_dir().map_err(|_|"Native app state unavailable")?;
  let control=crate::node_controller::control_directory(&app.path().home_dir().map_err(|_|"Operator home unavailable")?)?;
  let prepared=crate::vpn_enrollment::prepare(&base,&target,&control,&folder,&credential).await?;
- let scope=format!("VPN operation {}\nTarget {}\n{}\n\nThe coordinator credential stays in native memory. Enrollment issues one setup key. Reconcile an uncertain outcome before retrying. Revocation and retirement apply only to the attributed key or peer.",operation,target.label(),prepared.review);
+ let effect=match operation.as_str(){
+  "enroll"=>"This issues one single-use setup key. Reconcile an uncertain outcome before retrying.",
+  "cancel_unused"=>"This deletes only the original setup key after verifying it was unused and no corresponding peer exists. It issues no key.",
+  "reconcile"=>"This reconciles the original enrollment and issues no key.",
+  _=>"This applies only to the attributed key or peer and issues no key.",
+ };
+ let scope=format!("VPN operation {}\nTarget {}\n{}\n\nThe coordinator credential stays in native memory. {}",operation,target.label(),prepared.review,effect);
  let confirmed=tauri::async_runtime::spawn_blocking(move ||window.dialog().message(scope).parent(&window).title("Authorize native VPN workflow once")
   .buttons(MessageDialogButtons::OkCancelCustom("Authorize once".into(),"Cancel".into())).blocking_show())
   .await.map_err(|_|"Native VPN confirmation did not finish")?;

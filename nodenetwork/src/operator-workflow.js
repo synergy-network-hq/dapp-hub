@@ -141,8 +141,10 @@ export function vpnView(value){
 
 export function unusedVpnCancellationView(value){
  const pin=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
- if(value?.schema!=='nodenetwork-vpn-unused-cancellation-v1'||value.cancelled!==true||
-    value.retry_requires_new_confirmation!==true||!pin(value.attempt_sha256)||!pin(value.cancellation_sha256))
+ const attempted=value?.schema==='nodenetwork-vpn-unused-cancellation-v1'&&pin(value.attempt_sha256);
+ const undispatched=value?.schema==='nodenetwork-vpn-undispatched-cancellation-v1'&&value.attempt_sha256===null;
+ if((!attempted&&!undispatched)||value.cancelled!==true||
+    value.retry_requires_new_confirmation!==true||!pin(value.cancellation_sha256))
   throw Error('The target did not verify cancellation of the unused VPN attempt. Do not enroll again.');
  return {cancelled:true,retry_requires_new_confirmation:true,attempt_sha256:value.attempt_sha256,cancellation_sha256:value.cancellation_sha256};
 }

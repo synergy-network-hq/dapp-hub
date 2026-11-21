@@ -96,12 +96,7 @@ fn binding(target:&Target,status:&Value,doc:&Value,initial_sha256:&str)->Result<
  Ok(json!({"target_sha256":hash(target_identity.to_string().as_bytes()),"manifest_sha256":origin["manifest_sha256"],"formation_sha256":status["formation_sha256"],"network_id":origin["network_id"],"chain_id":origin["chain_id"]}))
 }
 fn cleanup_action(operation:&str)->Result<Option<&str>,String>{match operation{"revoke"|"retire"=>Ok(Some(operation)),"cancel_unused"=>Ok(Some("revoke")),"prepare"|"reconcile"=>Ok(None),_=>Err("Unsupported native provider action".into())}}
-async fn provider(config:&Config,credential:&[u8],directory:&Path,operation:&str,binding:&Value,local:&Value)->Result<(Value,Zeroizing<String>),String>{
- let token=std::str::from_utf8(credential).map_err(|_|"Provider credential must be ASCII")?.trim_end_matches(['\r','\n']);
- if token.is_empty()||token.len()>4096||!token.bytes().all(|c|(33..=126).contains(&c)){return Err("Private provider credential is invalid".into())}
- #[derive(serde::Serialize)]struct PrivateWire<'a>{policy:&'a str,pin:&'a str,ca:String,token:&'a str,directory:&'a Path,operation:&'a str,cleanup_action:Option<&'a str>,binding:&'a Value,local:&'a Value}
- let wire=Zeroizing::new(serde_json::to_vec(&PrivateWire{policy:&config.raw,pin:&config.pin,ca:STANDARD.encode(config.ca.as_slice()),token,directory,operation,cleanup_action:cleanup_action(operation)?,binding,local}).map_err(|_|"Cannot encode private provider exchange")?);
- let runner=r#"
+const PROVIDER_RUNNER: &str = r#"
 import base64,sys
 try:
     wire=decode(sys.stdin.buffer.read(256*1024+1))
@@ -120,13 +115,18 @@ try:
         elif wire['operation']=='retire': result=flow.retire_bound_peer(wire['local'])
         elif wire['operation']=='cancel_unused': result=flow.cancel_unused(wire['local'])
         else: raise ValueError('Unknown native provider operation')
-    sys.stdout.buffer.write(encode(result)+b'\n')
+        sys.stdout.buffer.write(encode(result)+b'\n')
 except GatewayAccessRefused:
     sys.exit(78)
 except Exception:
     sys.exit(1)
 "#;
- let script=format!("{PROVIDER}\n{runner}");
+async fn provider(config:&Config,credential:&[u8],directory:&Path,operation:&str,binding:&Value,local:&Value)->Result<(Value,Zeroizing<String>),String>{
+ let token=std::str::from_utf8(credential).map_err(|_|"Provider credential must be ASCII")?.trim_end_matches(['\r','\n']);
+ if token.is_empty()||token.len()>4096||!token.bytes().all(|c|(33..=126).contains(&c)){return Err("Private provider credential is invalid".into())}
+ #[derive(serde::Serialize)]struct PrivateWire<'a>{policy:&'a str,pin:&'a str,ca:String,token:&'a str,directory:&'a Path,operation:&'a str,cleanup_action:Option<&'a str>,binding:&'a Value,local:&'a Value}
+ let wire=Zeroizing::new(serde_json::to_vec(&PrivateWire{policy:&config.raw,pin:&config.pin,ca:STANDARD.encode(config.ca.as_slice()),token,directory,operation,cleanup_action:cleanup_action(operation)?,binding,local}).map_err(|_|"Cannot encode private provider exchange")?);
+ let script=format!("{PROVIDER}\n{PROVIDER_RUNNER}");
  let mut c=tokio::process::Command::new("/usr/bin/python3");c.args(["-I","-B","-c",&script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
  let mut child=c.spawn().map_err(|_|"Native provider transport is unavailable")?;
  let mut input=child.stdin.take().ok_or("Provider input unavailable")?;let mut output=child.stdout.take().ok_or("Provider response unavailable")?.take(32769);
@@ -170,29 +170,89 @@ pub(super) fn require_terminal(base:&Path,target:&Target,doc:&Value)->Result<(),
 fn unused_proof(value:&Value)->bool{
  let fields=["format","binding","provider_sha256","account_id","setup_key_id","name","intent_sha256","attempt_sha256","unused_verified","setup_key_absent","peer_absence_verified"];
  let pin=|v:&Value|v.as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)));
+ let exact_attempt = match value["format"].as_str() {
+  Some("nodenetwork-vpn-unused-cancellation-v1") => pin(&value["attempt_sha256"]),
+  Some("nodenetwork-vpn-undispatched-cancellation-v1") => {
+   value["attempt_sha256"].is_null() && value["binding"].get("attempt_sha256").is_none()
+  }
+  _ => false,
+ };
  value.as_object().is_some_and(|m|m.len()==fields.len()&&fields.iter().all(|k|m.contains_key(*k)))
- &&value["format"]=="nodenetwork-vpn-unused-cancellation-v1"
- &&["provider_sha256","intent_sha256","attempt_sha256"].iter().all(|k|pin(&value[*k]))
+ &&exact_attempt
+ &&["provider_sha256","intent_sha256"].iter().all(|k|pin(&value[*k]))
  &&["account_id","setup_key_id","name"].iter().all(|k|value[*k].as_str().is_some_and(|s|!s.is_empty()&&s.len()<=100&&s.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b))))
  &&["unused_verified","setup_key_absent","peer_absence_verified"].iter().all(|k|value[*k]==true)
 }
+fn provider_record(directory: &Path, name: &str) -> Result<Value, String> {
+ serde_json::from_slice(&read(&directory.join(name), 32768, true)?)
+  .map_err(|_| "Invalid original provider terminal receipt".into())
+}
+
+fn cancelled_provider_attempt(directory: &Path, expected: &Value, proof: &Value) -> Result<String, String> {
+ let intent = provider_record(directory, "intent.json")?;
+ let pending = provider_record(directory, "cancel-unused-intent.json")?;
+ let issued = provider_record(directory, "issued.json")?;
+ if !unused_proof(proof) || proof != &pending || &proof["binding"] != expected
+  || &intent["binding"] != expected || issued["binding"] != intent["binding"]
+  || issued["name"] != intent["name"] || proof["name"] != intent["name"]
+  || proof["setup_key_id"] != issued["setup_key_id"] || proof["account_id"] != intent["account_id"]
+  || proof["provider_sha256"] != intent["provider_sha256"]
+  || proof["intent_sha256"] != hash(intent.to_string().as_bytes())
+ {
+  return Err("Original unused provider cancellation is not exact".into());
+ }
+ Ok(hash(json!({"kind":"cancel","receipt":proof}).to_string().as_bytes()))
+}
+
+// A credential lost before dispatch has no controller attempt to advance.
+// Preserve its proven terminal receipt and reuse the still-unused controller scope.
+fn gateway_provider_attempt_directory(mut directory: std::path::PathBuf, origin: &Value, reconcile_cancellation: bool) -> Result<std::path::PathBuf, String> {
+ for _ in 0..64 {
+  let proof_path = directory.join("cancelled-unused.json");
+  if !proof_path.exists() && !proof_path.is_symlink() { return Ok(directory); }
+  for path in directory.ancestors() {
+   if !path.symlink_metadata().is_ok_and(|metadata| metadata.is_dir()) {
+    return Err("Unsafe original provider state ancestry".into());
+   }
+  }
+  let proof = provider_record(&directory, "cancelled-unused.json")?;
+  if proof["format"] != "nodenetwork-vpn-undispatched-cancellation-v1" { return Ok(directory); }
+  let pin = cancelled_provider_attempt(&directory, origin, &proof)?;
+  let next = directory.join(format!("retry-{pin}"));
+  if reconcile_cancellation && !next.exists() && !next.is_symlink() { return Ok(directory); }
+  directory = next;
+ }
+ Err("Undispatched provider attempt history exceeds its bound".into())
+}
+
+fn gateway_vpn_was_not_dispatched(unused: &Value, status: &Value) -> bool {
+ unused["quiescent"] == true
+  && ["attempt_sha256", "scope_sha256", "retry_after_sha256", "pending_cancellation_sha256"]
+   .iter().all(|field| unused.get(*field) == Some(&Value::Null))
+  && unused["attempt_scopes"].as_array().is_some_and(Vec::is_empty)
+  && status["service_registered"] == true
+  && ["enrollment_recorded", "enrollment_staged", "reconciliation_required", "server_bound", "connected"]
+   .iter().all(|field| status[*field] == false)
+}
+
 fn terminal_directory(directory:&Path,expected:&Value,depth:usize)->Result<(),String>{
  if depth>64{return Err("Provider attempt history exceeds its bound".into())}
  if !directory.exists()&&!directory.is_symlink(){return Ok(())}
  for path in directory.ancestors(){if !path.symlink_metadata().is_ok_and(|m|m.is_dir()){return Err("Unsafe original provider state ancestry".into())}}
- let load=|name:&str|->Result<Value,String>{serde_json::from_slice(&read(&directory.join(name),32768,true)?).map_err(|_|"Invalid original provider terminal receipt".into())};
+ let load=|name:&str|provider_record(directory,name);
  let intent=load("intent.json")?;
  if directory.join("cancelled-unused.json").exists(){
-  let proof=load("cancelled-unused.json")?;let pending=load("cancel-unused-intent.json")?;let issued=load("issued.json")?;
-  if !unused_proof(&proof)||proof!=pending||&proof["binding"]!=expected||&intent["binding"]!=expected||issued["binding"]!=intent["binding"]||issued["name"]!=intent["name"]||proof["name"]!=intent["name"]||proof["setup_key_id"]!=issued["setup_key_id"]||proof["account_id"]!=intent["account_id"]||proof["provider_sha256"]!=intent["provider_sha256"]||proof["intent_sha256"]!=hash(intent.to_string().as_bytes())||proof["format"]!="nodenetwork-vpn-unused-cancellation-v1"||proof["unused_verified"]!=true||proof["setup_key_absent"]!=true||proof["peer_absence_verified"]!=true||proof["attempt_sha256"].as_str().is_none_or(|s|s.len()!=64||!s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("Original unused provider cancellation is not exact".into())}
-  let pin=hash(json!({"kind":"cancel","receipt":proof}).to_string().as_bytes());
+  let proof=load("cancelled-unused.json")?;
+  let pin=cancelled_provider_attempt(directory,expected,&proof)?;
   for item in std::fs::read_dir(directory).map_err(|_|"Cannot inspect original provider history")?{
    let item=item.map_err(|_|"Cannot inspect provider attempt")?;
    let kind=item.file_type().map_err(|_|"Cannot inspect provider attempt type")?;
    if kind.is_symlink(){return Err("Linked provider attempt history".into())}
    if kind.is_dir(){
     if item.file_name()!=format!("retry-{pin}").as_str(){return Err("Foreign provider retry history".into())}
-    let mut next=expected.clone();next["attempt_sha256"]=json!(pin);terminal_directory(&item.path(),&next,depth+1)?;
+    let mut next=expected.clone();
+    if !proof["attempt_sha256"].is_null(){next["attempt_sha256"]=json!(pin);}
+    terminal_directory(&item.path(),&next,depth+1)?;
    }
   }
   return Ok(())
@@ -453,6 +513,7 @@ pub(super) async fn execute(base:&Path,target:Target,control:&Path,prepared:Prep
  let credential=crate::vpn_credential::load(read(credential_path,16384,true)?,&config.pin,matches!(config.policy["profile"].as_str(),Some("nodenetwork-controlled-canary-v1"|crate::gateway_vpn::PROFILE)),locator_pin.as_deref(),control).await?;
  let app=base.join("nodenetwork-vpn-v1");if !app.exists(){#[cfg(unix)]{use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().mode(0o700).create(&app).map_err(|_|"Cannot protect native VPN state")?;}}
  let mut directory=state_directory(base,&target)?;
+ if gateway_tcp.is_some(){directory=gateway_provider_attempt_directory(directory,&context,operation=="cancel_unused")?;}
  let mut result=lifecycle::execute(base,target.clone(),Request{version:1,operation:"vpn_status".into(),parameters:json!({})},control).await?;
  if result["ok"]!=true{return Err("Read native VPN status before dispatch".into())}
  let unused;
@@ -468,11 +529,16 @@ pub(super) async fn execute(base:&Path,target:Target,control:&Path,prepared:Prep
   }
  }
  if operation=="cancel_unused"{
-  if unused["quiescent"]!=true||!unused["attempt_sha256"].is_string(){return Err("Stop the exact owned node/VPN and preserve the original attempt before unused cancellation".into())}
+  let undispatched = gateway_tcp.is_some() && gateway_vpn_was_not_dispatched(&unused,&result["result"]);
+  if unused["quiescent"]!=true||!unused["attempt_sha256"].is_string()&&!undispatched{return Err("Stop the exact owned node/VPN and preserve the original attempt before unused cancellation".into())}
   let(public,_)=provider(&config,&credential,&directory,"cancel_unused",&context,&unused).await?;
   if !unused_proof(&public)||public["binding"]!=context||public["attempt_sha256"]!=unused["attempt_sha256"]{return Err("Provider unused cancellation proof differs from original target".into())}
-  let raw=serde_json::to_vec(&public).map_err(|_|"Cannot encode exact unused cancellation")?;
   let cancelled=hash(json!({"kind":"cancel","receipt":public}).to_string().as_bytes());
+  if undispatched {
+   return Ok(json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-undispatched-cancellation-v1",
+    "cancelled":true,"retry_requires_new_confirmation":true,"attempt_sha256":null,"cancellation_sha256":cancelled}}));
+  }
+  let raw=serde_json::to_vec(&public).map_err(|_|"Cannot encode exact unused cancellation")?;
   if unused["retry_after_sha256"]==cancelled&&unused["pending_cancellation_sha256"].is_null(){return Ok(json!({"version":1,"ok":true,"result":{"schema":"nodenetwork-vpn-unused-cancellation-v1","cancelled":true,"retry_requires_new_confirmation":true,"attempt_sha256":unused["attempt_sha256"],"cancellation_sha256":cancelled}}))}
   let request=Request{version:1,operation:"vpn_cancel_unused".into(),parameters:json!({"attempt_sha256":unused["attempt_sha256"]})};
   if unused["pending_cancellation_sha256"].is_null(){
@@ -577,6 +643,55 @@ pub(super) async fn execute(base:&Path,target:Target,control:&Path,prepared:Prep
 
 #[cfg(test)]mod cleanup_tests{
  use super::*;
+ #[cfg(unix)]
+ #[test]
+ fn provider_worker_returns_one_private_frame_with_success_after_issuance() {
+  use std::io::Write;
+  use std::process::Command;
+
+  let fixture = r#"
+import json, time
+def decode(raw): return json.loads(raw)
+def encode(value): return json.dumps(value, separators=(',', ':')).encode()
+def provider_policy(*args, **kwargs): return {}
+class GatewayAccessRefused(Exception): pass
+class HttpsProvider:
+    def __init__(self, *args): pass
+    def request(self, *args): raise AssertionError('No provider calls')
+class Authorization:
+    def __init__(self, *args, **kwargs): pass
+    def prepare(self, binding): return {'binding': binding}, 'synthetic-one-use-key'
+"#;
+  let script = format!("{fixture}\n{PROVIDER_RUNNER}");
+  let wire = json!({"policy":"{}","pin":"fixture","ca":"","token":"fixture",
+   "directory":"unused","operation":"prepare","cleanup_action":null,"binding":{"network_id":"test"}});
+  let mut child = Command::new("/usr/bin/python3").args(["-I", "-B", "-c", &script])
+   .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+  child.stdin.take().unwrap().write_all(wire.to_string().as_bytes()).unwrap();
+  let result = child.wait_with_output().unwrap();
+  assert!(result.status.success());
+  assert_eq!(result.stdout, b"{\"binding\":{\"network_id\":\"test\"}}\nsynthetic-one-use-key");
+ }
+
+ #[test]
+ fn undispatched_gateway_requires_quiescent_target_without_any_enrollment_evidence() {
+  let unused = json!({"quiescent":true,"attempt_sha256":null,"scope_sha256":null,
+   "retry_after_sha256":null,"pending_cancellation_sha256":null,"attempt_scopes":[]});
+  let status = json!({"service_registered":true,"enrollment_recorded":false,"enrollment_staged":false,
+   "reconciliation_required":false,"server_bound":false,"connected":false});
+  assert!(gateway_vpn_was_not_dispatched(&unused, &status));
+  for field in ["enrollment_recorded", "enrollment_staged", "reconciliation_required", "server_bound", "connected"] {
+   let mut unsafe_status = status.clone();
+   unsafe_status[field] = json!(true);
+   assert!(!gateway_vpn_was_not_dispatched(&unused, &unsafe_status));
+  }
+  for field in ["attempt_sha256", "scope_sha256", "retry_after_sha256", "pending_cancellation_sha256"] {
+   let mut unsafe_attempt = unused.clone();
+   unsafe_attempt[field] = json!("a".repeat(64));
+   assert!(!gateway_vpn_was_not_dispatched(&unsafe_attempt, &status));
+  }
+ }
+
  #[test]fn only_exact_cleanup_actions_can_use_expired_approval_mode(){
   assert_eq!(cleanup_action("cancel_unused").unwrap(),Some("revoke"));
   assert_eq!(cleanup_action("revoke").unwrap(),Some("revoke"));assert_eq!(cleanup_action("retire").unwrap(),Some("retire"));
@@ -627,15 +742,30 @@ pub(super) async fn execute(base:&Path,target:Target,control:&Path,prepared:Prep
   let dir=std::env::temp_dir().canonicalize().unwrap().join(format!("nn-unused-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
   struct Cleanup(std::path::PathBuf);impl Drop for Cleanup{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}let _cleanup=Cleanup(dir.clone());std::fs::create_dir(&dir).unwrap();
   fn save(path:&Path,value:&Value){std::fs::write(path,value.to_string()).unwrap();std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o600)).unwrap()}
-  fn canceled(dir:&Path,binding:&Value)->Value{
+  fn canceled(dir:&Path,binding:&Value,attempt:Value)->Value{
    let intent=json!({"binding":binding,"account_id":"account","name":"exact","provider_sha256":"c".repeat(64)});
-   let proof=json!({"format":"nodenetwork-vpn-unused-cancellation-v1","binding":binding,"account_id":"account","name":"exact","setup_key_id":"key","provider_sha256":"c".repeat(64),"intent_sha256":hash(intent.to_string().as_bytes()),"attempt_sha256":"d".repeat(64),"unused_verified":true,"setup_key_absent":true,"peer_absence_verified":true});
+   let format=if attempt.is_null(){"nodenetwork-vpn-undispatched-cancellation-v1"}else{"nodenetwork-vpn-unused-cancellation-v1"};
+   let proof=json!({"format":format,"binding":binding,"account_id":"account","name":"exact","setup_key_id":"key","provider_sha256":"c".repeat(64),"intent_sha256":hash(intent.to_string().as_bytes()),"attempt_sha256":attempt,"unused_verified":true,"setup_key_absent":true,"peer_absence_verified":true});
    for(name,value)in[("intent.json",intent),("issued.json",json!({"binding":binding,"name":"exact","setup_key_id":"key"})),("cancel-unused-intent.json",proof.clone()),("cancelled-unused.json",proof.clone())]{save(&dir.join(name),&value)}proof
   }
-  let binding=json!({"target_sha256":"a".repeat(64)});let proof=canceled(&dir,&binding);assert!(terminal_directory(&dir,&binding,0).is_ok());
+  let binding=json!({"target_sha256":"a".repeat(64)});let proof=canceled(&dir,&binding,json!("d".repeat(64)));assert!(terminal_directory(&dir,&binding,0).is_ok());
   for key in ["attempt_sha256","unused_verified","account_id","setup_key_id"]{let mut bad=proof.clone();bad.as_object_mut().unwrap().remove(key);save(&dir.join("cancelled-unused.json"),&bad);assert!(terminal_directory(&dir,&binding,0).is_err())}save(&dir.join("cancelled-unused.json"),&proof);
   let pin=hash(json!({"kind":"cancel","receipt":proof}).to_string().as_bytes());let child=dir.join(format!("retry-{pin}"));std::fs::create_dir(&child).unwrap();assert!(terminal_directory(&dir,&binding,0).is_err());
-  let mut next=binding.clone();next["attempt_sha256"]=json!(pin);canceled(&child,&next);assert!(terminal_directory(&dir,&binding,0).is_ok());
+  let mut next=binding.clone();next["attempt_sha256"]=json!(pin);canceled(&child,&next,json!("d".repeat(64)));assert!(terminal_directory(&dir,&binding,0).is_ok());
   let foreign=dir.join("retry-foreign");std::fs::create_dir(&foreign).unwrap();assert!(terminal_directory(&dir,&binding,0).is_err());
+
+  let undispatched=dir.join("undispatched");std::fs::create_dir(&undispatched).unwrap();
+  let proof=canceled(&undispatched,&binding,Value::Null);
+  let pin=hash(json!({"kind":"cancel","receipt":proof}).to_string().as_bytes());
+  let retry=undispatched.join(format!("retry-{pin}"));
+  assert_eq!(gateway_provider_attempt_directory(undispatched.clone(),&binding,false).unwrap(),retry);
+  assert_eq!(gateway_provider_attempt_directory(undispatched.clone(),&binding,true).unwrap(),undispatched);
+  assert!(terminal_directory(&undispatched,&binding,0).is_ok());
+  std::fs::create_dir(&retry).unwrap();
+  canceled(&retry,&binding,Value::Null);
+  assert!(terminal_directory(&undispatched,&binding,0).is_ok());
+  assert_eq!(gateway_provider_attempt_directory(undispatched.clone(),&binding,true).unwrap(),retry);
+  let mut foreign_binding=binding.clone();foreign_binding["target_sha256"]=json!("f".repeat(64));
+  assert!(gateway_provider_attempt_directory(undispatched,&foreign_binding,false).is_err());
  }
 }
