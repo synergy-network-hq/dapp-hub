@@ -318,7 +318,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
    </>}
   </Card>}
   {gatewaySetup&&<GatewayTarget key={scopeKey} state={state} form={form} networkProfile={networkProfile} disabled={!permitted||!!pending} pending={pending} results={results} perform={perform}/>}
-  {gatewaySetup&&<GatewayAdmission key={scopeKey} state={state} disabled={!permitted||!!pending} pending={pending} results={results} perform={perform}/>}
+  {(gatewaySetup||(tab==='Management'&&state?.installed_role==='validator'))&&<GatewayAdmission key={scopeKey} state={state} disabled={!permitted||!!pending} pending={pending} results={results} perform={perform}/>}
   {gatewaySetup&&state?.installed_role==='rpc_gateway'&&<Card title="Gateway services">
    {['vpn_status','health'].map(action)}
    {results.gateway_target_configuration?.response?.installed===true ? <>
