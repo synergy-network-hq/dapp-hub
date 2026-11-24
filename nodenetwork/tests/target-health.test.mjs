@@ -62,11 +62,13 @@ test('projects only the current exact owned OS registration inventory without in
  const registered=['/etc/systemd/system/synergy-node.service','/etc/systemd/system/synergy-vpn.service'];
  const receipt={registered,services_started:false,boot_enabled:false};
  assert.deepEqual(nodeServiceRegistrationObservation(receipt),{services:['node','vpn']});
+ assert.deepEqual(nodeServiceRegistrationObservation({schema:'nodenetwork-service-registration-v1',
+  services:['node','vpn'],services_started:false,boot_enabled:false}),{services:['node','vpn']});
  assert.deepEqual(nodeServiceRegistrationObservation({...receipt,registered:[...registered,'/etc/systemd/system/synergy-canary-rpc-relay.service']}),{services:['node','vpn','canary-rpc-relay']});
  for(const value of [{...receipt,registered:[...registered].reverse()},{...receipt,registered:[...registered,registered[0]]},
   {...receipt,registered:[...registered,'/etc/systemd/system/foreign.service']},{...receipt,registered:registered.slice(0,1)},
   {...receipt,services_started:true},{...receipt,boot_enabled:true},{...receipt,connected:true},
-  {schema:'nodenetwork-service-registration-v1',services:['node','vpn'],services_started:false,boot_enabled:false}])
+  {schema:'nodenetwork-service-registration-v1',services:['vpn','node'],services_started:false,boot_enabled:false}])
   assert.throws(()=>nodeServiceRegistrationObservation(value),/Service registration outcome is uncertain/);
 });
 

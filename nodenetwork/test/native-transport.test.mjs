@@ -24,7 +24,11 @@ test('dedicated transport IPC consumes bare native DTOs for every action, preser
   value=absent;assert.deepEqual(await nodeNetworkTransport(target,'status'),absent);
   const before=calls.length;await assert.rejects(nodeNetworkTransport(target,'unsupported'),/Unsupported/);assert.equal(calls.length,before);
   // Immediate next workflow commands already return bare DTOs; preserve that contract.
-  const fleet={schema:'nodenetwork-native-fleet-readiness-v1',review_sha256:pin,finality_verified:false,runtime_participation_verified:false};value=fleet;
+  const online_addresses=Array.from({length:5},(_,i)=>`validator-${i+1}`);
+  const fleet={schema:'nodenetwork-native-fleet-readiness-v2',review_sha256:pin,
+   observations:online_addresses.map(address=>({address,observation_kind:'prestart_vpn',online_addresses})),
+   online_addresses,excluded_addresses:[],scope:'commissioning_and_prestart_vpn_only',
+   finality_verified:false,runtime_participation_verified:false};value=fleet;
   assert.deepEqual(await nodeNetworkFleetReadiness(target,'collect',Array.from({length:5},(_,i)=>({...target,host:`host${i}`}))),fleet);
   const status={schema:'nodenetwork-treasury-send-status-v1',prepared:{},finalized_observation:null,account_observations:null,automatic_retry:false};value=status;
   assert.deepEqual(await nodeNetworkTreasurySend(target,'status',{nonce:0}),status);

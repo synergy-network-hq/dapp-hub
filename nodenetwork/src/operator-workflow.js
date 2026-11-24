@@ -5,14 +5,13 @@ import {controllerOperation,installParameters,provisioningChecks} from './nodeNe
 
 export const NODE_ROLES=Object.freeze([
  Object.freeze({id:'validator',label:'Validator',description:'Run PoSy consensus on an admitted host with its own APQE custody.'}),
- Object.freeze({id:'rpc_gateway',label:'RPC gateway',description:'Configure a PoSy RPC relay with its own APQE custody, signed admission and VPN enrollment.'}),
  Object.freeze({id:'observer_light',label:'Light observer',description:'A non-voting node. Provisioning is unavailable through this controller.'}),
 ]);
 
 export function nodeRoleCatalog(declared) {
  if(!Array.isArray(declared)||declared.length>64||!declared.includes('validator')||
     new Set(declared).size!==declared.length||declared.some(id=>typeof id!=='string'||!/^[a-z][a-z0-9_-]{0,63}$/.test(id)))return NODE_ROLES;
- return [NODE_ROLES[0],...declared.filter(id=>id!=='validator').map(id=>
+ return [NODE_ROLES[0],...declared.filter(id=>!['validator','rpc_gateway','sentry'].includes(id)).map(id=>
   NODE_ROLES.find(role=>role.id===id)??{id,label:id.replace(/(^|[_-])([a-z])/g,(_,gap,ch)=>(gap?' ':'')+ch.toUpperCase()),
    description:'Declared by the inspected master. Provisioning is unavailable through this controller.'})];
 }

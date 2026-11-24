@@ -2,32 +2,17 @@ import {useState} from 'react';
 import {WorkspaceCard} from './WorkspaceUI.jsx';
 import {
  networkProfileSchema, networkProfileStoreKey, networkTargetKey,
- readNetworkProfiles, sameNetworkProfile, signedOriginFiles, validateNetworkProfile,
+ readNetworkProfiles, sameNetworkProfile, signedOriginFiles, validateValidatorNetworkProfile,
 } from './network-provisioning.js';
 
 const fields = [
  ['profile_id', 'Profile ID'], ['network_name', 'Network name'], ['network_id', 'Network ID'],
  ['chain_id', 'Chain ID'], ['genesis_hash', 'Logical Genesis SHA-256'], ['node_name', 'Node name'],
 ];
-const routingFields = [
- ['public_hostname', 'Public RPC hostname'], ['listen_address', 'Loopback listener'],
- ['validator_address', 'Approved upstream validator address'], ['validator_relay_port', 'Upstream RPC relay port'], ['vpn_provider_sha256', 'VPN provider SHA-256'],
- ['vpn_credential_locator_sha256', 'VPN credential locator SHA-256'],
- ['allowed_origins', 'Allowed HTTPS origins, one per line'],
-];
-
-function gatewayDraft() {
- return {
-  public_hostname: '', listen_address: '', validator_address: '', vpn_provider_sha256: '',
-  vpn_credential_locator_sha256: '',
-  allowed_origins: '', validator_relay_port: '', tls: 'required', protocol: 'synergy-json-rpc-v1',
- };
-}
-
 function emptyDraft() {
  return {
   schema: networkProfileSchema, ...Object.fromEntries(fields.map(([key]) => [key, ''])),
-  role: 'rpc_gateway', gateway: gatewayDraft(),
+  role: 'validator', gateway: null,
   origin: Object.fromEntries(signedOriginFiles.map(name => [name, ''])),
  };
 }
@@ -41,7 +26,8 @@ export function useNetworkProvisioning(target) {
   }
  });
  const targetKey = networkTargetKey(target);
- const selected = state.store.profiles.find(profile => profile.profile_id === state.store.selections[targetKey]);
+ const profiles = state.store.profiles.filter(profile => profile.role === 'validator');
+ const selected = profiles.find(profile => profile.profile_id === state.store.selections[targetKey]);
 
  function update(callback) {
   if (state.error) throw Error(state.error);
@@ -51,11 +37,12 @@ export function useNetworkProvisioning(target) {
  }
 
  function save(profile) {
-  validateNetworkProfile(profile);
+  validateValidatorNetworkProfile(profile);
   update(store => {
    const remaining = store.profiles.filter(value => value.profile_id !== profile.profile_id);
    if (remaining.length >= 64) throw Error('Remove a saved draft before adding another network profile.');
    const prior = store.profiles.find(value => value.profile_id === profile.profile_id);
+   if (prior && prior.role !== 'validator') throw Error('Choose a different profile ID. This ID is reserved.');
    const selections = prior && !sameNetworkProfile(prior, profile)
     ? Object.fromEntries(Object.entries(store.selections).filter(([, id]) => id !== profile.profile_id))
     : store.selections;
@@ -66,7 +53,7 @@ export function useNetworkProvisioning(target) {
  function select(profileId) {
   if (!targetKey) throw Error('Save the managed target before selecting its network profile.');
   update(store => {
-   if (!store.profiles.some(profile => profile.profile_id === profileId)) throw Error('Save the profile before assigning it.');
+   if (!store.profiles.some(profile => profile.profile_id === profileId && profile.role === 'validator')) throw Error('Save the profile before assigning it.');
    return {...store, selections: {...store.selections, [targetKey]: profileId}};
   });
  }
@@ -78,26 +65,20 @@ export function useNetworkProvisioning(target) {
   }));
  }
 
- return {profiles: state.store.profiles, selected, error: state.error, save, select, remove};
+ return {profiles, selected, error: state.error, save, select, remove};
 }
 
-export function NetworkProvisioning({profiles, target, openGatewaySetup}) {
+export function NetworkProvisioning({profiles, target}) {
  const [draft, setDraft] = useState(emptyDraft);
  const [error, setError] = useState('');
  const [notice, setNotice] = useState('');
 
  function change(key, value) {
-  setDraft(previous => {
-   if (key === 'role') return {...previous, role: value, gateway: value === 'rpc_gateway' ? gatewayDraft() : null};
-   return {...previous, [key]: value};
-  });
+  setDraft(previous => ({...previous, [key]: value}));
  }
 
  function edit(profile) {
-  setDraft({
-   ...profile, chain_id: String(profile.chain_id),
-   gateway: profile.gateway && {...profile.gateway, allowed_origins: profile.gateway.allowed_origins.join('\n')},
-  });
+  setDraft({...profile, chain_id: String(profile.chain_id)});
   setError('');
   setNotice('');
  }
@@ -110,15 +91,7 @@ export function NetworkProvisioning({profiles, target, openGatewaySetup}) {
 
  function draftProfile() {
   if (!/^[1-9][0-9]{0,15}$/.test(draft.chain_id)) throw Error('Enter a positive decimal chain ID.');
-  const gateway = draft.gateway && {
-   ...draft.gateway,
-   validator_relay_port: /^[1-9][0-9]{0,4}$/.test(draft.gateway.validator_relay_port)
-    ? Number(draft.gateway.validator_relay_port) : null,
-   vpn_provider_sha256: draft.gateway.vpn_provider_sha256?.trim() || null,
-   vpn_credential_locator_sha256: draft.gateway.vpn_credential_locator_sha256?.trim() || null,
-   allowed_origins: draft.gateway.allowed_origins.split('\n').map(s => s.trim()).filter(Boolean),
-  };
-  return validateNetworkProfile({...draft, chain_id: Number(draft.chain_id), gateway});
+  return validateValidatorNetworkProfile({...draft, chain_id: Number(draft.chain_id)});
  }
 
  async function importProfile(event) {
@@ -129,7 +102,7 @@ export function NetworkProvisioning({profiles, target, openGatewaySetup}) {
   setNotice('');
   try {
    if (file.size > 16384) throw Error('The public network profile exceeds 16 KiB.');
-   edit(validateNetworkProfile(JSON.parse(await file.text())));
+   edit(validateValidatorNetworkProfile(JSON.parse(await file.text())));
   } catch (problem) { setError(problem.message); }
  }
 
@@ -156,7 +129,6 @@ export function NetworkProvisioning({profiles, target, openGatewaySetup}) {
   {profiles.selected && <div className="native-actions">
    <button type="button" onClick={() => edit(profiles.selected)}>Edit selected profile</button>
    <button type="button" onClick={() => run(() => { profiles.remove(profiles.selected.profile_id); setNotice('Draft removed from this workspace.'); })}>Remove saved draft</button>
-   {profiles.selected.role === 'rpc_gateway' && <button type="button" onClick={openGatewaySetup}>Open gateway setup</button>}
   </div>}
   <label>Import a public profile<input type="file" accept=".json,application/json" onChange={importProfile}/></label>
   <form className="native-grid" onSubmit={event => {
@@ -164,25 +136,11 @@ export function NetworkProvisioning({profiles, target, openGatewaySetup}) {
    run(() => { profiles.save(draftProfile()); setNotice('Profile draft saved.'); });
   }}>
    {fields.map(([key, label]) => <label key={key}>{label}<input value={draft[key]} onChange={event => change(key, event.target.value)} maxLength={128}/></label>)}
-   <label>Managed node role<select value={draft.role} onChange={event => change('role', event.target.value)}>
-    <option value="rpc_gateway">RPC gateway</option>
-    <option value="validator">Validator</option>
-   </select></label>
    <details>
     <summary>Signed bootstrap and transport artifacts</summary>
     {signedOriginFiles.map(name => <label key={name}>{name} SHA-256<input value={draft.origin[name]} maxLength={64}
      onChange={event => change('origin', {...draft.origin, [name]: event.target.value})}/></label>)}
    </details>
-   {draft.gateway && <details open>
-    <summary>RPC routing and VPN</summary>
-    <p className="small muted">Synergy JSON-RPC over HTTPS. The gateway relay listens on loopback and connects to the admitted validator over the VPN.</p>
-    <p className="small muted">You can save the draft before VPN approval. Installation requires the approved provider and credential locator digests.</p>
-    {routingFields.map(([key, label]) => <label key={key}>{label}
-     {key === 'allowed_origins'
-      ? <textarea rows={3} value={draft.gateway[key]} onChange={event => change('gateway', {...draft.gateway, [key]: event.target.value})}/>
-      : <input value={draft.gateway[key] ?? ''} onChange={event => change('gateway', {...draft.gateway, [key]: event.target.value})} maxLength={key.endsWith('_sha256') ? 64 : 253}/>}
-    </label>)}
-   </details>}
    <div className="native-actions">
     <button type="submit" disabled={Boolean(profiles.error)}>Save profile draft</button>
     <button type="button" onClick={exportProfile}>Export profile</button>

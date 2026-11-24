@@ -84,3 +84,14 @@ function ordered(value) {
 export function sameNetworkProfile(left, right) {
  return JSON.stringify(ordered(left)) === JSON.stringify(ordered(right));
 }
+
+export function validateValidatorNetworkProfile(value) {
+ const profile = validateNetworkProfile(value);
+ if (profile.role !== 'validator') throw Error('NodeNetwork accepts validator provisioning profiles.');
+ return profile;
+}
+
+export function applyValidatorProfileToDraft(draft, value) {
+ const profile = validateValidatorNetworkProfile(value);
+ return {...draft, network_id: profile.network_id, chain_id: String(profile.chain_id), node_name: profile.node_name};
+}

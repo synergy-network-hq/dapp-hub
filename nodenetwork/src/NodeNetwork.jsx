@@ -22,6 +22,7 @@ import {nodeNetworkHostStatus,nodeNetworkReviewMaster} from "./native-services.j
 import {Card,Detail,ErrorMessage,Resource,useResource} from "@synergy-network/portal-native/dapp-sdk";
 import {NodeController} from './NodeController.jsx';
 import {NetworkProvisioning, useNetworkProvisioning} from './NetworkProvisioning.jsx';
+import {applyValidatorProfileToDraft} from './network-provisioning.js';
 import {nodeRoleCatalog} from './operator-workflow.js';
 import {InstallPreflight} from './InstallPreflight.jsx';
 import {MasterReview} from './MasterReview.jsx';
@@ -59,7 +60,7 @@ function HistoricalArtifactReview({children}) {
 }
 
 export function NodeNetworkApp(){
- const n=useNative(),[section,setSection]=useState('overview'),[operationsTab,setOperationsTab]=useState('Management');
+ const n=useNative(),[section,setSection]=useState('overview');
  const targetSettings=useTargetSelection(),target=targetSettings.target;
  const [savedDraft,setSavedDraft]=useState(()=>{try{return {...readProvisioningSnapshot(),error:''};}catch{return {form:emptyProvisioningDraft(),error:'Saved provisioning draft could not be read. Original storage is retained; saving is blocked until it is recovered.'};}});
  const [form,setForm]=useState(savedDraft.form),[draftError,setDraftError]=useState(savedDraft.error),[draftNotice,setDraftNotice]=useState('');
@@ -67,26 +68,14 @@ export function NodeNetworkApp(){
  const profile=n.endpoint;
  const networkProvisioning = useNetworkProvisioning(target);
  const selectedNetwork = networkProvisioning.selected;
- const hasGatewayProfile = selectedNetwork?.role === 'rpc_gateway';
- const [gatewayRelease, setGatewayDraft] = useState(emptyProvisioningDraft);
- const gatewayDraft = hasGatewayProfile ? {
-  ...gatewayRelease, network_id: selectedNetwork.network_id,
-  chain_id: String(selectedNetwork.chain_id), node_name: selectedNetwork.node_name,
- } : gatewayRelease;
- const gatewaySelected = hasGatewayProfile && section === 'operations' && operationsTab === 'RPC gateway';
- function openGatewaySetup() {
-  if (!hasGatewayProfile) { setSection('settings'); return; }
-  setOperationsTab('RPC gateway');
-  setSection('operations');
- }
  const [switchingNetwork,setSwitchingNetwork]=useState(false),[networkError,setNetworkError]=useState('');
  async function selectNetwork(id){
   setSwitchingNetwork(true);setNetworkError('');
   try{await n.changeEndpoint(id);}catch(error){setNetworkError(error?.message||'Portal could not select the network.');}
   finally{setSwitchingNetwork(false);}
  }
- const tab=({overview:'Network',operations:!hasGatewayProfile&&operationsTab==='RPC gateway'?'Management':operationsTab,setup:'Validator setup',monitoring:'Management',updates:'Updates',security:'Installation isolation',settings:'Settings'})[section];
- const navigateSection=id=>{if(id==='operations')setOperationsTab('Management');setSection(id);};
+ const tab=({overview:'Network',operations:'Management',setup:'Validator setup',monitoring:'Management',updates:'Updates',security:'Installation isolation',settings:'Settings'})[section];
+ const navigateSection=id=>setSection(id);
  const permitted=n.permit('node','readNetwork');
  const inspectMasterPermitted=permitted&&!n.recoverySuspended;
  const targetScopeCurrent=()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&hostTargetSupported(hostControl,target)&&targetSettings.targetIsCurrent();
@@ -154,13 +143,11 @@ export function NodeNetworkApp(){
  const refreshPublic=()=>{live.reload();if(indexAvailable)validators.reload();processing.reload();};
  const refreshing=live.loading||(indexAvailable&&validators.loading);
  return <NodeNetworkPanelFrame section={section} onSectionChange={navigateSection} statusLabel={live.loading?'Checking observation network':live.error?'Observation network error':'Public network observed'} statusTone={live.data?'blue':'gray'} onRefresh={refreshPublic} refreshing={refreshing} nodeLabel={!targetSettings.snapshot?'Target settings need review':!target?'Choose a machine':target.kind==='local'?'This machine':`${target.host}:${target.port||22}`} headerActions={<div className="native-actions"><label>Observation network<select className="scenario-select" aria-label="NodeNetwork observation network" value={profile.id} disabled={switchingNetwork} onChange={e=>selectNetwork(e.target.value)}>{n.endpoints.map(p=><option key={p.id} value={p.id}>{p.name} · {p.chainId}</option>)}</select></label><button disabled={refreshing} onClick={refreshPublic}>Refresh NodeNetwork</button></div>} statusItems={[{label:'Target root',value:target?.root||'No target selected'},{label:'Observation network',value:profile.name},{label:'Chain ID',value:profile.chainId},{label:'Enrollment policy',value:'Not verified'}]}>
-  {(section==='settings'||gatewaySelected)&&<TargetSettings selection={targetSettings} local={local}/>}
-  {section==='settings'&&<NetworkProvisioning profiles={networkProvisioning} target={target} openGatewaySetup={openGatewaySetup}/>}
+  {section==='settings'&&<TargetSettings selection={targetSettings} local={local}/>}
+  {section==='settings'&&<NetworkProvisioning profiles={networkProvisioning} target={target}/>}
 
   <ErrorMessage error={networkError}/>
-  {section==='operations'&&<nav className="native-tabs" aria-label="Node operations">{['Management',...(hasGatewayProfile?['RPC gateway']:[])].map(name=><button type="button" key={name} aria-pressed={tab===name} onClick={()=>setOperationsTab(name)}>{name}</button>)}</nav>}
-
-  {section==='operations'&&!gatewaySelected&&<div className="workspace-task-intro"><WorkspaceIcon name="server" size={28}/><div><strong>{target?target.kind==='local'?'This computer':`${target.host}:${target.port||22}`:'No machine selected'}</strong><p>Inspect the exact target below before reviewing service, identity or VPN operations.</p></div><WorkspaceButton onClick={()=>navigateSection('settings')}>Target settings</WorkspaceButton></div>}
+  {section==='operations'&&<div className="workspace-task-intro"><WorkspaceIcon name="server" size={28}/><div><strong>{target?target.kind==='local'?'This computer':`${target.host}:${target.port||22}`:'No machine selected'}</strong><p>Inspect the exact target below before reviewing service, identity or VPN operations.</p></div><WorkspaceButton onClick={()=>navigateSection('settings')}>Target settings</WorkspaceButton></div>}
   {section==='performance'?<><SavedValidatorPerformance permitted={permitted}/><NodeNetworkPanelCard title="Validator performance telemetry">
    <p>Logs &amp; Diagnostics can read an enrolled controller's service counters and storage snapshot. Managed telemetry history and duty timing require a supported telemetry interface.</p>
    <button onClick={()=>setSection('logs')}>Open Logs &amp; Diagnostics</button>
@@ -196,11 +183,11 @@ export function NodeNetworkApp(){
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>
   </WorkspaceDisclosure></WorkspaceOverview>:tab==='Validator setup'?<WorkspaceSetup><TargetSettings selection={targetSettings} local={local}/>
    <WorkspaceDisclosure title="Choose a node role" description="Available roles come from the reviewed master; unsupported roles stay unavailable." open>
-   <Card title="Node roles"><ul className="node-role-catalog">{nodeRoleCatalog(master?.roleCatalog).map(role=><li key={role.id}><strong>{role.label}</strong><span>{role.description}</span>{role.id==='validator'?<small>Guided setup below. Requires admission and target authorization.</small>:role.id==='rpc_gateway'?<button type="button" onClick={openGatewaySetup}>{hasGatewayProfile?'Open gateway setup':'Select a gateway profile'}</button>:<small>Provisioning is unavailable.</small>}</li>)}</ul></Card>
+   <Card title="Node roles"><ul className="node-role-catalog">{nodeRoleCatalog(master?.roleCatalog).map(role=><li key={role.id}><strong>{role.label}</strong><span>{role.description}</span>{role.id==='validator'?<small>Guided setup below. Requires admission and target authorization.</small>:<small>Provisioning is unavailable.</small>}</li>)}</ul></Card>
    </WorkspaceDisclosure>
    <WorkspaceDisclosure title="Prepare a validator" description="Save a draft, review the exact package and confirm the installation prerequisites." open>
    <ValidatorRegistration key={monitorScope} permitted={permitted} testnet={Number(profile.chainId)===1266} readRecord={lookupValidatorRecord}/>
-   <Card title="Provisioning draft"><p>Prepare package and network references before choosing a host. A saved draft is local presentation data, not a signed plan, approval or queued job. It never resumes an operation automatically.</p>{[['release_id','Approved release ID'],['manifest_sha256','Approved manifest SHA-256'],['network_id','Approved network incarnation'],['chain_id','Approved chain ID'],['node_name','Validator node name']].map(([key,label])=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={event=>{setForm({...form,[key]:event.target.value});setDraftNotice('');}}/></label>)}<p>Draft input checks validate formatting only. They do not approve the release, network, enrollment, host prerequisites or execution.</p><ul aria-label="Provisioning draft input checks">{provisioningChecks(form).map(check=><li key={check.field}>{check.label}: {check.valid?'Format accepted; approval not verified':check.message}</li>)}</ul><button onClick={()=>{try{if(savedDraft.error)throw Error(savedDraft.error);const saved=saveProvisioningDraft(form,savedDraft.raw);setSavedDraft({...saved,error:''});setDraftError('');setDraftNotice('Draft saved on this device. No host or operation was authorized.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Draft could not be saved. Your edits and the prior saved record are retained.'));}}}>Save provisioning draft</button><p>Replacing your draft below discards the unsaved field values and reads the saved local copy. It does not choose a host or resume work.</p><button onClick={()=>{try{const saved=readProvisioningSnapshot();setSavedDraft({...saved,error:''});setForm(saved.form);setDraftError('');setDraftNotice('Saved copy loaded. No operation was resumed.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Saved copy unavailable. Your draft is retained.'));}}}>Replace draft with saved copy</button><ErrorMessage error={draftError}/>{draftNotice&&<p role="status">{draftNotice}</p>}</Card>
+   <Card title="Provisioning draft">{selectedNetwork && <button type="button" onClick={()=>{setForm(applyValidatorProfileToDraft(form,selectedNetwork));setDraftNotice('Selected network values applied to this draft. Review the native signed artifacts before installing.');}}>Use {selectedNetwork.network_name} profile</button>}<p>Prepare package and network references before choosing a host. A saved draft is local presentation data, not a signed plan, approval or queued job. It never resumes an operation automatically.</p>{[['release_id','Approved release ID'],['manifest_sha256','Approved manifest SHA-256'],['network_id','Approved network incarnation'],['chain_id','Approved chain ID'],['node_name','Validator node name']].map(([key,label])=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={event=>{setForm({...form,[key]:event.target.value});setDraftNotice('');}}/></label>)}<p>Draft input checks validate formatting only. They do not approve the release, network, enrollment, host prerequisites or execution.</p><ul aria-label="Provisioning draft input checks">{provisioningChecks(form).map(check=><li key={check.field}>{check.label}: {check.valid?'Format accepted; approval not verified':check.message}</li>)}</ul><button onClick={()=>{try{if(savedDraft.error)throw Error(savedDraft.error);const saved=saveProvisioningDraft(form,savedDraft.raw);setSavedDraft({...saved,error:''});setDraftError('');setDraftNotice('Draft saved on this device. No host or operation was authorized.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Draft could not be saved. Your edits and the prior saved record are retained.'));}}}>Save provisioning draft</button><p>Replacing your draft below discards the unsaved field values and reads the saved local copy. It does not choose a host or resume work.</p><button onClick={()=>{try{const saved=readProvisioningSnapshot();setSavedDraft({...saved,error:''});setForm(saved.form);setDraftError('');setDraftNotice('Saved copy loaded. No operation was resumed.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Saved copy unavailable. Your draft is retained.'));}}}>Replace draft with saved copy</button><ErrorMessage error={draftError}/>{draftNotice&&<p role="status">{draftNotice}</p>}</Card>
    <Card title="Standardized validator installation">{!target&&<p>Host selection remains deferred.</p>}<p>Every validator must use the same qualified master package. Its identity, APQE custody, authenticated network configuration, blockchain data, recovery material and update staging belong inside /opt/synergy.</p><ol><li>Authenticate the operator, target host and approved release.</li><li>Check host prerequisites and installation isolation.</li><li>Provision independent APQE role keys into local custody.</li><li>Verify authenticated Genesis, membership and transport authority.</li><li>Install through the shared lifecycle and verify restart, synchronization and finality.</li></ol></Card>
    <InstallationDraftReview form={form}/>
    <OperatorPublicKeyReview target={target} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&(!target||targetScopeCurrent())}/>
@@ -218,17 +205,7 @@ export function NodeNetworkApp(){
    <Card title="Local runtime compatibility"><Resource value={local}>{data=>data?<Detail data={data}/>:<p>No host inspection was returned.</p>}</Resource></Card>
 
    </WorkspaceDisclosure>
-  </WorkspaceSetup>:gatewaySelected?<div className="native-grid">
-   <Card title="RPC gateway">
-    <Detail data={{profile:selectedNetwork.profile_id,network:selectedNetwork.network_id,chainId:selectedNetwork.chain_id,
-     genesisHash:selectedNetwork.genesis_hash,nodeName:selectedNetwork.node_name,hostname:selectedNetwork.gateway.public_hostname}}/>
-    <button type="button" onClick={()=>setSection('settings')}>Change network profile</button>
-    <label>Approved release ID<input value={gatewayDraft.release_id} maxLength={128} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={event=>setGatewayDraft({...gatewayDraft,release_id:event.target.value})}/></label>
-    <label>Approved manifest SHA-256<input value={gatewayDraft.manifest_sha256} maxLength={64} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={event=>setGatewayDraft({...gatewayDraft,manifest_sha256:event.target.value})}/></label>
-   </Card>
-   <OperatorPublicKeyReview target={target} permitted={inspectMasterPermitted} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&(!target||targetScopeCurrent())}/>
-   <MasterReview permitted={inspectMasterPermitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster}/>
-  </div>:tab==='Management'?null:tab==='Updates'?<>
+  </WorkspaceSetup>:tab==='Management'?null:tab==='Updates'?<>
    <UpdatePackage form={form} setForm={setForm}/>
    <MasterReview permitted={inspectMasterPermitted} reviewing={reviewing} master={master} error={masterError} onInspect={reviewMaster} updateDraft={form}/>
    <HistoricalArtifactReview><SavedUpgradeIntent form={form} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/></HistoricalArtifactReview>
@@ -253,7 +230,7 @@ export function NodeNetworkApp(){
   {tab==='Management'&&!target&&<WorkspaceDisclosure title="Identity and custody observations"><CustodyStatus onOpenHistory={()=>setSection('logs')}/></WorkspaceDisclosure>}
   {(tab==='Management'||section==='logs')&&<WorkspaceDisclosure title="Operation history" description="Original requests and uncertain outcomes remain available for reconciliation."><RequestHistory permitted={permitted} target={target} targetScopeCurrent={targetScopeCurrent}/></WorkspaceDisclosure>}
   {target&&tab&&tab!=='Network'&&!targetSupported&&<Card title="Target management unavailable"><p>{hostControl.message}</p><p>The saved target is retained. No target operation was resumed.</p></Card>}
-  {target&&targetSupported&&tab&&tab!=='Network'&&tab!=='Settings'&&<WorkspaceDisclosure title={gatewaySelected?'Gateway native operations':'Native node operations'} description="Inspect first, then review each operation against the exact target. Uncertain outcomes require reconciliation." open={gatewaySelected||tab==='Management'}><NodeController key={`${JSON.stringify(target)}:${permitted}:${gatewaySelected}`} target={target} networkProfile={gatewaySelected?selectedNetwork:null} form={gatewaySelected?gatewayDraft:form} setForm={gatewaySelected?setGatewayDraft:setForm} permitted={permitted} tab={tab} master={master} localSupported={hostControl.local} operatorCredentialSupported={local.data?.platform==='macos'} onOpenDiagnostics={()=>setSection('logs')}
+  {target&&targetSupported&&tab&&tab!=='Network'&&tab!=='Settings'&&<WorkspaceDisclosure title="Native node operations" description="Inspect first, then review each operation against the exact target. Uncertain outcomes require reconciliation." open={tab==='Management'}><NodeController key={`${JSON.stringify(target)}:${permitted}`} target={target} form={form} setForm={setForm} permitted={permitted} tab={tab} master={master} localSupported={hostControl.local} operatorCredentialSupported={local.data?.platform==='macos'} onOpenDiagnostics={()=>setSection('logs')}
    onSelectTarget={targetSettings.selectTarget} targetScopeCurrent={targetScopeCurrent}/></WorkspaceDisclosure>}
  </NodeNetworkPanelFrame>;
 }
