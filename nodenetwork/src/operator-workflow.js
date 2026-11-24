@@ -49,7 +49,7 @@ export function acceptedReview(operation,parameters,response,target){
 const READS=new Set(["gateway_vpn_preflight","upgrade_native_preflight","treasury_preflight", "treasury_status", "treasury_export", "commissioning_observation", "network_transport_status", "network_transport_export", "guest_resources", "guest_preflight", "guest_status", "target", "inventory", "health", "install_preflight", "upgrade_preflight", "recovery_preflight", "uninstall_preflight", "vpn_status", "vpn_diagnostics", "vpn_stop_status", "vpn_resume_status", "boot_policy_status", "diagnostics", "identity_preflight", "identity_status", "formation_preflight", "formation_status", "formation_export", "genesis_stage_preflight", "genesis_binding_preflight", "authorization_status", "network_formation_status", "network_formation_export"]);
 const MUTATIONS=new Set(["treasury_send_prepare", "treasury_send_submit", "treasury_prepare", "network_transport_prepare", "network_transport_sign", "guest_create", "guest_stop", "guest_remove", "install", "commission", "register", "vpn_enroll", "vpn_bind", "vpn_retire", "vpn_stop", "vpn_resume", "boot_policy", "start", "stop", "restart", "upgrade", "uninstall", "identity_generate", "formation_prepare", "genesis_stage", "genesis_bind", "network_formation_prepare", "network_formation_sign"]);
 
-export function workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus,identityReview,formationReview,formationRecord,bindingReview,networkReview}){
+export function workflowGate({target,state,permitted,operation,form,review,confirmation,vpnStatus,identityReview,formationReview,formationRecord,bindingReview,networkReview,validatorProfile}){
  const unavailable=blocker=>({available:false,blocker});
  if(!permitted)return unavailable('Allow NodeNetwork inspection in Security & permissions.');
  if(!state)return unavailable('Inspect the selected target first.');
@@ -61,6 +61,15 @@ export function workflowGate({target,state,permitted,operation,form,review,confi
  if(!expectedKind||declarations.length!==1||declarations[0].kind!==expectedKind)return unavailable('The controller capability kind differs from the supported operation. Inspect the selected target again.');
  if((operation==='install'||operation==='install_preflight')&&state.installed)return unavailable('A node is already installed. Use Updates for a qualified replacement.');
  if(['commission','register','start','stop','restart','upgrade','upgrade_preflight','upgrade_native_preflight','uninstall','uninstall_preflight','health','recovery_preflight','vpn_status','vpn_diagnostics','vpn_stop_status','vpn_resume_status','boot_policy_status','boot_policy','vpn_stop','vpn_resume','vpn_enroll','identity_preflight','identity_status','identity_generate','formation_preflight','formation_prepare','formation_status','formation_export','genesis_stage','genesis_stage_existing','genesis_binding_preflight','genesis_bind'].includes(operation)&&!state.installed)return unavailable('This target has no installed node.');
+ if(validatorProfile&&['identity_generate','genesis_bind','commission'].includes(operation)){
+  const origin=operation==='identity_generate'?identityReview:bindingReview;
+  if(form?.network_id!==validatorProfile.network_id||form?.chain_id!==String(validatorProfile.chain_id))
+   return unavailable('Apply the selected validator profile to the provisioning draft.');
+  if(origin?.target!==JSON.stringify(target)||origin.network_id!==validatorProfile.network_id||
+     origin.chain_id!==String(validatorProfile.chain_id)||
+     origin.genesis_sha256!==validatorProfile.origin['genesis.json'])
+   return unavailable('Review the verified signed Genesis for the selected validator profile on this target.');
+ }
  if(operation==='network_formation_prepare'&&(!state.installed||!formationRecord?.pending||networkReview?.pending))return unavailable('Read the prepared formation identity and reconcile any existing network before preparing another.');
  if(operation==='network_formation_sign'&&(!networkReview?.pending||networkReview.signed||networkReview.target!==JSON.stringify(target)))return unavailable('Read and review the exact unsigned Genesis on this target before signing.');
  if(operation==='vpn_enroll'){
@@ -225,14 +234,16 @@ export function vpnStopStatusView(value){
 
 // The stage response may adopt only its exact release/hash into the same draft.
 // This token is local UI correlation, never a preflight or authorization grant.
-export function controllerDraftScope(targetKey,permitted,form){
- return JSON.stringify([targetKey,permitted,form.release_id,form.manifest_sha256,form.network_id,form.chain_id,form.node_name]);
+export function controllerDraftScope(targetKey,permitted,form,validatorProfile){
+ const genesis = validatorProfile ? JSON.stringify([validatorProfile.profile_id,validatorProfile.network_id,
+  validatorProfile.chain_id,validatorProfile.genesis_hash,validatorProfile.origin['genesis.json']]) : null;
+ return JSON.stringify([targetKey,permitted,form.release_id,form.manifest_sha256,form.network_id,form.chain_id,form.node_name,genesis]);
 }
 export function retainedUpdateStageReceipt(adoption,previousScope,currentScope){
  if(!adoption||adoption.fromScope!==previousScope||adoption.toScope!==currentScope||previousScope===currentScope||adoption.record?.operation!=='update_stage')return null;
  try{
   const before=JSON.parse(previousScope),after=JSON.parse(currentScope),response=adoption.record.response;
-  if(before.length!==7||after.length!==7||[0,1,4,5,6].some(index=>before[index]!==after[index])||after[1]!==true||after[2]!==response.release_id||after[3]!==response.manifest_sha256||response.controllerAdopted!==true||response.validatorUpgraded!==false)return null;
+  if(before.length!==8||after.length!==8||[0,1,4,5,6,7].some(index=>before[index]!==after[index])||after[1]!==true||after[2]!==response.release_id||after[3]!==response.manifest_sha256||response.controllerAdopted!==true||response.validatorUpgraded!==false)return null;
   return adoption.record;
  }catch{return null;}
 }

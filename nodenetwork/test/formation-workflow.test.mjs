@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {formationStatusView,formationView,genesisBindingView,publicExportView} from '../src/formation-workflow.js';
-import {workflowGate} from '../src/operator-workflow.js';
+import {controllerDraftScope,workflowGate} from '../src/operator-workflow.js';
 
 const formation={schema:'nodenetwork-formation-v1',network_id:'disposable-formation',chain_id:'999999',formation_sha256:'a'.repeat(64),formation_id:'b'.repeat(64)};
 const address='synv11lrh6jcxaejkj4zv994j7qwn2rk6u3ar4emn';
@@ -45,4 +45,26 @@ test('signed membership, bound custody and connected VPN are independently check
  assert.equal(gate('commission',{formationRecord,bindingReview:binding,vpnStatus:{connected:true,server_bound:true}}).available,true);
  assert.deepEqual(publicExportView({address,sha256:bound.enrollment_sha256,artifact:'not rendered'},address),{address,sha256:bound.enrollment_sha256});
  assert.throws(()=>publicExportView({address,sha256:bound.enrollment_sha256},'synv1differentaddress'));
+});
+
+test('selected validator origin rejects another signed Genesis even when network and chain match',()=>{
+ const formationRecord=formationStatusView(prepared);
+ const bindingReview={...genesisBindingView(genesis,formationRecord),target:JSON.stringify(target)};
+ const validatorProfile={profile_id:'chosen',network_id:genesis.network_id,chain_id:Number(genesis.chain_id),
+  genesis_hash:'1'.repeat(64),origin:{'genesis.json':genesis.genesis_sha256}};
+ const selection={formationRecord,bindingReview,validatorProfile};
+ assert.equal(gate('genesis_bind',selection).available,true);
+ assert.match(gate('genesis_bind',{...selection,bindingReview:{...bindingReview,genesis_sha256:'2'.repeat(64)}}).blocker,
+  /verified signed Genesis for the selected validator profile/);
+ assert.match(gate('genesis_bind',{...selection,form:{chain_id:genesis.chain_id,network_id:'different'}}).blocker,
+  /Apply the selected validator profile/);
+ const reviewed={...bindingReview,bound:true};
+ const ready={...selection,bindingReview:reviewed,vpnStatus:{connected:true,server_bound:true}};
+ assert.equal(gate('commission',ready).available,true);
+ const replaced={...validatorProfile,origin:{'genesis.json':'2'.repeat(64)}};
+ assert.equal(gate('commission',{...ready,validatorProfile:replaced}).available,false);
+ const form={network_id:genesis.network_id,chain_id:genesis.chain_id};
+ const scope=controllerDraftScope(JSON.stringify(target),true,form,validatorProfile);
+ assert.notEqual(controllerDraftScope(JSON.stringify(target),true,form,replaced),scope);
+ assert.notEqual(controllerDraftScope(JSON.stringify(target),true,form,{...validatorProfile,genesis_hash:'3'.repeat(64)}),scope);
 });
