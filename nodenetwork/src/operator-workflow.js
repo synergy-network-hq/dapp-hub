@@ -260,3 +260,10 @@ export function bootPolicyStatusView(value){
  if(!value||Object.keys(value).sort().join(',')!=='applied,node_enabled,request_sha256,runtime_changed,schema,vpn_enabled'||value.schema!=='nodenetwork-boot-policy-status-v1'||typeof value.node_enabled!=='boolean'||typeof value.vpn_enabled!=='boolean'||value.runtime_changed!==false||!((value.applied===false&&value.request_sha256===null)||(value.applied===true&&typeof value.request_sha256==='string'&&/^[a-f0-9]{64}$/.test(value.request_sha256))))throw Error('Unsupported observed boot policy.');
  return {...value};
 }
+export function invalidateVpnMutationObservations(results, operation) {
+ if(!['retire','revoke','cancel_unused'].includes(operation))return results;
+ const next={...results};
+ delete next.vpn_status;
+ delete next.vpn_diagnostics;
+ return next;
+}

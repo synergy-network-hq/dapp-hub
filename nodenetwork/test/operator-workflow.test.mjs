@@ -3,12 +3,23 @@ import assert from 'node:assert/strict';
 import {controllerDraftScope,retainedUpdateStageReceipt,updateStageView,acceptedReview,approvedReviewScope,checkedTarget,diagnosticsView,identityStatusView,identityView,NODE_ROLES,nodeRoleCatalog,vpnView,vpnDiagnosticsView,vpnStopView,vpnStopStatusView,unusedVpnCancellationView,workflowGate} from '../src/operator-workflow.js';
 import {emptyProvisioningDraft} from '../src/provisioning-draft.js';
 import {installParameters,nodeNetworkTarget} from '../src/nodeNetwork.js';
+import {invalidateVpnMutationObservations} from '../src/operator-workflow.js';
 
 const form={release_id:'release-42',manifest_sha256:'b'.repeat(64),network_id:'test-rotation-b',chain_id:'1266',node_name:'operator-node-42'};
 const target=nodeNetworkTarget({kind:'remote',host:'target.example',port:'2202'});
 const targetState=(installed,...ops)=>checkedTarget({controllerVersion:1,root:target.root,installed,operations:ops.map(operation=>({operation,kind:operation.endsWith('_preflight')||['target','health','inventory','identity_status','formation_status','formation_export','network_formation_status','vpn_status','vpn_diagnostics','authorization_status'].includes(operation)?'read':'mutation',available:true}))},target);
 const gate=(operation,options={})=>workflowGate({target,form,operation,permitted:true,...options});
 const review=(operation,parameters={})=>({target:JSON.stringify(target),scope:approvedReviewScope(operation,parameters)});
+
+test('provider mutations invalidate cached VPN observations before awaiting a receipt',()=>{
+ const results={vpn_status:{response:{connected:true,server_bound:true}},vpn_diagnostics:{},health:{}};
+ for(const operation of ['retire','revoke','cancel_unused']){
+  const next=invalidateVpnMutationObservations(results,operation);
+  assert.deepEqual(next,{health:results.health});
+  assert.equal(results.vpn_status.response.connected,true);
+ }
+ assert.equal(invalidateVpnMutationObservations(results,'reconcile'),results);
+});
 
 test('identity generation sends only the digest reviewed on this target',()=>{
  const state=targetState(true,'identity_generate','identity_preflight');

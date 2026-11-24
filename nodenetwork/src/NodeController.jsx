@@ -28,6 +28,7 @@ import {useEffect,useRef,useState} from 'react';
 import {nodeNetworkLegacyGatewayPlan,nodeNetworkReconcileContinuation,nodeNetworkController,nodeNetworkBootstrap,exportNodeNetworkPublicArtifact,stageNodeNetworkSignedGenesis,stageNodeNetworkAuthorization,prepareNodeNetworkGenesis,exportNodeNetworkGenesis,stageNodeNetworkUpdate,nodeNetworkVpn,nodeNetworkGuest,rollbackBareNodeBootstrap,nodeNetworkSelectGuest,nodeNetworkConfigureGuest} from './native-services.js';
 import {Card,Detail,ErrorMessage,Table} from '@synergy-network/portal-native/dapp-sdk';
 import {bootPolicyParameters,bootPolicyView,bootPolicyStatusView,vpnStopView,vpnStopStatusView,vpnResumeView,vpnResumeStatusView,controllerDraftScope,retainedUpdateStageReceipt} from './operator-workflow.js';
+import {invalidateVpnMutationObservations} from './operator-workflow.js';
 import {formationView,formationStatusView,genesisBindingView,genesisStageView,existingGenesisStageView,publicExportView} from './formation-workflow.js';
 import {networkFormationView} from './network-formation.js';
 import {installParameters} from './nodeNetwork.js';
@@ -133,6 +134,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
   const scope=scopeContext.current;
   if(!permitted||locked.current)return;
   locked.current=true;setPending(`vpn_${operation}`);setError('');
+  setResults(previous=>invalidateVpnMutationObservations(previous,operation));
   try{const value=await nodeNetworkVpn(target,operation);if(!isCurrent(scope)||value===null)return;
    if(operation==='gateway_access'){
     const fields=['profile_sha256','provider_sha256','credential_locator_sha256'];
@@ -145,7 +147,7 @@ export function NodeController({target,form,setForm,networkProfile=null,permitte
    }
    if(operation==='retire'){if(value.retired!==true||value.absence_verified!==true)throw Error('Provider retirement was not verified.');setLatest({operation:'vpn_retire',parameters:{},response:value,receivedAt:Date.now()});}
    else if(operation==='revoke'){if(value.setup_key_absent!==true)throw Error('Provider did not verify setup-key absence.');setLatest({operation:'vpn_revoke',parameters:{},response:{setup_key_absent:true},receivedAt:Date.now()});}
-   else if(operation==='cancel_unused'){const response=unusedVpnCancellationView(value);setResults(old=>{const next={...old};delete next.vpn_status;return next;});setLatest({operation:'vpn_cancel_unused',parameters:{},response,receivedAt:Date.now()});}
+   else if(operation==='cancel_unused'){const response=unusedVpnCancellationView(value);setLatest({operation:'vpn_cancel_unused',parameters:{},response,receivedAt:Date.now()});}
    else{const response=vpnView(value),evidence=vpnStatusObservation(value);setResults(old=>({...old,vpn_status:{operation:'vpn_status',response,evidence,receivedAt:Date.now()}}));setLatest({operation:`vpn_${operation}`,parameters:{},response,receivedAt:Date.now()});}
    setState(null);
   }catch(failure){if(isCurrent(scope))setError(operation==='gateway_access'?String(failure?.message||failure):`${String(failure?.message||failure)} Reconcile the original intent; do not issue another setup key.`);}
