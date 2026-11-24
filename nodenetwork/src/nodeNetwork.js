@@ -31,6 +31,17 @@ export function nodeNetworkObservationScope(profile,permitted) {
  return JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,profile.genesisHash??null,permitted]);
 }
 
+// The historical Atlas index and validator registry belong to this
+// incarnation even when a replacement reuses the chain ID or RPC hostname.
+const legacyTestnetGenesis = '2272fe2b48c6e2019b27223f61ba8d8a82b58656fe9daab50c81f224a301ca74';
+export function legacyTestnetObservationProfile(profile, canonicalTestnetRpc) {
+ if (!canonicalTestnetRpc) return null;
+ const identity = profile.networkId ?? profile.networkKey ?? profile.id;
+ if (identity !== 'testnet' && identity !== 'synergy-testnet-v3') return null;
+ if (profile.genesisHash != null && genesisDigest(profile.genesisHash) !== legacyTestnetGenesis) return null;
+ return {...profile, genesisHash: legacyTestnetGenesis};
+}
+
 export async function readNodeNetwork(request, profile, signal) {
  const expected=Number(profile.chainId),pin=genesisDigest(profile.genesisHash);
  if(profile.genesisHash!=null&&!pin)throw Error('The configured observation Genesis pin is invalid.');

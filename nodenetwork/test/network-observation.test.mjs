@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readNodeNetwork,nodeNetworkObservationScope} from '../src/nodeNetwork.js';
+import {readNodeNetwork,nodeNetworkObservationScope,legacyTestnetObservationProfile} from '../src/nodeNetwork.js';
+import {readValidatorGenesisPin} from '../src/validator-active-list.js';
 const genesis='a'.repeat(64),foreign='b'.repeat(64);
 const profile={id:'configured',rpc:'https://public.example',chainId:1266,genesisHash:genesis};
 function readiness(hash=genesis){
@@ -45,4 +46,18 @@ test('pin/network/permission changes invalidate Overview scope; cancellation nev
  const request=rpc(readiness(),calls);
  await assert.rejects(()=>readNodeNetwork(async(...args)=>{const result=await request(...args);if(args[0]==='synergy_getReadiness')controller.abort();return result;},profile,controller.signal),{name:'AbortError'});
  assert.deepEqual(calls,['synergy_chainStatus','synergy_getReadiness']);
+});
+
+
+test('legacy validator observations require their own profile and reported Genesis when 1266 is reused',async()=>{
+ const endpoint={...profile,id:'testnet',genesisHash:null};
+ const legacy=legacyTestnetObservationProfile(endpoint,true);
+ const historicalGenesis='2272fe2b48c6e2019b27223f61ba8d8a82b58656fe9daab50c81f224a301ca74';
+ assert.equal(legacy.genesisHash,historicalGenesis);
+ assert.equal(legacyTestnetObservationProfile({...endpoint,networkKey:'replacement'},true),null);
+ assert.equal(legacyTestnetObservationProfile({...endpoint,genesisHash:foreign},true),null);
+ assert.equal(legacyTestnetObservationProfile({...endpoint,genesisHash:'invalid'},true),null);
+ assert.equal(legacyTestnetObservationProfile(endpoint,false),null);
+ assert.equal(await readValidatorGenesisPin(rpc(readiness(historicalGenesis),[],{'synergy_getChainId':'0x4f2'}),legacy),historicalGenesis);
+ await assert.rejects(()=>readValidatorGenesisPin(rpc(readiness(foreign),[],{'synergy_getChainId':'0x4f2'}),legacy),/Genesis hash does not match/);
 });

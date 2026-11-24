@@ -4,7 +4,7 @@ import {WorkspaceDisclosure,WorkspaceCard,WorkspaceButton,WorkspaceIcon} from '.
 import {RpcReadiness} from './RpcReadiness.jsx';
 import {CanaryRuntime} from './CanaryRuntime.jsx';
 import {NetworkComparison} from './NetworkComparison.jsx';
-import {chainIdNumber,isCanonicalTestnetRpc,CURRENT_CANARY_READ_PROFILE as CANARY_PROFILE,currentCanaryRead as canaryRead,currentCanaryProcessingStatus as canaryProcessingStatus} from '@synergy-network/portal-native/dapp-sdk';
+import {isCanonicalTestnetRpc,CURRENT_CANARY_READ_PROFILE as CANARY_PROFILE,currentCanaryRead as canaryRead,currentCanaryProcessingStatus as canaryProcessingStatus} from '@synergy-network/portal-native/dapp-sdk';
 import {SourceAge} from '@synergy-network/dapp-data-view/source-age';
 import {emptyProvisioningDraft,readProvisioningSnapshot,saveProvisioningDraft} from './provisioning-draft.js';
 import './monitor.css';
@@ -53,7 +53,7 @@ import {OffboardingChecklist} from './Offboarding.jsx';
 import {TargetSettings, useTargetSelection} from './TargetSettings.jsx';
 import {hostCompatibility,hostTargetSupported} from './host-compatibility.js';
 import {NodeNetworkPanelFrame,NodeNetworkPanelCard} from "./NodeNetworkPanelFrame.jsx";
-import {readNodeNetwork,provisioningChecks,nodeNetworkObservationScope} from './nodeNetwork.js';
+import {readNodeNetwork,provisioningChecks,nodeNetworkObservationScope,legacyTestnetObservationProfile} from './nodeNetwork.js';
 
 function HistoricalArtifactReview({children}) {
  return <section aria-label="Historical saved artifact review"><p className="native-source">Historical artifact reader: this saved profile is separate from the current lowercase Synergy installation. Unsupported artifacts remain unavailable; use the authenticated native controller for current installation state. These file reviews grant no operation authority.</p>{children}</section>;
@@ -79,7 +79,8 @@ export function NodeNetworkApp(){
  const permitted=n.permit('node','readNetwork');
  const inspectMasterPermitted=permitted&&!n.recoverySuspended;
  const targetScopeCurrent=()=>!n.recoverySuspended&&n.permit('node','readNetwork')&&hostTargetSupported(hostControl,target)&&targetSettings.targetIsCurrent();
- const indexAvailable=permitted&&isCanonicalTestnetRpc(profile);
+ const legacyProfile=legacyTestnetObservationProfile(profile,isCanonicalTestnetRpc(profile));
+ const indexAvailable=permitted&&Boolean(legacyProfile);
  const monitorScope=JSON.stringify([profile.id,profile.rpc,profile.chainId,profile.networkKey,profile.genesisHash,permitted]);
  const masterScope=useRef({permitted:inspectMasterPermitted,generation:0});
  if(masterScope.current.permitted!==inspectMasterPermitted)masterScope.current={permitted:inspectMasterPermitted,generation:masterScope.current.generation+1};
@@ -116,8 +117,7 @@ export function NodeNetworkApp(){
  async function readAtlasValidators(path,signal){
   if(!indexAvailable)throw Error('Atlas validator observations require read permission and the canonical Synergy Testnet RPC.');
   signal?.throwIfAborted();
-  if(profile.genesisHash!=null)await readValidatorGenesisPin(rpc,profile,signal);
-  else if(chainIdNumber(await rpc('synergy_getChainId',[],{endpoint:profile.rpc,signal}))!==1266)throw Error('RPC chain identity does not match Atlas chain 1266.');
+  await readValidatorGenesisPin(rpc,legacyProfile,signal);
   signal?.throwIfAborted();
   const data=await atlas(path,{signal});
   signal?.throwIfAborted();
@@ -129,15 +129,16 @@ export function NodeNetworkApp(){
   return validatorLookupObservation(detail,address);
  }
  function lookupActiveListing(address, signal) {
-  if (!permitted) throw Error('Allow NodeNetwork to read public network data in Security & permissions.');
-  return readValidatorActiveListing(rpc, profile, address, signal);
+  if (!indexAvailable) throw Error('Select the legacy Testnet profile to read its validator index.');
+  return readValidatorActiveListing(rpc, legacyProfile, address, signal);
  }
  function lookupValidatorBlock(address, row, signal) {
   if (!indexAvailable) throw Error('Indexed block attribution requires read permission and the canonical Synergy Testnet RPC.');
-  return readValidatorRpcBlock(rpc, profile, address, row, signal, () => !n.recoverySuspended && n.permit('node','readNetwork'));
+  return readValidatorRpcBlock(rpc, legacyProfile, address, row, signal, () => !n.recoverySuspended && n.permit('node','readNetwork'));
  }
  function lookupValidatorRecord(address, signal) {
-  return readValidatorRecord(rpc, rpcValidatorRecordObservation, profile, address, signal,
+  if (!indexAvailable) throw Error('Select the legacy Testnet profile to read its validator registry.');
+  return readValidatorRecord(rpc, rpcValidatorRecordObservation, legacyProfile, address, signal,
    () => !n.recoverySuspended && n.permit('node','readNetwork'));
  }
  const refreshPublic=()=>{live.reload();if(indexAvailable)validators.reload();processing.reload();};
@@ -172,12 +173,11 @@ export function NodeNetworkApp(){
    </Card>
    {profile.id===CANARY_PROFILE.id?<CanaryRuntime observation={live} permitted={permitted&&!n.recoverySuspended}/>:<RpcReadiness profile={profile} permitted={permitted&&!n.recoverySuspended} canRead={()=>!n.recoverySuspended&&n.permit('node','readNetwork')}/>}
    <NetworkComparison profile={profile} profiles={n.endpoints} permitted={permitted} onOpenEndpoints={()=>n.navigate('network/endpoints')}/>
-   <div className="node-read-monitor"><Card title="Public validator index">
-    {indexAvailable ? <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
-     : <p>{permitted?'Select the canonical Synergy Testnet RPC to view the Atlas validator index.':'Allow NodeNetwork public-network reads in Security & permissions.'}</p>}
-   </Card></div>
-   {permitted&&Number(profile.chainId)===1266&&<div className="node-read-monitor">
-    <NodeWatchlist key={monitorScope} data={validators.data?.data} updatedAt={validators.data?.updatedAt} readValidator={indexAvailable?lookupValidator:null} readActiveListing={lookupActiveListing} readValidatorBlock={indexAvailable?lookupValidatorBlock:null}/>
+   {indexAvailable&&<div className="node-read-monitor"><Card title="Legacy Testnet validator index">
+    <Resource value={validators}>{value=><><SourceAge updatedAt={value.updatedAt}/><ValidatorMonitor data={value.data}/></>}</Resource>
+   </Card></div>}
+   {indexAvailable&&<div className="node-read-monitor">
+    <NodeWatchlist key={monitorScope} data={validators.data?.data} updatedAt={validators.data?.updatedAt} readValidator={lookupValidator} readActiveListing={lookupActiveListing} readValidatorBlock={lookupValidatorBlock}/>
    </div>}
    <p className="native-source">Public RPC observations from {profile.rpc}. These observations do not authenticate a provisioning target or approve enrollment.</p>
    <Resource value={live}>{data=><div className="native-grid"><Card title="Chain"><SourceAge updatedAt={data.chainReceivedAt} source="Selected public RPC chain-status read"/><Detail data={{network:profile.name,chainId:data.chain.chain_id,ready:data.chain.ready,lifecycle:data.chain.lifecycle,checkedAt:new Date(data.checkedAt).toLocaleString()}}/></Card>{['node','posy','sync'].map(name=><Card key={name} title={{node:'RPC node',posy:'PoSy consensus',sync:'Synchronization'}[name]}>{data.errors[name]?<ErrorMessage error={data.errors[name]}/>:<><SourceAge updatedAt={data.receivedAt?.[name]} source={`Selected public RPC ${name} observation`}/><Detail data={data.observations[name]}/></>}</Card>)}</div>}</Resource>
@@ -186,7 +186,7 @@ export function NodeNetworkApp(){
    <Card title="Node roles"><ul className="node-role-catalog">{nodeRoleCatalog(master?.roleCatalog).map(role=><li key={role.id}><strong>{role.label}</strong><span>{role.description}</span>{role.id==='validator'?<small>Guided setup below. Requires admission and target authorization.</small>:<small>Provisioning is unavailable.</small>}</li>)}</ul></Card>
    </WorkspaceDisclosure>
    <WorkspaceDisclosure title="Prepare a validator" description="Save a draft, review the exact package and confirm the installation prerequisites." open>
-   <ValidatorRegistration key={monitorScope} permitted={permitted} testnet={Number(profile.chainId)===1266} readRecord={lookupValidatorRecord}/>
+   {indexAvailable&&<ValidatorRegistration key={monitorScope} permitted={permitted} testnet readRecord={lookupValidatorRecord}/>}
    <Card title="Provisioning draft">{selectedNetwork && <button type="button" onClick={()=>{setForm(applyValidatorProfileToDraft(form,selectedNetwork));setDraftNotice('Selected network values applied to this draft. Review the native signed artifacts before installing.');}}>Use {selectedNetwork.network_name} profile</button>}<p>Prepare package and network references before choosing a host. A saved draft is local presentation data, not a signed plan, approval or queued job. It never resumes an operation automatically.</p>{[['release_id','Approved release ID'],['manifest_sha256','Approved manifest SHA-256'],['network_id','Approved network incarnation'],['chain_id','Approved chain ID'],['node_name','Validator node name']].map(([key,label])=><label key={key}>{label}<input value={form[key]} maxLength={128} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={event=>{setForm({...form,[key]:event.target.value});setDraftNotice('');}}/></label>)}<p>Draft input checks validate formatting only. They do not approve the release, network, enrollment, host prerequisites or execution.</p><ul aria-label="Provisioning draft input checks">{provisioningChecks(form).map(check=><li key={check.field}>{check.label}: {check.valid?'Format accepted; approval not verified':check.message}</li>)}</ul><button onClick={()=>{try{if(savedDraft.error)throw Error(savedDraft.error);const saved=saveProvisioningDraft(form,savedDraft.raw);setSavedDraft({...saved,error:''});setDraftError('');setDraftNotice('Draft saved on this device. No host or operation was authorized.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Draft could not be saved. Your edits and the prior saved record are retained.'));}}}>Save provisioning draft</button><p>Replacing your draft below discards the unsaved field values and reads the saved local copy. It does not choose a host or resume work.</p><button onClick={()=>{try{const saved=readProvisioningSnapshot();setSavedDraft({...saved,error:''});setForm(saved.form);setDraftError('');setDraftNotice('Saved copy loaded. No operation was resumed.');}catch(error){setDraftNotice('');setDraftError(String(error?.message||'Saved copy unavailable. Your draft is retained.'));}}}>Replace draft with saved copy</button><ErrorMessage error={draftError}/>{draftNotice&&<p role="status">{draftNotice}</p>}</Card>
    <Card title="Standardized validator installation">{!target&&<p>Host selection remains deferred.</p>}<p>Every validator must use the same qualified master package. Its identity, APQE custody, authenticated network configuration, blockchain data, recovery material and update staging belong inside /opt/synergy.</p><ol><li>Authenticate the operator, target host and approved release.</li><li>Check host prerequisites and installation isolation.</li><li>Provision independent APQE role keys into local custody.</li><li>Verify authenticated Genesis, membership and transport authority.</li><li>Install through the shared lifecycle and verify restart, synchronization and finality.</li></ol></Card>
    <InstallationDraftReview form={form}/>
