@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/model.js",
     "./source-age": "./src/SourceAge.jsx",
-    "./protocol-observations": "./src/protocol-observations.js"
+    "./protocol-observations": "./src/protocol-observations.js",
+    "./r1-read-contract": "./src/r1-read-contract.js"
   },
   "peerDependencies": {
     "react": ">=18"
