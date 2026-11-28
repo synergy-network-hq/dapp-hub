@@ -1,3 +1,4 @@
+import {sameValidatorIdentity} from './node-identity-text.js';
 import {unsignedObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 
 export const validatorBlockWindows = [
@@ -23,13 +24,13 @@ export function validatorBlockRows(value, address) {
  const heights = new Set();
  try {
   return value.map(row => {
-   if (typeof row?.validator_address !== 'string' || row.validator_address.trim().toLowerCase() !== address
+   if (typeof row?.validator_address !== 'string' || !sameValidatorIdentity(row.validator_address, address)
     || typeof row.hash !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(row.hash)) {
     throw Error('Unsupported Atlas block attribution.');
    }
    const number = unsignedObservation(row.number);
    const hash = row.hash;
-   const comparableHash = hash.toLowerCase();
+   const comparableHash = address.includes('.') ? hash : hash.toLowerCase();
    if (identities.has(comparableHash) || heights.has(number)) throw Error('Ambiguous Atlas block identity.');
    identities.add(comparableHash);
    heights.add(number);

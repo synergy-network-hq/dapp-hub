@@ -1,3 +1,4 @@
+import {validatorIdentityText, sameValidatorIdentity} from './node-identity-text.js';
 import {validatorBlockRows} from './validator-blocks.js';
 import {validatorRewardRows} from './validator-rewards.js';
 
@@ -8,10 +9,7 @@ const setupLabels = new Map([
 ]);
 
 export function validatorLookupAddress(value) {
- if (typeof value !== 'string' || value.length > 128) throw Error('Enter a Synergy validator address.');
- const address = value.trim().toLowerCase();
- if (!/^synv[a-z0-9]{34,92}$/.test(address)) throw Error('Enter a SYNV validator address with 38–96 letters and digits.');
- return address;
+ return validatorIdentityText(value);
 }
 
 export function validatorLookupPath(address) {
@@ -21,7 +19,7 @@ export function validatorLookupPath(address) {
 export function validatorLookupObservation(value, address, receivedAt = Date.now()) {
  const expected = validatorLookupAddress(address);
  const reported = value?.validator;
- if (!reported || typeof reported.address !== 'string' || reported.address.trim().toLowerCase() !== expected) {
+ if (!reported || typeof reported.address !== 'string' || !sameValidatorIdentity(reported.address, expected)) {
   throw Error('Atlas returned an unavailable or mismatched validator record.');
  }
  const hasProfile = value.profileEvidence?.validator;

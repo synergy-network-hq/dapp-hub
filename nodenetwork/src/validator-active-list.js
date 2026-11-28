@@ -1,3 +1,4 @@
+import {validatorIdentityText} from './node-identity-text.js';
 import {readProtocolObservation, rpcReadinessObservation} from '@synergy-network/dapp-data-view/protocol-observations';
 import {validatorLookupAddress} from './validator-lookup.js';
 import {confirmReportedGenesis, genesisDigest} from './genesis-pin.js';
@@ -11,8 +12,10 @@ export function validatorActiveListing(value, address, receivedAt = Date.now()) 
  const identities = new Set();
  for (const row of value) {
   if (!row || typeof row !== 'object' || Array.isArray(row) || row.status !== 'Active'
-   || typeof row.address !== 'string' || !/^synv[a-z0-9]{34,92}$/i.test(row.address)) throw Error(unsupported);
-  const identity = row.address.toLowerCase();
+   || typeof row.address !== 'string' || row.address.trim() !== row.address) throw Error(unsupported);
+  let identity;
+  try { identity = validatorIdentityText(row.address, {allowHistorical: !expected.includes('.')}); }
+  catch { throw Error(unsupported); }
   if (identities.has(identity)) throw Error(unsupported);
   identities.add(identity);
  }
