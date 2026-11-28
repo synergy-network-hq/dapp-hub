@@ -11,6 +11,7 @@ pub use genesis_stage::GenesisStageReview;
 pub mod commands;
 pub mod request_journal;
 mod formation;
+mod r1_identity_creation;
 
 pub mod operator_authorization;
 

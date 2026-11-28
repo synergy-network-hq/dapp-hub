@@ -185,6 +185,7 @@ impl Target {
 impl Request {
     pub fn validate(&self) -> Result<bool, String> {
         if self.version != 1 { return Err("Unsupported controller protocol.".into()); }
+        if self.operation=="r1_identity_preview" { return crate::r1_identity_creation::validate(self); }
         if self.operation=="gateway_vpn_preflight"{return crate::gateway_vpn::validate(self)}
         if self.operation.starts_with("gateway_target_")||matches!(self.operation.as_str(),"gateway_install"|"gateway_install_preflight"|"gateway_install_status"){return crate::gateway_target::validate(self)}
         if self.operation.starts_with("gateway_"){return crate::gateway_admission::validate(self)}
@@ -1391,6 +1392,7 @@ pub(super) async fn execute_pinned(target:Target,request:Request,control_dir:&Pa
     match request.operation.as_str(){
      "health"=>health_reply(&reply).map_err(String::from),
      "inventory"=>crate::node_removal_scope::inventory_reply(&reply).map_err(String::from),
+     "r1_identity_preview"=>crate::r1_identity_creation::reply(&request,&reply).map_err(String::from),
      "install_preflight"=>install_preflight_reply(&request,&reply).map_err(String::from),
      "upgrade_preflight"=>upgrade_preflight_reply(&request,&reply).map_err(String::from),
      "uninstall_preflight"=>crate::node_removal_scope::reply(&reply).map_err(String::from),
@@ -1409,6 +1411,7 @@ pub(super) async fn execute_locked(target: &Target, request: &Request, control_d
         "health" => health_reply(&value),
         "diagnostics" => crate::node_diagnostics::reply(&value),
         "inventory" => crate::node_removal_scope::inventory_reply(&value),
+        "r1_identity_preview" => crate::r1_identity_creation::reply(request,&value),
         "install_preflight" => install_preflight_reply(request, &value),
         "install" => install_reply(request, &value),
         "register" => register_service_reply(&value),
